@@ -250,6 +250,7 @@ python scripts/wishctl.py validate path/to/execution-manifest.json --stage plann
 - 官方 Skill 安裝器目錄驗證
 - 21 個 repository 自動測試
 - 13 個可獨立執行的 Skill 內部測試
+- 2 個 .NET fail-closed baseline 測試
 - Python 編譯檢查
 - Python source distribution 與 wheel 建置
 - ZIP 完整性與頂層目錄檢查
@@ -263,10 +264,12 @@ cd wish-builder/scripts
 python -m unittest -v test_wishctl.py
 ```
 
-Windows credential service 目前只有遇到未實作功能便停止的骨架。Repository 已固定
-`.NET 10.0.400`、`net10.0-windows`、`win-x64` 和支援期限證據，但本機沒有
-.NET SDK，因此 NuGet lockfile、locked restore、建置與 Windows Service 測試仍顯示
-`SETUP_REQUIRED`，尚未宣稱通過。
+Windows credential service 目前仍是遇到未實作功能便停止的骨架，但工具鏈基線已完成：
+Repository 固定 `.NET 10.0.400`、`net10.0-windows`、`win-x64`、Microsoft
+test packages 和兩份 NuGet lockfile；clean-cache locked restore、0 warning Release build、
+2 個測試及兩次相同 SHA-256 的 self-contained single-file publish 均已通過。真正的
+Windows Service、CNG key 和 named-pipe 功能尚未實作，啟動時仍會回傳
+`SETUP_REQUIRED`。
 
 ## 常見問題
 
@@ -301,7 +304,8 @@ Windows credential service 目前只有遇到未實作功能便停止的骨架�
 - [x] 加入任務依賴、檔案範圍與需求追蹤驗證
 - [x] 完成三種邊界情況試跑
 - [x] 建立 Python 套件、相容指令、可重現 Skill ZIP 和第一版 CI
-- [ ] 完成 .NET 10 locked restore 與 Windows Service 基線驗證
+- [x] 完成 .NET 10 locked restore、測試與可重現 publish 基線
+- [ ] 實作 Windows Service、CNG key 和 authenticated named-pipe
 - [ ] 實作執行核心、Trellis adapter 和受監督的 Agent 排程
 - [ ] 選擇開源授權並發布正式 GitHub 儲存庫
 - [ ] 在真實專案完成一次從願望到全部 Pull Request 合併的公開案例

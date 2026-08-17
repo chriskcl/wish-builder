@@ -29,6 +29,10 @@ jobs:
   dotnet-baseline:
     name: .NET 10 baseline
     runs-on: windows-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      TESTINGPLATFORM_TELEMETRY_OPTOUT: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -42,19 +46,57 @@ jobs:
           if ($actual -ne $expected) {
             throw "Expected .NET SDK $expected, found $actual"
           }
-      - name: Report locked-restore setup gate
+      - name: Restore from committed lock files
         shell: pwsh
         run: |
-          $locks = @(
-            "src/WishBuilder.CredentialService/packages.lock.json",
-            "tests/dotnet/WishBuilder.CredentialService.Tests/packages.lock.json"
-          )
-          $missing = @($locks | Where-Object { -not (Test-Path -LiteralPath $_) })
-          if ($missing.Count -gt 0) {
-            Write-Warning ("SETUP_REQUIRED: generate and verify committed NuGet lock files: " + ($missing -join ", "))
-            exit 0
-          }
-          dotnet restore src/WishBuilder.CredentialService/WishBuilder.CredentialService.csproj --locked-mode
           dotnet restore tests/dotnet/WishBuilder.CredentialService.Tests/WishBuilder.CredentialService.Tests.csproj --locked-mode
-          dotnet build src/WishBuilder.CredentialService/WishBuilder.CredentialService.csproj --no-restore --configuration Release
-          dotnet build tests/dotnet/WishBuilder.CredentialService.Tests/WishBuilder.CredentialService.Tests.csproj --no-restore --configuration Release
+          git diff --exit-code -- "**/packages.lock.json"
+      - name: Build with warnings as errors
+        run: >-
+          dotnet build src/WishBuilder.CredentialService/WishBuilder.CredentialService.csproj
+          --configuration Release
+          --no-restore
+          -p:ContinuousIntegrationBuild=true
+      - name: Run .NET tests
+        run: >-
+          dotnet test tests/dotnet/WishBuilder.CredentialService.Tests/WishBuilder.CredentialService.Tests.csproj
+          --configuration Release
+          --no-restore
+          -p:ContinuousIntegrationBuild=true
+      - name: Verify deterministic fail-closed publish
+        shell: pwsh
+        run: |
+          $first = Join-Path $env:RUNNER_TEMP "wish-builder-publish-a"
+          $second = Join-Path $env:RUNNER_TEMP "wish-builder-publish-b"
+          $project = "src/WishBuilder.CredentialService/WishBuilder.CredentialService.csproj"
+          dotnet publish $project --configuration Release --no-restore -p:ContinuousIntegrationBuild=true --output $first
+          dotnet publish $project --configuration Release --no-restore -p:ContinuousIntegrationBuild=true --output $second
+          $exeName = "WishBuilder.CredentialService.exe"
+          $firstExe = Join-Path $first $exeName
+          $secondExe = Join-Path $second $exeName
+          $firstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $firstExe).Hash
+          $secondHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $secondExe).Hash
+          if ($firstHash -ne $secondHash) {
+            throw "Credential service publish is not deterministic: $firstHash != $secondHash"
+          }
+          $evidence = Get-Content -Raw release/provenance/dotnet-support.json | ConvertFrom-Json
+          $expectedHash = $evidence.baseline_qualification.repeat_publish_sha256
+          if ($firstHash.ToLowerInvariant() -ne $expectedHash) {
+            throw "Published executable does not match recorded evidence: $firstHash != $expectedHash"
+          }
+          $publishedNames = @(Get-ChildItem -File -LiteralPath $first | Select-Object -ExpandProperty Name)
+          $unexpected = @($publishedNames | Where-Object { $_ -notin @($exeName, "WishBuilder.CredentialService.pdb") })
+          if ($unexpected.Count -gt 0) {
+            throw "Single-file publish emitted unexpected files: $($unexpected -join ', ')"
+          }
+          & $firstExe --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "Version probe exited $LASTEXITCODE"
+          }
+          $errorFile = Join-Path $env:RUNNER_TEMP "credential-service-stderr.txt"
+          & $firstExe 2> $errorFile
+          $serviceExit = $LASTEXITCODE
+          $serviceError = (Get-Content -Raw -LiteralPath $errorFile).Trim()
+          if ($serviceExit -ne 78 -or $serviceError -notlike "SETUP_REQUIRED:*") {
+            throw "Expected fail-closed exit 78, got $serviceExit with: $serviceError"
+          }
