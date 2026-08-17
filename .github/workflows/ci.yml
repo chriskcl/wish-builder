@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Compile Python sources
+        run: python -m compileall -q wish_builder scripts wish-builder/scripts
+
+  dotnet-baseline:
+    name: .NET 10 baseline
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Verify pinned SDK
+        shell: pwsh
+        run: |
+          $expected = (Get-Content -Raw global.json | ConvertFrom-Json).sdk.version
+          $actual = dotnet --version
+          if ($actual -ne $expected) {
+            throw "Expected .NET SDK $expected, found $actual"
+          }
+      - name: Report locked-restore setup gate
+        shell: pwsh
+        run: |
+          $locks = @(
+            "src/WishBuilder.CredentialService/packages.lock.json",
+            "tests/dotnet/WishBuilder.CredentialService.Tests/packages.lock.json"
+          )
+          $missing = @($locks | Where-Object { -not (Test-Path -LiteralPath $_) })
+          if ($missing.Count -gt 0) {
+            Write-Warning ("SETUP_REQUIRED: generate and verify committed NuGet lock files: " + ($missing -join ", "))
+            exit 0
+          }
+          dotnet restore src/WishBuilder.CredentialService/WishBuilder.CredentialService.csproj --locked-mode
+          dotnet restore tests/dotnet/WishBuilder.CredentialService.Tests/WishBuilder.CredentialService.Tests.csproj --locked-mode
+          dotnet build src/WishBuilder.CredentialService/WishBuilder.CredentialService.csproj --no-restore --configuration Release
+          dotnet build tests/dotnet/WishBuilder.CredentialService.Tests/WishBuilder.CredentialService.Tests.csproj --no-restore --configuration Release

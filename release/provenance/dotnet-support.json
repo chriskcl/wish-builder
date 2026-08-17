@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "observed_at": "2026-08-17T00:00:00+08:00",
+  "source": "https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/10.0/releases.json",
+  "channel": "10.0",
+  "support_phase": "active",
+  "eol_date": "2028-11-14",
+  "latest_release": "10.0.11",
+  "latest_runtime": "10.0.11",
+  "selected_sdk": "10.0.400",
+  "selected_sdk_release_date": "2026-08-11",
+  "security_release": true,
+  "target_framework": "net10.0-windows",
+  "runtime_identifier": "win-x64"
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wish Builder"
+  short_description: "Turn a product wish into governed autonomous delivery"
+  default_prompt: "Use $wish-builder to turn my product direction into an approved plan and autonomously deliver it."

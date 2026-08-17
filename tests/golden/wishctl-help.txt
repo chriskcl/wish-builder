@@ -1,0 +1,14 @@
+usage: wishctl [-h] {validate,ready,drift,trace,hash} ...
+
+Validate and inspect wish-builder execution manifests.
+
+positional arguments:
+  {validate,ready,drift,trace,hash}
+    validate            validate a manifest
+    ready               print dispatchable task IDs
+    drift               check changed files against ownership
+    trace               render requirement trace Markdown
+    hash                print a gate artifact SHA-256
+
+options:
+  -h, --help            show this help message and exit

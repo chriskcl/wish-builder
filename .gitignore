@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# .NET
+**/bin/
+**/obj/
+TestResults/
+artifacts/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
