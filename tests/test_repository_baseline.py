@@ -8,6 +8,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import wish_builder
+from scripts.build_skill_zip import archive_bytes
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -156,7 +157,7 @@ class RepositoryBaselineTests(unittest.TestCase):
 
     def test_skill_zip_exactly_matches_distributable_files(self) -> None:
         expected = {
-            path.relative_to(REPOSITORY_ROOT).as_posix(): path.read_bytes()
+            path.relative_to(REPOSITORY_ROOT).as_posix(): archive_bytes(path)
             for path in SKILL_ROOT.rglob("*")
             if path.is_file() and "__pycache__" not in path.parts
         }

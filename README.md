@@ -136,7 +136,7 @@ unzip wish-builder-skill.zip -d ~/.codex/skills
 目前 ZIP 的 SHA-256：
 
 ```text
-7d14b020cf00f106f1765d45cf69a3b4325929a4e5c203ea017022797cfbd0e5
+64b2c0123b1fb856d9641a29045507e15eb332c6f977a8829effcd5bd63585a3
 ```
 
 ## 第一次使用

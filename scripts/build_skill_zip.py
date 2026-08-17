@@ -13,6 +13,21 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPOSITORY_ROOT / "wish-builder"
 OUTPUT = REPOSITORY_ROOT / "wish-builder-skill.zip"
 FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+TEXT_SUFFIXES = {
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".ps1",
+    ".py",
+    ".sh",
+    ".toml",
+    ".ts",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
 
 
 def distributable_files() -> list[Path]:
@@ -26,6 +41,14 @@ def distributable_files() -> list[Path]:
         ),
         key=lambda path: path.as_posix(),
     )
+
+
+def archive_bytes(path: Path) -> bytes:
+    data = path.read_bytes()
+    if path.suffix.lower() not in TEXT_SUFFIXES:
+        return data
+    text = data.decode("utf-8")
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
 
 
 def build(output: Path = OUTPUT) -> str:
@@ -42,7 +65,7 @@ def build(output: Path = OUTPUT) -> str:
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
             info.external_attr = 0o100644 << 16
-            archive.writestr(info, path.read_bytes())
+            archive.writestr(info, archive_bytes(path))
     os.replace(temporary, output)
     return hashlib.sha256(output.read_bytes()).hexdigest()
 
