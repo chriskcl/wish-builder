@@ -186,7 +186,7 @@ class GitIdentityErrorBranchTests(unittest.TestCase):
             st_ino=21,
         )
         with tempfile.TemporaryDirectory() as temporary:
-            repository = Path(temporary)
+            repository = Path(temporary).resolve(strict=True)
             candidate = repository / "link.txt"
             real_lstat = os.lstat
 

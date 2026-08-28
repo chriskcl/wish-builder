@@ -1994,13 +1994,20 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
             root = Path(raw_root).resolve(strict=True)
             attempt = replace(attempt_worktree(), path=str(root))
             candidate = root / "candidate"
+            real_lstat = git_boundary.os.lstat
+
+            def lstat(path, *args, **kwargs):
+                if Path(path) == candidate:
+                    raise OSError("race")
+                return real_lstat(path, *args, **kwargs)
+
             with (
                 mock.patch.object(
                     git_boundary.os,
                     "walk",
                     return_value=((str(root), (), ("candidate",)),),
                 ),
-                mock.patch.object(git_boundary.os, "lstat", side_effect=OSError("race")),
+                mock.patch.object(git_boundary.os, "lstat", side_effect=lstat),
             ):
                 with self.assertRaisesRegex(GitBoundaryError, "worktree_scan_race"):
                     adapter._validate_materialized_result(attempt, ())

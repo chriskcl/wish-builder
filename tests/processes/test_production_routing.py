@@ -221,15 +221,16 @@ def prepared_effect(
 
 def attempt_worktree(root: Path, identity: ExecutionIdentity) -> AttemptWorktree:
     root.mkdir()
-    git_dir = root / ".attempt-git"
+    resolved_root = root.resolve(strict=True)
+    git_dir = resolved_root / ".attempt-git"
     git_dir.mkdir()
     return AttemptWorktree(
         identity=identity,
-        path=str(root.resolve(strict=True)),
+        path=str(resolved_root),
         external_object_id=f"attempt-{identity.attempt}",
         local_repository_id=HASH_A,
         target_workspace_hash=HASH_B,
-        worktree_root=capture_filesystem_identity(root),
+        worktree_root=capture_filesystem_identity(resolved_root),
         git_dir=capture_filesystem_identity(git_dir),
         base_commit_sha="1" * 40,
         base_tree_sha="2" * 40,
