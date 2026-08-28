@@ -21,6 +21,12 @@ def argument(name: str) -> str | None:
 
 provider = os.environ.get("FAKE_RPC_PROVIDER", "pi")
 delay = float(os.environ.get("FAKE_RPC_DELAY", "0.05"))
+abort_response_after_terminal = (
+    os.environ.get("FAKE_RPC_ABORT_RESPONSE_AFTER_TERMINAL") == "1"
+)
+prompt_response_after_start = (
+    os.environ.get("FAKE_RPC_PROMPT_RESPONSE_AFTER_START") == "1"
+)
 session_directory = Path(argument("--session-dir") or ".").resolve()
 session_directory.mkdir(parents=True, exist_ok=True)
 session_file = argument("--session") or argument("--resume")
@@ -123,18 +129,25 @@ for raw in sys.stdin.buffer:
             }
         )
         streaming.set()
-        output(
-            {
-                "id": request_id,
-                "type": "response",
-                "command": command_type,
-                "success": True,
-            }
-        )
-        output({"type": "agent_start"})
+        prompt_response = {
+            "id": request_id,
+            "type": "response",
+            "command": command_type,
+            "success": True,
+        }
+        if prompt_response_after_start:
+            output({"type": "agent_start"})
+            output(prompt_response)
+        else:
+            output(prompt_response)
+            output({"type": "agent_start"})
         threading.Thread(target=finish_turn, daemon=True).start()
     elif command_type == "abort":
         abort_event.set()
+        if abort_response_after_terminal:
+            deadline = time.monotonic() + 5
+            while streaming.is_set() and time.monotonic() < deadline:
+                time.sleep(0.001)
         output(
             {
                 "id": request_id,

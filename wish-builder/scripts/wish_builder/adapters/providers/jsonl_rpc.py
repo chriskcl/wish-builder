@@ -758,8 +758,6 @@ class JsonlRpcBackendChannel:
             self._save_state()
             try:
                 self._ensure_client_locked()
-                assert self._client is not None
-                self._client.request("prompt", message=command.task_packet)
             except JsonlRpcError as exc:
                 operation = self._operation(command.operation_id)
                 operation["observation"] = TurnObservation(
@@ -771,6 +769,23 @@ class JsonlRpcBackendChannel:
                 ).to_primitive()
                 self._save_state()
                 return self._turn_observation(operation)
+            client = self._client
+            assert client is not None
+        try:
+            client.request("prompt", message=command.task_packet)
+        except JsonlRpcError as exc:
+            with self._lock:
+                operation = self._operation(command.operation_id)
+                operation["observation"] = TurnObservation(
+                    operation_id=command.operation_id,
+                    status=EffectStatus.UNKNOWN,
+                    observed_at=self._clock(),
+                    state=TurnState.UNKNOWN,
+                    evidence=(f"provider_send_ambiguous:{exc.code}",),
+                ).to_primitive()
+                self._save_state()
+                return self._turn_observation(operation)
+        with self._lock:
             operation = self._operation(command.operation_id)
             current = self._turn_observation(operation)
             if current.status is EffectStatus.UNKNOWN:
@@ -865,7 +880,12 @@ class JsonlRpcBackendChannel:
                 )
             source = self._turn_observation(send_operation)
             if source.state in {TurnState.DONE, TurnState.FAILED, TurnState.CANCELLED}:
-                terminal_state = source.state
+                return self._complete_cancel_locked(
+                    typed,
+                    command,
+                    send_id,
+                    source.state,
+                )
             else:
                 intent = TurnObservation(
                     operation_id=typed.operation_id,
@@ -882,55 +902,81 @@ class JsonlRpcBackendChannel:
                     command={"send_operation_id": send_id},
                 )
                 self._save_state()
-                try:
-                    if self._client is None or not self._client.is_alive:
-                        source = self._reconcile_session_locked(send_id)
-                    if source.state in {TurnState.DONE, TurnState.FAILED, TurnState.CANCELLED}:
-                        terminal_state = source.state
-                    else:
-                        assert self._client is not None
-                        self._client.request("abort")
-                        terminal_state = TurnState.CANCELLED
-                        send_operation["observation"] = self._applied_turn(
-                            send_id,
-                            terminal_state,
-                            send_operation["command_hash"],
-                            evidence=("provider_abort_accepted",),
-                        ).to_primitive()
-                except JsonlRpcError as exc:
-                    operation = self._operation(typed.operation_id)
-                    operation["observation"] = TurnObservation(
-                        operation_id=typed.operation_id,
-                        status=EffectStatus.UNKNOWN,
-                        observed_at=self._clock(),
-                        state=TurnState.UNKNOWN,
-                        evidence=(f"provider_cancel_ambiguous:{exc.code}",),
-                    ).to_primitive()
-                    self._save_state()
-                    return self._turn_observation(operation)
+                if self._client is None or not self._client.is_alive:
+                    source = self._reconcile_session_locked(send_id)
+                if source.state in {TurnState.DONE, TurnState.FAILED, TurnState.CANCELLED}:
+                    return self._complete_cancel_locked(
+                        typed,
+                        command,
+                        send_id,
+                        source.state,
+                    )
+                client = self._client
+                assert client is not None
+        try:
+            client.request("abort")
+        except JsonlRpcError as exc:
+            with self._lock:
+                operation = self._operation(typed.operation_id)
+                operation["observation"] = TurnObservation(
+                    operation_id=typed.operation_id,
+                    status=EffectStatus.UNKNOWN,
+                    observed_at=self._clock(),
+                    state=TurnState.UNKNOWN,
+                    evidence=(f"provider_cancel_ambiguous:{exc.code}",),
+                ).to_primitive()
+                self._save_state()
+                return self._turn_observation(operation)
+        with self._lock:
+            send_operation = self._operation(send_id)
             source = self._turn_observation(send_operation)
-            observation = TurnObservation(
-                operation_id=typed.operation_id,
-                status=EffectStatus.APPLIED,
-                observed_at=self._clock(),
-                state=terminal_state,
-                effect_digest=_effect_digest("cancel_turn", typed.command_hash),
-                attempt_id=command.attempt_id,
-                channel_id=command.channel_id,
-                message_id=source.message_id,
-                turn_id=command.turn_id,
-                result_digest=source.result_digest,
-                evidence=("provider_cancel_observed",),
+            if source.state in {TurnState.DONE, TurnState.FAILED, TurnState.CANCELLED}:
+                terminal_state = source.state
+            else:
+                terminal_state = TurnState.CANCELLED
+                send_operation["observation"] = self._applied_turn(
+                    send_id,
+                    terminal_state,
+                    send_operation["command_hash"],
+                    evidence=("provider_abort_accepted",),
+                ).to_primitive()
+            return self._complete_cancel_locked(
+                typed,
+                command,
+                send_id,
+                terminal_state,
             )
-            self._put_operation(
-                typed.operation_id,
-                "cancel",
-                typed.command_hash,
-                observation.to_primitive(),
-                command={"send_operation_id": send_id},
-            )
-            self._save_state()
-            return observation
+
+    def _complete_cancel_locked(
+        self,
+        effect: PreparedEffect[CancelTurn],
+        command: CancelTurn,
+        send_operation_id: str,
+        terminal_state: TurnState,
+    ) -> TurnObservation:
+        source = self._turn_observation(self._operation(send_operation_id))
+        observation = TurnObservation(
+            operation_id=effect.operation_id,
+            status=EffectStatus.APPLIED,
+            observed_at=self._clock(),
+            state=terminal_state,
+            effect_digest=_effect_digest("cancel_turn", effect.command_hash),
+            attempt_id=command.attempt_id,
+            channel_id=command.channel_id,
+            message_id=source.message_id,
+            turn_id=command.turn_id,
+            result_digest=source.result_digest,
+            evidence=("provider_cancel_observed",),
+        )
+        self._put_operation(
+            effect.operation_id,
+            "cancel",
+            effect.command_hash,
+            observation.to_primitive(),
+            command={"send_operation_id": send_operation_id},
+        )
+        self._save_state()
+        return observation
 
     def close(self) -> None:
         with self._lock:

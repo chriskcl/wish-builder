@@ -132,6 +132,8 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
         name: str = "state",
         *,
         delay: str = "0.05",
+        prompt_response_after_start: bool = False,
+        abort_response_after_terminal: bool = False,
     ) -> JsonlRpcBackendChannel:
         config = JsonlRpcBackendConfig(
             capabilities(provider),
@@ -141,6 +143,14 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
             environment=(
                 ("FAKE_RPC_PROVIDER", "pi" if provider is WorkerProvider.PI else "omp"),
                 ("FAKE_RPC_DELAY", delay),
+                (
+                    "FAKE_RPC_PROMPT_RESPONSE_AFTER_START",
+                    "1" if prompt_response_after_start else "0",
+                ),
+                (
+                    "FAKE_RPC_ABORT_RESPONSE_AFTER_TERMINAL",
+                    "1" if abort_response_after_terminal else "0",
+                ),
             ),
             handshake_timeout_seconds=5,
             response_timeout_seconds=5,
@@ -220,7 +230,11 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
             (WorkerProvider.PI, WorkerProvider.OH_MY_PI), start=1
         ):
             with self.subTest(provider=provider):
-                channel = self.channel(provider, f"state-{index}")
+                channel = self.channel(
+                    provider,
+                    f"state-{index}",
+                    prompt_response_after_start=True,
+                )
                 reserve, send, _ = self.dispatch(channel, provider, f"00{index}")
                 self.assertEqual(TurnState.DONE, self.wait_terminal(channel, send.operation_id))
                 self.assertEqual(
@@ -231,7 +245,11 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
                 self.assertEqual(1, len(session_files))
 
     def test_active_cancel_updates_send_and_cancel_observations(self) -> None:
-        channel = self.channel(WorkerProvider.PI, delay="2")
+        channel = self.channel(
+            WorkerProvider.PI,
+            delay="2",
+            abort_response_after_terminal=True,
+        )
         _, send, cancel = self.dispatch(channel, WorkerProvider.PI)
         cancelled = channel.cancel(
             prepared_effect(self.identity, cancel, EffectOperation.CANCEL_TURN, 3)
@@ -239,6 +257,19 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
         self.assertEqual(EffectStatus.APPLIED, cancelled.status)
         self.assertEqual(TurnState.CANCELLED, cancelled.state)
         self.assertEqual(TurnState.CANCELLED, channel.inspect_turn(send.operation_id).state)
+
+    def test_cancel_after_terminal_turn_preserves_terminal_state(self) -> None:
+        channel = self.channel(WorkerProvider.PI)
+        _, send, cancel = self.dispatch(channel, WorkerProvider.PI)
+        self.assertEqual(TurnState.DONE, self.wait_terminal(channel, send.operation_id))
+
+        cancelled = channel.cancel(
+            prepared_effect(self.identity, cancel, EffectOperation.CANCEL_TURN, 3)
+        )
+
+        self.assertEqual(EffectStatus.APPLIED, cancelled.status)
+        self.assertEqual(TurnState.DONE, cancelled.state)
+        self.assertEqual(TurnState.DONE, channel.inspect_turn(send.operation_id).state)
 
     def test_restart_reconciles_terminal_session_without_resending(self) -> None:
         first = self.channel(WorkerProvider.OH_MY_PI)

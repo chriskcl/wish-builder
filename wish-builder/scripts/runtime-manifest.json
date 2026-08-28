@@ -106,11 +106,11 @@
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/jsonl_rpc.py",
-      "runtime_sha256": "d2524b4398e6ad98db45796e92a473034ff227a115b9c56798b6e3ec0f9567bc",
-      "runtime_size": 56712,
+      "runtime_sha256": "abf7ec10e6ef6bbe2b022910d7f0794a955cdabe4b0d1b4aac6630d2c189ac01",
+      "runtime_size": 58152,
       "source": "wish_builder/adapters/providers/jsonl_rpc.py",
-      "source_sha256": "d2524b4398e6ad98db45796e92a473034ff227a115b9c56798b6e3ec0f9567bc",
-      "source_size": 56712
+      "source_sha256": "abf7ec10e6ef6bbe2b022910d7f0794a955cdabe4b0d1b4aac6630d2c189ac01",
+      "source_size": 58152
     },
     {
       "destination": "scripts/wish_builder/adapters/storage/__init__.py",
