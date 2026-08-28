@@ -134,6 +134,7 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
         delay: str = "0.05",
         prompt_response_after_start: bool = False,
         abort_response_after_terminal: bool = False,
+        barrier_directory: Path | None = None,
     ) -> JsonlRpcBackendChannel:
         config = JsonlRpcBackendConfig(
             capabilities(provider),
@@ -150,6 +151,10 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
                 (
                     "FAKE_RPC_ABORT_RESPONSE_AFTER_TERMINAL",
                     "1" if abort_response_after_terminal else "0",
+                ),
+                (
+                    "FAKE_RPC_BARRIER_DIRECTORY",
+                    str(barrier_directory) if barrier_directory is not None else "",
                 ),
             ),
             handshake_timeout_seconds=5,
@@ -305,12 +310,20 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
         self.assertIn("provider_session_interrupted_after_acceptance", observed.evidence)
 
     def test_sibling_channels_run_concurrently_and_cleanup_processes(self) -> None:
+        barrier_directory = self.root / "sibling-barrier"
         channels = (
-            self.channel(WorkerProvider.PI, "sibling-a", delay="0.5"),
-            self.channel(WorkerProvider.PI, "sibling-b", delay="1"),
+            self.channel(
+                WorkerProvider.PI,
+                "sibling-a",
+                barrier_directory=barrier_directory,
+            ),
+            self.channel(
+                WorkerProvider.PI,
+                "sibling-b",
+                barrier_directory=barrier_directory,
+            ),
         )
         errors: list[BaseException] = []
-        started = time.monotonic()
 
         def run(index: int) -> None:
             try:
@@ -325,7 +338,7 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
         for worker in workers:
             worker.join(timeout=10)
         self.assertFalse(errors, errors)
-        self.assertLess(time.monotonic() - started, 1.8)
+        self.assertEqual(2, len(tuple(barrier_directory.glob("*.ready"))))
         pids = tuple(channel.process_id for channel in channels)
         self.assertTrue(all(type(pid) is int for pid in pids))
         for channel in channels:

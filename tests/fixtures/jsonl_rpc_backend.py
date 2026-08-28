@@ -27,6 +27,10 @@ abort_response_after_terminal = (
 prompt_response_after_start = (
     os.environ.get("FAKE_RPC_PROMPT_RESPONSE_AFTER_START") == "1"
 )
+barrier_directory_text = os.environ.get("FAKE_RPC_BARRIER_DIRECTORY", "")
+barrier_directory = (
+    Path(barrier_directory_text).resolve() if barrier_directory_text else None
+)
 session_directory = Path(argument("--session-dir") or ".").resolve()
 session_directory.mkdir(parents=True, exist_ok=True)
 session_file = argument("--session") or argument("--resume")
@@ -39,6 +43,23 @@ output_lock = threading.Lock()
 session_lock = threading.Lock()
 abort_event = threading.Event()
 streaming = threading.Event()
+
+
+def wait_for_sibling_barrier() -> None:
+    if barrier_directory is None:
+        return
+    barrier_directory.mkdir(parents=True, exist_ok=True)
+    (barrier_directory / f"{os.getpid()}.ready").write_text(
+        "ready\n",
+        encoding="utf-8",
+        newline="",
+    )
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if len(tuple(barrier_directory.glob("*.ready"))) >= 2:
+            return
+        time.sleep(0.001)
+    raise RuntimeError("sibling provider did not reach prompt barrier")
 
 
 def output(value: object) -> None:
@@ -121,6 +142,7 @@ for raw in sys.stdin.buffer:
             }
         )
     elif command_type == "prompt":
+        wait_for_sibling_barrier()
         abort_event.clear()
         append_message(
             {
