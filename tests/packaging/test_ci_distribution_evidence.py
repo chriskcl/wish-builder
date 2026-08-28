@@ -87,7 +87,12 @@ class DistributionEvidenceTests(unittest.TestCase):
 
     @staticmethod
     def _license_bytes() -> bytes:
-        return (REPOSITORY_ROOT / "LICENSE").read_bytes()
+        return (
+            (REPOSITORY_ROOT / "LICENSE")
+            .read_bytes()
+            .replace(b"\r\n", b"\n")
+            .replace(b"\r", b"\n")
+        )
 
     def _valid_members(self, role: str) -> dict[str, bytes]:
         warning = (
@@ -642,6 +647,21 @@ class DistributionEvidenceTests(unittest.TestCase):
                         self.repeat,
                         revision=self.revision,
                     )
+
+    def test_repository_license_line_endings_do_not_change_canonical_text(self) -> None:
+        repository = self.root / "crlf-repository"
+        repository.mkdir()
+        canonical = self._license_bytes()
+        (repository / "LICENSE").write_bytes(canonical.replace(b"\n", b"\r\n"))
+
+        with patch.object(distribution_evidence, "REPOSITORY_ROOT", repository):
+            evidence = build_distribution_evidence(
+                self.dist,
+                self.skill,
+                self.repeat,
+                revision=self.revision,
+            )
+        self.assertEqual("passed", evidence["status"])
 
     def test_requires_gpl_expression_and_license_file_metadata(self) -> None:
         for role in ("wheel", "sdist"):

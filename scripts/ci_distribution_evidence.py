@@ -384,7 +384,11 @@ def _scan_archive_member(
 
 def _expected_license_bytes() -> bytes:
     license_path = _regular_file(REPOSITORY_ROOT / "LICENSE", kind="repository license")
-    return license_path.read_bytes()
+    return (
+        license_path.read_bytes()
+        .replace(b"\r\n", b"\n")
+        .replace(b"\r", b"\n")
+    )
 
 
 def _validate_package_metadata(
