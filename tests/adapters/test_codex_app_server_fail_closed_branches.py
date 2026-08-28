@@ -782,6 +782,20 @@ class CodexAppServerFailClosedBranchTests(unittest.TestCase):
         client = self.client()
         client._stderr.extend(b"bad\xff")
         self.assertEqual("bad\ufffd", client.stderr_text)
+        completed = {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turn": self._turn("provider-turn-1", status="failed"),
+            },
+        }
+        client._notifications.extend(
+            [{"method": "item/started", "params": {}}, completed]
+        )
+        self.assertEqual(
+            completed,
+            client.completed_notification("thread-1", "provider-turn-1"),
+        )
 
         process = Mock()
         process.poll.return_value = None
@@ -1148,7 +1162,22 @@ class CodexAppServerFailClosedBranchTests(unittest.TestCase):
 
         alive = Mock(spec=codex.CodexClientPort)
         alive.is_alive = True
+        alive.completed_notification.return_value = {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turn": self._turn("provider-turn-1", status="failed"),
+            },
+        }
+        alive.item_notifications.return_value = ()
         channel._client = alive
+        pending_observation = dict(channel._operation("send-1")["observation"])
+        channel._apply_live_terminal_locked("send-1", "provider-turn-1")
+        self.assertEqual(
+            EffectStatus.APPLIED,
+            channel._turn_observation(channel._operation("send-1")).status,
+        )
+        channel._operation("send-1")["observation"] = pending_observation
         channel._operation("send-1").pop("provider_turn_id")
         self.assertEqual(TurnState.UNKNOWN, channel.inspect_turn("send-1").state)
 
