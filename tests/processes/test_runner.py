@@ -229,7 +229,8 @@ payload = {
     "stdin": stdin_bytes.decode("ascii"),
 }
 print(json.dumps(payload, sort_keys=True), flush=True)
-print("stderr-frame", file=sys.stderr, flush=True)
+sys.stderr.buffer.write(b"stderr-frame\r\n")
+sys.stderr.buffer.flush()
 emit_result(b'{"result":"ok"}\n')
 """
         )
