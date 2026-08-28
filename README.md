@@ -195,7 +195,7 @@ The installed file should appear at:
 Current ZIP SHA-256:
 
 ```text
-56789fd505de23ce6a250a57d05ea7729ec4e728dbc29e978e31dac334df8211
+ad81a808e6436125d5fedee4ff7d26b750cccd17eca21864942b4a2aa16a2e52
 ```
 
 The GitHub repository is currently private, so it is not an installation source for other users yet. Once it is made public, Codex's Skill installer can install the repository's `wish-builder/` directory.
