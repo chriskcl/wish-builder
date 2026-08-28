@@ -34,6 +34,7 @@ _HUNK_RE = re.compile(
     r"^@@ -(?P<old_first>[0-9]+)(?:,(?P<old_count>[0-9]+))? "
     r"\+(?P<new_first>[0-9]+)(?:,(?P<new_count>[0-9]+))? @@"
 )
+_COVERAGE_ARC_KINDS = frozenset({"AsyncFor", "For", "If", "MatchCase", "While"})
 
 
 class ChangedLinesInputError(RuntimeError):
@@ -1035,6 +1036,86 @@ def _source_span(value: ast.AST | None) -> tuple[int, int] | None:
     return (first, last)
 
 
+def _line_evidence_span(
+    projection: BranchProjection,
+    statement_spans: Sequence[tuple[int, int]],
+) -> tuple[int, int]:
+    """Map expression decisions to the line coverage can actually report."""
+    if projection.kind in {"ExceptHandler", "Try", "TryStar"}:
+        return (projection.first_line, projection.last_line)
+    containers = [
+        span
+        for span in statement_spans
+        if span[0] <= projection.first_line and span[1] >= projection.last_line
+    ]
+    if not containers:
+        return (projection.first_line, projection.last_line)
+    statement_first, _ = min(
+        containers,
+        key=lambda span: (span[1] - span[0], -span[0], span[1]),
+    )
+    return (min(statement_first, projection.first_line), projection.last_line)
+
+
+def _coverage_unobservable_branch_lines(tree: ast.AST) -> frozenset[int]:
+    """Return statement branches that coverage.py does not expose as arcs."""
+    lines = {
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.While)
+        and isinstance(node.test, ast.Constant)
+        and node.test.value is True
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Try, ast.TryStar)):
+            continue
+        lines.update(
+            statement.lineno
+            for statement in node.finalbody
+            if isinstance(statement, (ast.For, ast.AsyncFor, ast.If, ast.While))
+        )
+    return frozenset(lines)
+
+
+def _allowed_static_exclusion_lines(
+    tree: ast.AST,
+    source_lines: Sequence[str],
+) -> frozenset[int]:
+    """Allow coverage's automatic exclusion of Protocol ellipsis declarations."""
+    allowed = {
+        number
+        for number, line in enumerate(source_lines, start=1)
+        if not line.strip() or line.lstrip().startswith("#")
+    }
+
+    def is_protocol(node: ast.ClassDef) -> bool:
+        return any(
+            (isinstance(base, ast.Name) and base.id == "Protocol")
+            or (isinstance(base, ast.Attribute) and base.attr == "Protocol")
+            for base in node.bases
+        )
+
+    for class_node in ast.walk(tree):
+        if not isinstance(class_node, ast.ClassDef) or not is_protocol(class_node):
+            continue
+        for statement in class_node.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not (
+                len(statement.body) == 1
+                and isinstance(statement.body[0], ast.Expr)
+                and isinstance(statement.body[0].value, ast.Constant)
+                and statement.body[0].value.value is Ellipsis
+            ):
+                continue
+            first_line = min(
+                [statement.lineno]
+                + [decorator.lineno for decorator in statement.decorator_list]
+            )
+            allowed.update(range(first_line, statement.end_lineno + 1))
+    return frozenset(allowed)
+
+
 class _DecisionNormalizer(ast.NodeTransformer):
     """Remove decision expressions while retaining control-flow and body structure."""
 
@@ -1230,9 +1311,9 @@ def _branch_projections(source: str) -> tuple[BranchProjection, ...]:
             if span is not None:
                 add(node, ast_path, span[0], last=span[1], owner_key=current_owner)
         elif isinstance(node, ast.ExceptHandler):
-            add(node, ast_path, node.lineno, node.type, owner_key=current_owner)
+            add(node, ast_path, node.lineno, node.body[-1], owner_key=current_owner)
         elif isinstance(node, (ast.Try, ast.TryStar)):
-            add(node, ast_path, node.lineno, owner_key=current_owner)
+            add(node, ast_path, node.lineno, node.body[-1], owner_key=current_owner)
         elif isinstance(node, ast.Match):
             add(node, ast_path, node.lineno, node.subject, owner_key=current_owner)
         elif isinstance(node, ast.match_case):
@@ -1357,6 +1438,14 @@ def _source_branch_arc_universe(source: str) -> dict[int, frozenset[int]]:
     def first_line(statements: Sequence[ast.stmt], fallback: int) -> int:
         return statements[0].lineno if statements else fallback
 
+    def definition_first_line(
+        statement: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+    ) -> int:
+        return min(
+            [statement.lineno]
+            + [decorator.lineno for decorator in statement.decorator_list]
+        )
+
     def walk_block(statements: Sequence[ast.stmt], continuation: int) -> None:
         for index, statement in enumerate(statements):
             next_line = (
@@ -1383,16 +1472,18 @@ def _source_branch_arc_universe(source: str) -> dict[int, frozenset[int]]:
                 walk_block(statement.body, statement.lineno)
                 walk_block(statement.orelse, next_line)
             elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                walk_block(statement.body, -statement.lineno)
+                walk_block(statement.body, -definition_first_line(statement))
             elif isinstance(statement, ast.ClassDef):
-                walk_block(statement.body, -statement.lineno)
+                walk_block(statement.body, -definition_first_line(statement))
             elif isinstance(statement, (ast.With, ast.AsyncWith)):
                 walk_block(statement.body, next_line)
             elif isinstance(statement, (ast.Try, ast.TryStar)):
-                walk_block(statement.body, next_line)
+                finally_line = first_line(statement.finalbody, next_line)
+                orelse_line = first_line(statement.orelse, finally_line)
+                walk_block(statement.body, orelse_line)
                 for handler in statement.handlers:
-                    walk_block(handler.body, next_line)
-                walk_block(statement.orelse, next_line)
+                    walk_block(handler.body, finally_line)
+                walk_block(statement.orelse, finally_line)
                 walk_block(statement.finalbody, next_line)
             elif isinstance(statement, ast.Match):
                 case_lines = [
@@ -1905,12 +1996,16 @@ def evaluate_safety_evidence(
             if number in changed_lines and _COVERAGE_PRAGMA_RE.search(line)
         }
         excluded_changed_lines = changed_lines & details.excluded_lines
-        if suppressed_lines or excluded_changed_lines:
+        unexpected_excluded_lines = excluded_changed_lines - _allowed_static_exclusion_lines(
+            source_tree,
+            source.splitlines(),
+        )
+        if suppressed_lines or unexpected_excluded_lines:
             errors.append(
                 _error(
                     "changed_branch_coverage_suppressed",
                     "changed safety code may not suppress coverage evidence",
-                    lines=sorted(suppressed_lines | excluded_changed_lines),
+                    lines=sorted(suppressed_lines | unexpected_excluded_lines),
                     path=path,
                 )
             )
@@ -2041,7 +2136,26 @@ def evaluate_safety_evidence(
                     path=path,
                 )
             )
-        for projection in changed_projections:
+        unobservable_branch_lines = _coverage_unobservable_branch_lines(source_tree)
+        arc_projections = tuple(
+            projection
+            for projection in changed_projections
+            if projection.kind in _COVERAGE_ARC_KINDS
+            and projection.first_line not in unobservable_branch_lines
+        )
+        line_projections = tuple(
+            projection
+            for projection in changed_projections
+            if projection.kind not in _COVERAGE_ARC_KINDS
+            or projection.first_line in unobservable_branch_lines
+        )
+        statement_spans = tuple(
+            span
+            for node in ast.walk(source_tree)
+            if isinstance(node, ast.stmt)
+            if (span := _source_span(node)) is not None
+        )
+        for projection in arc_projections:
             if not any(
                 projection.first_line <= origin <= projection.last_line
                 for origin in mapped_origins
@@ -2057,10 +2171,66 @@ def evaluate_safety_evidence(
                     )
                 )
 
+        proven_line_projections: list[BranchProjection] = []
+        for projection in line_projections:
+            evidence_first, evidence_last = _line_evidence_span(
+                projection,
+                statement_spans,
+            )
+            executed_projection_lines = sorted(
+                line
+                for line in details.executed_lines
+                if evidence_first <= line <= evidence_last
+            )
+            if not executed_projection_lines:
+                errors.append(
+                    _error(
+                        "changed_branch_line_uncovered",
+                        "a changed decision without independent branch arcs must execute at least one source line",
+                        branch_id=projection.branch_id,
+                        kind=projection.kind,
+                        line=projection.first_line,
+                        path=path,
+                    )
+                )
+                continue
+            proven_line_projections.append(projection)
+            matching_specs = sorted(
+                (
+                    spec
+                    for first, last, spec in eligible_anchors.get(path, ())
+                    if not (
+                        projection.last_line < first
+                        or projection.first_line > last
+                    )
+                ),
+                key=lambda spec: spec.mutation_id,
+            )
+            changed_branches.append(
+                {
+                    "branch_id": projection.branch_id,
+                    "evidence_kind": "executed_line",
+                    "executed_arcs": [],
+                    "executed_lines": executed_projection_lines,
+                    "kind": projection.kind,
+                    "line": projection.first_line,
+                    "missing_arcs": [],
+                    "mutation_ids": [spec.mutation_id for spec in matching_specs],
+                    "path": path,
+                    "test_ids": sorted(
+                        {
+                            test_id
+                            for spec in matching_specs
+                            for test_id in spec.test_ids
+                        }
+                    ),
+                }
+            )
+
         projections_by_span: dict[
             tuple[int, int], list[BranchProjection]
         ] = defaultdict(list)
-        for projection in changed_projections:
+        for projection in arc_projections:
             projections_by_span[
                 (projection.first_line, projection.last_line)
             ].append(projection)
@@ -2070,7 +2240,7 @@ def evaluate_safety_evidence(
                 for origin in mapped_origins
                 if span[0] <= origin <= span[1]
             }
-            if len(proof_origins) < len(projections):
+            if len(projections) > 1 and len(proof_origins) < len(projections):
                 errors.append(
                     _error(
                         "changed_branch_coverage_ambiguous",
@@ -2087,10 +2257,18 @@ def evaluate_safety_evidence(
             if hunk.old_count == 0 or line_range is None:
                 continue
             first, last = line_range
-            if not any(
+            has_arc_evidence = any(
                 not (origin_spans[origin][1] < first or origin_spans[origin][0] > last)
                 for origin in mapped_origins
-            ):
+            )
+            has_line_evidence = any(
+                not (
+                    projection.last_line < first
+                    or projection.first_line > last
+                )
+                for projection in proven_line_projections
+            )
+            if not has_arc_evidence and not has_line_evidence:
                 errors.append(
                     _error(
                         "changed_safety_change_unmapped",
@@ -2159,7 +2337,14 @@ def evaluate_safety_evidence(
         )
     )
     invariants.sort(key=lambda item: item["mutation_id"])
-    changed_branches.sort(key=lambda item: (item["path"], item["line"]))
+    changed_branches.sort(
+        key=lambda item: (
+            item["path"],
+            item["line"],
+            str(item.get("evidence_kind", "branch_arcs")),
+            str(item.get("branch_id", "")),
+        )
+    )
     changed_files_output.sort(
         key=lambda item: (
             str(item["new_path"] or item["old_path"]),

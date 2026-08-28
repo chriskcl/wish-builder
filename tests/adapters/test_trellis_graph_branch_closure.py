@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import unittest
+from unittest.mock import patch
 
 from tests.adapters.test_trellis_graph_import import (
     assert_import_error,
@@ -136,6 +137,24 @@ class TrellisGraphBranchClosureTests(unittest.TestCase):
         value = payload()
         value["tasks"][0]["title"] = 7
         assert_import_error(self, "wrong_primitive_type", snapshot(value))
+
+    def test_manifest_digest_drift_after_admission_is_rejected(self) -> None:
+        admit_manifest = graph._admit_manifest
+
+        def drift_digest(candidate: dict[str, object]):
+            manifest = admit_manifest(candidate)
+            if candidate["trellis_graph_digest"] != graph._ZERO_DIGEST:
+                return dataclasses.replace(
+                    manifest,
+                    trellis_graph_digest=graph._ZERO_DIGEST,
+                )
+            return manifest
+
+        with patch.object(graph, "_admit_manifest", side_effect=drift_digest):
+            with self.assertRaises(graph.TrellisGraphImportError) as raised:
+                graph.import_trellis_snapshot(snapshot(), settings())
+
+        self.assertEqual("graph_digest_mismatch", raised.exception.code)
 
     def test_task_number_falls_back_for_external_identifiers(self) -> None:
         self.assertEqual(7, graph._task_number("TASK-007"))

@@ -2,20 +2,25 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import sys
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+from tests.adapters.test_codex_app_server import prepared_effect
 from wish_builder.adapters.providers import codex_app_server as codex
 from wish_builder.contracts.manifest_v2 import WorkerProvider
-from wish_builder.contracts.runtime import EffectStatus
+from wish_builder.contracts.runtime import EffectOperation, EffectStatus, ExecutionIdentity
 from wish_builder.services.ports import (
     BackendCapabilities,
+    CancelTurn,
     PreparedEffect,
     ReserveChannel,
+    SendTaskPacket,
     TurnObservation,
     TurnState,
 )
@@ -122,6 +127,45 @@ class CodexAppServerFailClosedBranchTests(unittest.TestCase):
         )
         self.addCleanup(channel.close)
         return channel
+
+    def commands(
+        self,
+        suffix: str = "1",
+    ) -> tuple[ReserveChannel, SendTaskPacket, CancelTurn]:
+        packet = '{"task":"frozen"}'
+        reserve = ReserveChannel(
+            operation_id=f"RESERVE-{suffix}",
+            attempt_id="ATTEMPT-001",
+            dispatch_id="DISPATCH-001",
+            channel_id="CHANNEL-001",
+            provider=WorkerProvider.CODEX,
+            capability_digest=HASH_A,
+            launch_profile_digest=HASH_B,
+            policy_digest=HASH_C,
+        )
+        send = SendTaskPacket(
+            operation_id=f"SEND-{suffix}",
+            attempt_id="ATTEMPT-001",
+            dispatch_id="DISPATCH-001",
+            channel_id="CHANNEL-001",
+            message_id="MESSAGE-001",
+            turn_id="TURN-001",
+            task_packet=packet,
+            task_packet_digest=codex._sha256(packet.encode()),
+        )
+        cancel = CancelTurn(
+            operation_id=f"CANCEL-{suffix}",
+            attempt_id="ATTEMPT-001",
+            channel_id="CHANNEL-001",
+            turn_id="TURN-001",
+            reason_code="operator_cancelled",
+        )
+        return reserve, send, cancel
+
+    @staticmethod
+    def effect(command, operation: EffectOperation, sequence: int = 1):
+        identity = ExecutionIdentity("WISH-001", 1, "TASK-001", 1, "DISPATCH-001")
+        return prepared_effect(identity, command, operation, sequence)
 
     def client(self) -> codex.CodexAppServerClient:
         return codex.CodexAppServerClient(
@@ -732,6 +776,435 @@ class CodexAppServerFailClosedBranchTests(unittest.TestCase):
             client,
         )
         self.assertEqual(TurnState.FAILED, terminal.state)
+
+    def test_client_lifecycle_and_rpc_errors_close_every_boundary(self) -> None:
+        self.assertRegex(codex._utc_now(), r"Z$")
+        client = self.client()
+        client._stderr.extend(b"bad\xff")
+        self.assertEqual("bad\ufffd", client.stderr_text)
+
+        process = Mock()
+        process.poll.return_value = None
+        process.pid = 123
+        process.stdin = io.BytesIO()
+        process.stdout = io.BytesIO()
+        process.stderr = io.BytesIO()
+        thread = Mock()
+        with (
+            patch.object(codex.os, "name", "posix"),
+            patch.object(codex.subprocess, "Popen", return_value=process),
+            patch.object(codex.threading, "Thread", return_value=thread),
+            patch.object(client, "request", return_value={}),
+            patch.object(client, "notify") as notify,
+        ):
+            client.connect()
+            notify.assert_called_once_with("initialized", None)
+            self.assert_codex_error("codex_process_already_started", client.connect)
+
+        failed = self.client()
+        with patch.object(codex.subprocess, "Popen", side_effect=OSError("denied")):
+            self.assert_codex_error("codex_process_start_failed", failed.connect)
+
+        invalid = self.client()
+        invalid_process = Mock()
+        invalid_process.poll.return_value = 0
+        invalid_process.stdin = io.BytesIO()
+        invalid_process.stdout = io.BytesIO()
+        invalid_process.stderr = io.BytesIO()
+        with (
+            patch.object(codex.subprocess, "Popen", return_value=invalid_process),
+            patch.object(codex.threading, "Thread", return_value=Mock()),
+            patch.object(invalid, "request", return_value=[]),
+        ):
+            self.assert_codex_error("codex_initialize_invalid", invalid.connect)
+
+        initialized = self.client()
+        initialized._initialized = True
+        live = Mock()
+        live.poll.return_value = None
+        live.stdin = io.BytesIO()
+        initialized._process = live
+        with patch.object(initialized, "request", return_value={"thread": {}}):
+            self.assert_codex_error("codex_thread_start_invalid", initialized.start_thread)
+        with self.assertRaises(ValueError):
+            initialized.begin_turn(
+                thread_id="",
+                message_id="message",
+                task_packet="packet",
+                output_schema=codex.CODEX_COMPLETION_SCHEMA,
+            )
+        with patch.object(initialized, "request", return_value={"turn": {}}):
+            self.assert_codex_error(
+                "codex_turn_start_invalid",
+                lambda: initialized.begin_turn(
+                    thread_id="thread",
+                    message_id="message",
+                    task_packet="packet",
+                    output_schema=codex.CODEX_COMPLETION_SCHEMA,
+                ),
+            )
+        accepted: list[tuple[str, str]] = []
+        with patch.object(
+            initialized, "request", return_value={"turn": {"id": "provider-turn"}}
+        ):
+            self.assertEqual(
+                "provider-turn",
+                initialized.begin_turn(
+                    thread_id="thread",
+                    message_id="message",
+                    task_packet="packet",
+                    output_schema=codex.CODEX_COMPLETION_SCHEMA,
+                    on_accepted=lambda *value: accepted.append(value),
+                ),
+            )
+            self.assertEqual(
+                "provider-turn",
+                initialized.begin_turn(
+                    thread_id="thread",
+                    message_id="message",
+                    task_packet="packet",
+                    output_schema=codex.CODEX_COMPLETION_SCHEMA,
+                ),
+            )
+        self.assertEqual([("thread", "provider-turn")], accepted)
+        with patch.object(initialized, "request", return_value=[]):
+            self.assert_codex_error(
+                "codex_turn_interrupt_invalid",
+                lambda: initialized.interrupt_turn(thread_id="thread", turn_id="turn"),
+            )
+        with patch.object(
+            initialized, "request", return_value={"thread": {"id": "other"}}
+        ):
+            self.assert_codex_error(
+                "codex_thread_read_invalid", lambda: initialized.read_thread("thread")
+            )
+
+        timeout = self.client()
+        timeout._process = live
+        timeout._response_timeout = 0
+        with patch.object(timeout, "_write_frame"):
+            self.assert_codex_error(
+                "codex_response_timeout", lambda: timeout.request("method", {})
+            )
+        with patch.object(timeout, "_write_frame") as writer:
+            timeout.notify("event", {"value": 1})
+            writer.assert_called_once_with(
+                {"method": "event", "params": {"value": 1}}
+            )
+
+        broken = self.client()
+        broken._process = Mock(poll=Mock(return_value=None))
+        broken._process.stdin = Mock()
+        broken._process.stdin.write.side_effect = BrokenPipeError("closed")
+        self.assert_codex_error(
+            "codex_write_failed", lambda: broken._write_frame({"ok": True})
+        )
+
+        client._reader = Mock()
+        client._stderr_reader = threading.current_thread()
+        failing_stream = Mock()
+        failing_stream.close.side_effect = OSError("closed")
+        process.stdin = failing_stream
+        process.stdout = None
+        process.stderr = io.BytesIO()
+        with patch.object(client, "_terminate_process_tree") as terminate:
+            client.close()
+            client.close()
+        terminate.assert_called_once_with(process)
+        client._reader.join.assert_called_once_with(timeout=2.0)
+        self.client().close()
+
+        unavailable = self.client()
+        self.assert_codex_error("codex_process_exited", unavailable._raise_if_unavailable)
+
+    def test_reader_and_process_termination_paths_are_bounded(self) -> None:
+        client = self.client()
+        client._output_bytes = codex._MAX_OUTPUT_BYTES
+        client._read_stdout(io.BytesIO(b"{}\n"))
+        self.assertEqual("codex_output_limit_exceeded", client._fatal.code)
+        closed_reader = self.client()
+        closed_reader._closed = True
+        closed_reader._read_stdout(io.BytesIO(b"{\n"))
+        self.assertIsNone(closed_reader._fatal)
+
+        preset = self.client()
+        preset._fatal = codex.CodexAppServerError("first_failure")
+        with patch.object(preset, "_write_frame", side_effect=OSError("closed")):
+            with self.assertRaises(OSError):
+                preset._dispatch_frame({"method": "server/request", "id": 1})
+        self.assertEqual("first_failure", preset._fatal.code)
+
+        callback = codex.CodexAppServerClient(
+            self.launch(),
+            working_directory=self.worktree,
+            frame_callback=lambda _frame: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        callback._fatal = codex.CodexAppServerError("first_failure")
+        callback._dispatch_frame({"method": "turn/completed"})
+        self.assertEqual("first_failure", callback._fatal.code)
+
+        failing_reader = Mock()
+        failing_reader.read.side_effect = OSError("denied")
+        client._read_stderr(failing_reader)
+        captured = self.client()
+        captured._read_stderr(io.BytesIO(b"stderr"))
+        self.assertEqual("stderr", captured.stderr_text)
+        bounded = self.client()
+        bounded._stderr.extend(b"x" * codex._STDERR_LIMIT)
+        bounded._read_stderr(io.BytesIO(b"ignored"))
+        self.assertEqual(codex._STDERR_LIMIT, len(bounded._stderr))
+
+        exited = Mock()
+        exited.poll.return_value = 0
+        codex.CodexAppServerClient._terminate_process_tree(exited)
+
+        normal = Mock()
+        normal.poll.return_value = None
+        normal.pid = 42
+        with (
+            patch.object(codex.os, "name", "posix"),
+            patch.object(codex.os, "killpg", create=True) as killpg,
+        ):
+            codex.CodexAppServerClient._terminate_process_tree(normal)
+        killpg.assert_called_once_with(42, codex.signal.SIGTERM)
+
+        fallback = Mock()
+        fallback.poll.return_value = None
+        fallback.pid = 43
+        fallback.wait.side_effect = (OSError("first"), None)
+        with patch.object(codex.os, "name", "nt"):
+            codex.CodexAppServerClient._terminate_process_tree(fallback)
+        fallback.kill.assert_called_once_with()
+
+        abandoned = Mock()
+        abandoned.poll.return_value = None
+        abandoned.pid = 44
+        abandoned.wait.side_effect = OSError("wait")
+        with (
+            patch.object(codex.os, "name", "posix"),
+            patch.object(
+                codex.os,
+                "killpg",
+                side_effect=OSError("signal"),
+                create=True,
+            ),
+            patch.object(codex.signal, "SIGKILL", 9, create=True),
+        ):
+            codex.CodexAppServerClient._terminate_process_tree(abandoned)
+
+    def test_channel_admission_and_recovery_edges_fail_closed(self) -> None:
+        reserve, send, cancel = self.commands()
+        reserve_effect = self.effect(reserve, EffectOperation.RESERVE_CHANNEL)
+
+        mismatch = self.channel()
+        mismatch_reserve = replace(reserve, provider=WorkerProvider.PI)
+        mismatch_effect = self.effect(
+            mismatch_reserve, EffectOperation.RESERVE_CHANNEL, 2
+        )
+        first = mismatch.reserve(mismatch_effect)
+        self.assertIn("capability_mismatch", first.evidence)
+        self.assertEqual(first, mismatch.reserve(mismatch_effect))
+
+        occupied = self.channel()
+        occupied._state["reservation"] = "other"
+        observed = occupied.reserve(reserve_effect)
+        self.assertIn("attempt_already_reserved", observed.evidence)
+
+        offline = self.channel(RecoveryClient(connect_error=OSError("offline")))
+        observed = offline.reserve(reserve_effect)
+        self.assertIn("OSError", observed.evidence)
+
+        invalid_factory = codex.CodexAppServerChannel(
+            self.config("invalid-factory"), client_factory=lambda *_args, **_kwargs: object()
+        )
+        self.addCleanup(invalid_factory.close)
+        with self.assertRaises(TypeError):
+            invalid_factory._new_client()
+        self.assert_codex_error(
+            "codex_live_process_unavailable", invalid_factory._ensure_live_client
+        )
+
+        unreserved = self.channel()
+        send_effect = self.effect(send, EffectOperation.SEND_TASK_PACKET, 3)
+        observed_turn = unreserved.send(send_effect)
+        self.assertIn("channel_not_reserved", observed_turn.evidence)
+
+        live_client = Mock(spec=codex.CodexClientPort)
+        live_client.is_alive = True
+        live_client.event_position = 5
+        live_client.connect.return_value = None
+
+        def start_thread(*, on_started=None):
+            on_started("thread-1")
+            return "thread-1"
+
+        live_client.start_thread.side_effect = start_thread
+        live_client.completed_notification.return_value = None
+        live_client.item_notifications.return_value = ()
+        live_channel = self.channel(live_client)
+        self.assertEqual(EffectStatus.APPLIED, live_channel.reserve(reserve_effect).status)
+        self.assertEqual(
+            EffectStatus.APPLIED,
+            live_channel.inspect_reservation(reserve.operation_id).status,
+        )
+        self.assertEqual(live_channel.state_path, live_channel.state_path)
+
+        oversized_packet = "x" * (capabilities().max_task_packet_bytes + 1)
+        oversized = replace(
+            send,
+            operation_id="SEND-OVERSIZED",
+            task_packet=oversized_packet,
+            task_packet_digest=codex._sha256(oversized_packet.encode()),
+        )
+        observed_turn = live_channel.send(
+            self.effect(oversized, EffectOperation.SEND_TASK_PACKET, 4)
+        )
+        self.assertIn("task_packet_exceeds_capability", observed_turn.evidence)
+
+        live_channel._state["active_send"] = "another"
+        active = replace(send, operation_id="SEND-ACTIVE")
+        observed_turn = live_channel.send(
+            self.effect(active, EffectOperation.SEND_TASK_PACKET, 5)
+        )
+        self.assertIn("attempt_already_has_turn", observed_turn.evidence)
+        live_channel._state.pop("active_send")
+
+        def wrong_thread(**kwargs):
+            kwargs["on_accepted"]("wrong-thread", "provider-turn")
+            return "provider-turn"
+
+        live_client.begin_turn.side_effect = wrong_thread
+        observed_turn = live_channel.send(send_effect)
+        self.assertIn("codex_send_ambiguous:codex_thread_identity_mismatch", observed_turn.evidence)
+
+        existing = live_channel.send(send_effect)
+        self.assertEqual(EffectStatus.UNKNOWN, existing.status)
+        self.assertIn("codex_reconcile_failed:codex_thread_turns_invalid", existing.evidence)
+
+        no_turn = self.channel()
+        cancel_effect = self.effect(cancel, EffectOperation.CANCEL_TURN, 6)
+        missing_cancel = no_turn.cancel(cancel_effect)
+        self.assertIn("turn_not_found", missing_cancel.evidence)
+        self.assertEqual(missing_cancel, no_turn.cancel(cancel_effect))
+
+        live_channel._state["active_send"] = send.operation_id
+        live_channel._operation(send.operation_id)["provider_turn_id"] = "provider-turn"
+        live_client.begin_turn.side_effect = None
+        live_client.interrupt_turn.return_value = None
+        live_client.wait_for_turn_completed.return_value = {
+            "method": "turn/completed",
+            "params": {"threadId": "thread-1", "turn": self._turn(status="failed")},
+        }
+        observed_cancel = live_channel.cancel(cancel_effect)
+        self.assertIn("codex_cancel_ambiguous:codex_interrupt_not_cancelled", observed_cancel.evidence)
+
+        invalid_cancel, invalid_send = self.commands("INVALID")[2], self.commands("INVALID")[1]
+        invalid_effect = self.effect(
+            invalid_cancel, EffectOperation.CANCEL_TURN, 7
+        )
+        invalid_channel = self.channel(live_client)
+        invalid_channel._state["active_send"] = invalid_send.operation_id
+        invalid_channel._put_operation(
+            invalid_send.operation_id,
+            "send",
+            HASH_A,
+            TurnObservation(
+                operation_id=invalid_send.operation_id,
+                status=EffectStatus.UNKNOWN,
+                observed_at=OBSERVED_AT,
+                state=TurnState.UNKNOWN,
+                evidence=("pending",),
+            ).to_primitive(),
+            command={},
+        )
+        self.assertIn("turn_not_found", invalid_channel.cancel(invalid_effect).evidence)
+
+    def test_channel_frame_and_helper_guards_ignore_unbound_events(self) -> None:
+        channel = self.channel()
+        channel._on_frame({"method": "turn/completed", "params": {}})
+        channel._state["active_send"] = "missing"
+        channel._on_frame(
+            {
+                "method": "turn/completed",
+                "params": {"turn": {"id": "provider-turn"}},
+            }
+        )
+        self._install_send(channel)
+        channel._state["active_send"] = "send-1"
+        channel._on_frame(
+            {
+                "method": "turn/completed",
+                "params": {"turn": {"id": "other"}},
+            }
+        )
+        channel._client = None
+        channel._on_frame(
+            {
+                "method": "turn/completed",
+                "params": {"turn": {"id": "provider-turn-1"}},
+            }
+        )
+        channel._apply_live_terminal_locked("send-1", "provider-turn-1")
+
+        alive = Mock(spec=codex.CodexClientPort)
+        alive.is_alive = True
+        channel._client = alive
+        channel._operation("send-1").pop("provider_turn_id")
+        self.assertEqual(TurnState.UNKNOWN, channel.inspect_turn("send-1").state)
+
+        no_expected = self.channel(
+            RecoveryClient({"id": "thread-1", "turns": [self._turn()]})
+        )
+        self._install_send(no_expected, provider_turn_id=None)
+        reconciled = no_expected._reconcile_locked("send-1")
+        self.assertEqual(TurnState.FAILED, reconciled.state)
+        self.assertEqual(
+            "provider-turn-1",
+            no_expected._operation("send-1")["provider_turn_id"],
+        )
+        unknown_terminal = no_expected._terminal_observation(
+            "send-1",
+            self._turn(status="unknown"),
+            [],
+            "test",
+        )
+        self.assertIn("codex_turn_not_terminal", unknown_terminal.evidence)
+
+        identity_none = self.channel()
+        self._install_send(identity_none, provider_turn_id=None, include_thread=False)
+        terminal = identity_none._terminal_from_frame(
+            "send-1",
+            {
+                "params": {
+                    "threadId": None,
+                    "turn": self._turn(None, status="failed"),
+                }
+            },
+            RecoveryClient(),
+        )
+        self.assertEqual(TurnState.FAILED, terminal.state)
+
+        self.assertEqual([], codex._turn_items({"items": "invalid"}))
+        self.assertEqual(
+            [{"type": "agentMessage"}],
+            codex._items_from_notifications(
+                (
+                    {"params": {}},
+                    {"params": {"item": {"type": "agentMessage"}}},
+                )
+            ),
+        )
+        self.assertEqual(0, codex._turn_client_message_count({}, None))
+        with self.assertRaises(ValueError):
+            codex._validate_schema_node(
+                {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
+                    "additionalProperties": True,
+                },
+                0,
+            )
 
 
 if __name__ == "__main__":

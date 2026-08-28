@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from tests.adapters.test_storage_faults import RUN_ID, event
+from wish_builder.adapters.git_identity import ProtectedControlRoot
 from wish_builder.adapters.storage import filesystem
 from wish_builder.adapters.storage.filesystem import FilesystemJournalStorage
 from wish_builder.contracts import (
@@ -452,6 +453,156 @@ class FilesystemBranchBoundaryTests(unittest.TestCase):
             )
         self.assertEqual(JournalFaultCode.JOURNAL_CORRUPT, segment_fault.exception.code)
         self.assertIn("segment_event_limit", str(segment_fault.exception))
+
+    def test_all_remaining_os_errors_translate_to_persistence_faults(self) -> None:
+        protected = object.__new__(ProtectedControlRoot)
+        object.__setattr__(
+            protected,
+            "expected",
+            SimpleNamespace(lexical_path=str(self.root.parent)),
+        )
+        with (
+            mock.patch.object(
+                filesystem.os.path,
+                "commonpath",
+                side_effect=ValueError("different drives"),
+            ),
+            self.assertRaisesRegex(ValueError, "inside control_root"),
+        ):
+            FilesystemJournalStorage(
+                self.root,
+                RUN_ID,
+                control_root=protected,
+            )
+
+        self.storage._control_root = protected
+        with (
+            mock.patch.object(
+                ProtectedControlRoot,
+                "revalidate",
+                side_effect=RuntimeError("probe failed"),
+            ),
+            self.assertRaises(PersistenceFault) as drift,
+        ):
+            self.storage._guard_control_root("guard", GENESIS_HEAD)
+        self.assertEqual(JournalFaultCode.CONTROL_ROOT_DRIFT, drift.exception.code)
+        self.storage._control_root = None
+
+        handle = mock.MagicMock()
+        handle.fileno.return_value = 33
+        with (
+            mock.patch.object(filesystem.os, "open", return_value=33),
+            mock.patch.object(filesystem.os, "fdopen", return_value=handle),
+            mock.patch.object(
+                filesystem.os,
+                "fstat",
+                return_value=SimpleNamespace(st_size=1),
+            ),
+            mock.patch.object(
+                self.storage,
+                "_lock_handle",
+                side_effect=OSError(errno.EBUSY, "busy"),
+            ),
+            self.assertRaises(PersistenceFault) as lock_fault,
+        ):
+            with self.storage._append_lock():
+                self.fail("a failed lock must not enter")
+        self.assertEqual(
+            JournalFaultCode.LOCK_ACQUIRE_FAILED,
+            lock_fault.exception.code,
+        )
+
+        with (
+            mock.patch.object(Path, "iterdir", side_effect=OSError(errno.EACCES, "denied")),
+            self.assertRaises(PersistenceFault) as list_fault,
+        ):
+            self.storage._segment_paths()
+        self.assertEqual(JournalFaultCode.PERMISSION_DENIED, list_fault.exception.code)
+
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.storage.index_path.write_text("{}", encoding="utf-8")
+        with (
+            mock.patch.object(
+                filesystem,
+                "canonical_json_bytes",
+                side_effect=TypeError("invalid"),
+            ),
+            self.assertRaises(PersistenceFault) as index_fault,
+        ):
+            self.storage._read_index()
+        self.assertEqual(JournalFaultCode.JOURNAL_CORRUPT, index_fault.exception.code)
+
+        missing = self.root / "missing-segment.jsonl"
+        with (
+            mock.patch.object(Path, "open", side_effect=OSError(errno.EACCES, "denied")),
+            self.assertRaises(PersistenceFault) as read_fault,
+        ):
+            self.storage._scan_segment(
+                1,
+                missing,
+                GENESIS_HEAD,
+                SegmentPolicy(),
+            )
+        self.assertEqual(JournalFaultCode.PERMISSION_DENIED, read_fault.exception.code)
+
+        self.storage.segments.mkdir(parents=True, exist_ok=True)
+        with (
+            mock.patch.object(Path, "open", side_effect=OSError(errno.EACCES, "denied")),
+            self.assertRaises(PersistenceFault) as create_fault,
+        ):
+            self.storage._create_segment(1, GENESIS_HEAD, rotation=False)
+        self.assertEqual(JournalFaultCode.PERMISSION_DENIED, create_fault.exception.code)
+
+        sealed = descriptor(self.storage.segments / "sealed.jsonl", event_count=1)
+        with (
+            mock.patch.object(Path, "open", side_effect=OSError(errno.EACCES, "denied")),
+            mock.patch.object(Path, "unlink", side_effect=OSError("cleanup failed")),
+            self.assertRaises(PersistenceFault) as publish_fault,
+        ):
+            self.storage._publish_index(sealed, 2)
+        self.assertEqual(JournalFaultCode.PERMISSION_DENIED, publish_fault.exception.code)
+
+        io_cases = (
+            (
+                lambda: self.storage._append_frame(
+                    missing,
+                    b"{}\n",
+                    GENESIS_HEAD,
+                ),
+                JournalFaultCode.PERMISSION_DENIED,
+            ),
+            (
+                lambda: self.storage._durabilize_observed_head(
+                    missing,
+                    GENESIS_HEAD,
+                ),
+                JournalFaultCode.PERMISSION_DENIED,
+            ),
+        )
+        for action, expected in io_cases:
+            with (
+                self.subTest(action=action),
+                mock.patch.object(
+                    Path,
+                    "open",
+                    side_effect=OSError(errno.EACCES, "denied"),
+                ),
+                self.assertRaises(PersistenceFault) as raised,
+            ):
+                action()
+            self.assertEqual(expected, raised.exception.code)
+
+        with (
+            mock.patch.object(filesystem.os, "name", "posix"),
+            mock.patch.object(
+                filesystem.os,
+                "open",
+                side_effect=OSError(errno.EACCES, "denied"),
+            ),
+            self.assertRaises(PersistenceFault) as sync_fault,
+        ):
+            self.storage._sync_directory(self.root, "sync", GENESIS_HEAD)
+        self.assertEqual(JournalFaultCode.PERMISSION_DENIED, sync_fault.exception.code)
 
 
 if __name__ == "__main__":

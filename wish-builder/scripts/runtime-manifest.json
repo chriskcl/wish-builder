@@ -138,11 +138,11 @@
     },
     {
       "destination": "scripts/wish_builder/adapters/trellis/graph.py",
-      "runtime_sha256": "a13789b297d1875b2341d3f14f5ca562e0c8af7a4ddcf1cd0cdf7fd284cef49b",
-      "runtime_size": 29120,
+      "runtime_sha256": "27da897537479c5961972242b7fb2e3c3e51dc770cec1e5ba3053eba742d185a",
+      "runtime_size": 29083,
       "source": "wish_builder/adapters/trellis/graph.py",
-      "source_sha256": "a13789b297d1875b2341d3f14f5ca562e0c8af7a4ddcf1cd0cdf7fd284cef49b",
-      "source_size": 29120
+      "source_sha256": "27da897537479c5961972242b7fb2e3c3e51dc770cec1e5ba3053eba742d185a",
+      "source_size": 29083
     },
     {
       "destination": "scripts/wish_builder/adapters/trellis/graph_snapshot.py",

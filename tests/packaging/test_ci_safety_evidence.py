@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import io
 import json
 import subprocess
@@ -11,13 +12,17 @@ from unittest.mock import patch
 from scripts.ci_mutation_gate import MutationSpec
 from scripts.ci_safety_registry import ACTIVE_M1_SAFETY_PATHS, SafetyPathRegistry
 from scripts.ci_safety_evidence import (
+    BranchProjection,
     CHANGED_LINES_SCHEMA_VERSION,
     ChangedLinesInputError,
+    _allowed_static_exclusion_lines,
     _branch_projections,
     _git_blob_oid,
+    _line_evidence_span,
     _parse_unified_added_ranges,
     _parse_unified_hunks,
     _projection_refs,
+    _source_branch_arc_universe,
     _source_sha256,
     collect_changed_lines,
     evaluate_safety_evidence as _evaluate_safety_evidence,
@@ -1015,8 +1020,13 @@ class SafetyEvidenceTests(unittest.TestCase):
                     {error["code"] for error in result["errors"]},
                 )
 
-    def test_same_span_decisions_require_independent_evidence(self) -> None:
-        old_source = ADAPTER_SOURCE
+    def test_same_span_unobservable_decision_uses_line_evidence(self) -> None:
+        old_source = (
+            "def promote(allowed, ready):\n"
+            "    if allowed:\n"
+            "        return 'promoted'\n"
+            "    return 'blocked'\n"
+        )
         new_source = (
             "def promote(allowed, ready):\n"
             "    if allowed and ready:\n"
@@ -1044,10 +1054,239 @@ class SafetyEvidenceTests(unittest.TestCase):
             path_registry=self.registry,
         )
 
+        self.assertEqual("pass", result["status"])
+        self.assertEqual([], result["errors"])
+        self.assertEqual(2, result["changed_branch_count"])
+        line_evidence = [
+            item
+            for item in result["changed_branches"]
+            if item.get("evidence_kind") == "executed_line"
+        ]
+        self.assertEqual(["BoolOpSlot"], [item["kind"] for item in line_evidence])
+        self.assertEqual([[2]], [item["executed_lines"] for item in line_evidence])
+
+    def test_unobservable_decision_without_line_execution_fails_closed(self) -> None:
+        source = (
+            "def promote(allowed):\n"
+            "    return 'promoted' if allowed else 'blocked'\n"
+        )
+        (self.root / ADAPTER_PATH).write_text(source, encoding="utf-8")
+        coverage = coverage_report()
+        coverage["files"][ADAPTER_PATH] = coverage_file(
+            executed_branches=[],
+            executed_lines=[1],
+            missing_lines=[2],
+        )
+
+        result = evaluate_safety_evidence(
+            coverage,
+            mutation_report(),
+            changed_lines(
+                (2, 2),
+                path=ADAPTER_PATH,
+                status="A",
+                new_source=source,
+            ),
+            source_root=self.root,
+            specs=(SPEC,),
+            path_registry=self.registry,
+        )
+
         self.assertIn(
-            "changed_branch_coverage_ambiguous",
+            "changed_branch_line_uncovered",
             {error["code"] for error in result["errors"]},
         )
+
+    def test_multiline_unobservable_decision_uses_statement_line_evidence(
+        self,
+    ) -> None:
+        source = (
+            "def promote(allowed):\n"
+            "    return (\n"
+            "        'promoted'\n"
+            "        if allowed\n"
+            "        else 'blocked'\n"
+            "    )\n"
+        )
+        old_source = source.replace("if allowed", "if bool(allowed)")
+        (self.root / ADAPTER_PATH).write_text(source, encoding="utf-8")
+        coverage = coverage_report()
+        coverage["files"][ADAPTER_PATH] = coverage_file(
+            executed_branches=[],
+            executed_lines=[1, 2],
+        )
+
+        result = evaluate_safety_evidence(
+            coverage,
+            mutation_report(),
+            changed_lines(
+                (4, 4),
+                path=ADAPTER_PATH,
+                old_source=old_source,
+                new_source=source,
+            ),
+            source_root=self.root,
+            specs=(SPEC,),
+            path_registry=self.registry,
+        )
+
+        self.assertEqual("pass", result["status"])
+        self.assertEqual([], result["errors"])
+        self.assertEqual(
+            [[2]],
+            [
+                item["executed_lines"]
+                for item in result["changed_branches"]
+                if item.get("evidence_kind") == "executed_line"
+            ],
+        )
+
+    def test_constant_loop_and_finally_branch_use_line_evidence(self) -> None:
+        cases = (
+            (
+                "def poll():\n"
+                "    while True:\n"
+                "        return 'done'\n",
+                [1, 2, 3],
+                1,
+            ),
+            (
+                "def close(resource):\n"
+                "    try:\n"
+                "        use(resource)\n"
+                "    finally:\n"
+                "        if resource:\n"
+                "            resource.close()\n",
+                [1, 3, 5, 6],
+                2,
+            ),
+        )
+        for source, executed_lines, expected_count in cases:
+            with self.subTest(source=source):
+                (self.root / ADAPTER_PATH).write_text(source, encoding="utf-8")
+                coverage = coverage_report()
+                coverage["files"][ADAPTER_PATH] = coverage_file(
+                    executed_branches=[],
+                    executed_lines=executed_lines,
+                )
+
+                result = evaluate_safety_evidence(
+                    coverage,
+                    mutation_report(),
+                    changed_lines(
+                        (1, len(source.splitlines())),
+                        path=ADAPTER_PATH,
+                        status="A",
+                        new_source=source,
+                    ),
+                    source_root=self.root,
+                    specs=(SPEC,),
+                    path_registry=self.registry,
+                )
+
+                self.assertEqual([], result["errors"])
+                self.assertEqual("pass", result["status"])
+                self.assertEqual(expected_count, result["changed_branch_count"])
+                self.assertTrue(
+                    all(
+                        item.get("evidence_kind") == "executed_line"
+                        for item in result["changed_branches"]
+                    )
+                )
+
+    def test_protocol_ellipsis_exclusions_are_structural_not_suppression(self) -> None:
+        source = (
+            "from typing import Protocol\n"
+            "class Port(Protocol):\n"
+            "    def close(self) -> None: ...\n"
+        )
+        (self.root / ADAPTER_PATH).write_text(source, encoding="utf-8")
+        coverage = coverage_report()
+        coverage["files"][ADAPTER_PATH] = coverage_file(
+            executed_branches=[],
+            executed_lines=[1, 2],
+            excluded_lines=[3],
+        )
+
+        result = evaluate_safety_evidence(
+            coverage,
+            mutation_report(),
+            changed_lines(
+                (1, 3),
+                path=ADAPTER_PATH,
+                status="A",
+                new_source=source,
+            ),
+            source_root=self.root,
+            specs=(SPEC,),
+            path_registry=self.registry,
+        )
+
+        self.assertEqual([], result["errors"])
+        self.assertEqual("pass", result["status"])
+
+    def test_line_evidence_and_protocol_exclusion_helper_boundaries(self) -> None:
+        expression = BranchProjection(
+            "branch-expression",
+            "IfExp",
+            4,
+            4,
+            "module.body[0].decorator_list[0]",
+            "body",
+            "decision",
+            "module",
+        )
+        handler = BranchProjection(
+            "branch-handler",
+            "ExceptHandler",
+            7,
+            9,
+            "module.body[0].handlers[0]",
+            "body",
+            "decision",
+            "module/function:run",
+        )
+
+        self.assertEqual((4, 4), _line_evidence_span(expression, ()))
+        self.assertEqual((7, 9), _line_evidence_span(handler, ((1, 12),)))
+
+        source = (
+            "from typing import Protocol\n"
+            "class Port(Protocol):\n"
+            "    name: str\n"
+            "    def close(self) -> None:\n"
+            "        return None\n"
+            "    async def wait(self) -> None: ...\n"
+        )
+        allowed = _allowed_static_exclusion_lines(
+            ast.parse(source),
+            source.splitlines(),
+        )
+
+        self.assertNotIn(3, allowed)
+        self.assertNotIn(4, allowed)
+        self.assertNotIn(5, allowed)
+        self.assertIn(6, allowed)
+
+    def test_source_arc_universe_models_decorators_and_finally(self) -> None:
+        source = (
+            "@decorator\n"
+            "def run(flag, recovery):\n"
+            "    try:\n"
+            "        fail()\n"
+            "    except OSError:\n"
+            "        if flag:\n"
+            "            recover()\n"
+            "    finally:\n"
+            "        cleanup()\n"
+            "    if recovery:\n"
+            "        recover()\n"
+        )
+
+        universe = _source_branch_arc_universe(source)
+
+        self.assertEqual(frozenset({7, 9}), universe[6])
+        self.assertEqual(frozenset({-1, 11}), universe[10])
 
     def test_snapshot_hunks_cannot_hide_the_actual_source_diff(self) -> None:
         old_source = (

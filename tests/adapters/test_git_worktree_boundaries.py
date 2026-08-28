@@ -540,11 +540,12 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
             "2026-08-20T00:00:00Z",
         )
         value = object()
-        RepositoryEffect(
+        applied = RepositoryEffect(
             applied_receipt,
             AttemptEffectDisposition.APPLIED,
             value=value,
         )
+        self.assertEqual("success", applied.to_outcome().kind.value)
         RepositoryEffect(
             absent_receipt,
             AttemptEffectDisposition.ABSENT,
@@ -1408,6 +1409,22 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
                 index_dirty_fingerprint=SHA256,
             )
 
+            with (
+                mock.patch.object(Path, "resolve", side_effect=OSError("missing")),
+                self.assertRaisesRegex(GitBoundaryError, "workspace_unavailable"),
+            ):
+                GitWorktreeAdapter(repository, attempts, workspace)
+
+            with (
+                mock.patch.object(
+                    git_boundary,
+                    "capture_filesystem_identity",
+                    side_effect=git_boundary.GitIdentityError("probe_failed"),
+                ),
+                self.assertRaisesRegex(GitBoundaryError, "attempt_root_unavailable"),
+            ):
+                GitWorktreeAdapter(repository, attempts, workspace)
+
             with self.assertRaisesRegex(GitBoundaryError, "workspace_identity_mismatch"):
                 GitWorktreeAdapter(other, attempts, workspace)
 
@@ -1439,6 +1456,54 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
                 GitWorktreeAdapter(repository, root_file, workspace)
 
             canonical_attempts = path_identity(attempts, 3)
+            with (
+                mock.patch.object(
+                    git_boundary,
+                    "capture_filesystem_identity",
+                    side_effect=(
+                        canonical_attempts,
+                        git_boundary.GitIdentityError("probe_failed"),
+                    ),
+                ),
+                self.assertRaisesRegex(GitBoundaryError, "attempt_root_unavailable"),
+            ):
+                GitWorktreeAdapter(repository, attempts, workspace)
+
+            drifted_attempts = replace(canonical_attempts, target_inode=99)
+            with (
+                mock.patch.object(
+                    git_boundary,
+                    "capture_filesystem_identity",
+                    side_effect=(canonical_attempts, drifted_attempts),
+                ),
+                self.assertRaisesRegex(GitBoundaryError, "attempt_root_drift"),
+            ):
+                GitWorktreeAdapter(repository, attempts, workspace)
+
+            nested_attempts = repository / "attempts"
+            nested_attempts.mkdir()
+            nested_identity = path_identity(nested_attempts, 5)
+            with (
+                mock.patch.object(
+                    git_boundary,
+                    "capture_filesystem_identity",
+                    side_effect=(nested_identity, nested_identity),
+                ),
+                self.assertRaisesRegex(GitBoundaryError, "attempt_root_inside_target"),
+            ):
+                GitWorktreeAdapter(repository, nested_attempts, workspace)
+
+            outer_identity = path_identity(root, 6)
+            with (
+                mock.patch.object(
+                    git_boundary,
+                    "capture_filesystem_identity",
+                    side_effect=(outer_identity, outer_identity),
+                ),
+                self.assertRaisesRegex(GitBoundaryError, "target_inside_attempt_root"),
+            ):
+                GitWorktreeAdapter(repository, root, workspace)
+
             short_alias = replace(
                 canonical_attempts,
                 lexical_path=str(root / "RUNNER~1" / "attempts"),
@@ -1821,6 +1886,306 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
                     )
         with self.assertRaises(TypeError):
             GitWorktreeAdapter(".", ".", placeholder, clock=object())  # type: ignore[arg-type]
+
+    def test_git_transport_text_and_lock_failures_have_stable_codes(self) -> None:
+        with mock.patch.object(
+            git_boundary.subprocess, "run", side_effect=OSError("missing")
+        ):
+            with self.assertRaisesRegex(GitBoundaryError, "git_unavailable"):
+                git_boundary._run_git(Path("."), ("status",))
+
+        text_calls = (
+            lambda: git_boundary._git_text(Path("."), "status"),
+            lambda: git_boundary._git_text_environment(
+                Path("."), ("status",), {}
+            ),
+            lambda: git_boundary._git_text_with_input(
+                Path("."), ("hash-object",), b"input", environment={}
+            ),
+        )
+        for action in text_calls:
+            with self.subTest(action=action), mock.patch.object(
+                git_boundary, "_run_git", return_value=b"\xff"
+            ):
+                with self.assertRaisesRegex(
+                    GitBoundaryError, "git_output_invalid_utf8"
+                ):
+                    action()
+
+        lock = git_boundary._RepositoryMutationLock(Path("missing.lock"), 1)
+        with mock.patch.object(git_boundary.os, "open", side_effect=OSError("denied")):
+            with self.assertRaisesRegex(
+                GitBoundaryError, "repository_lock_open_failed"
+            ), lock.acquire():
+                self.fail("a failed lock open must not enter")
+
+    def test_identity_scan_and_tree_decode_errors_fail_closed(self) -> None:
+        adapter = adapter_stub()
+        with mock.patch.object(
+            git_boundary,
+            "capture_filesystem_identity",
+            side_effect=git_boundary.GitIdentityError("probe_failed"),
+        ):
+            with self.assertRaisesRegex(GitBoundaryError, "attempt_root_drift"):
+                adapter._guard_attempt_root()
+        with mock.patch.object(
+            git_boundary,
+            "capture_workspace_identity",
+            side_effect=git_boundary.GitIdentityError("probe_failed"),
+        ):
+            with self.assertRaisesRegex(GitBoundaryError, "workspace_drift"):
+                adapter._guard_target_structure()
+
+        with mock.patch.object(git_boundary, "_run_git", return_value=b"worktree \xff\0"):
+            with self.assertRaisesRegex(GitBoundaryError, "git_path_invalid_utf8"):
+                adapter._registered_worktree_paths()
+        with mock.patch.object(
+            adapter,
+            "_registered_worktree_paths",
+            side_effect=GitBoundaryError("worktree_list_failed"),
+        ):
+            observed = adapter._inspect_attempt(attempt_command())
+        self.assertEqual(("worktree_list_failed",), observed.details)
+        with (
+            mock.patch.object(adapter, "_registered_worktree_paths", return_value=()),
+            mock.patch.object(git_boundary.os, "lstat", side_effect=OSError("race")),
+        ):
+            observed = adapter._inspect_attempt(attempt_command())
+        self.assertEqual(("attempt_lstat_failed:OSError",), observed.details)
+
+        with tempfile.TemporaryDirectory() as raw_attempts:
+            adapter.attempts_root = Path(raw_attempts)
+            (adapter.attempts_root / attempt_command().directory_name).mkdir()
+            with (
+                mock.patch.object(
+                    adapter, "_registered_worktree_paths", return_value=()
+                ),
+                mock.patch.object(
+                    git_boundary,
+                    "capture_filesystem_identity",
+                    side_effect=ValueError("invalid identity"),
+                ),
+            ):
+                observed = adapter._inspect_attempt(attempt_command())
+        self.assertEqual(("ValueError",), observed.details)
+
+        invalid_records = (
+            (b"invalid\0", "git_tree_record_invalid"),
+            (
+                b"100644 blob " + OID.encode("ascii") + b"\tsrc/\xff\0",
+                "git_tree_record_invalid",
+            ),
+        )
+        for raw, code in invalid_records:
+            with self.subTest(code=code), mock.patch.object(
+                git_boundary, "_run_git", return_value=raw
+            ):
+                with self.assertRaisesRegex(GitBoundaryError, code):
+                    adapter._tree_entries("HEAD", PathCaseMode.SENSITIVE)
+        record = b"100644 blob " + OID.encode("ascii") + b"\tsrc/a.txt\0"
+        with (
+            mock.patch.object(git_boundary, "_run_git", return_value=record),
+            mock.patch.object(git_boundary, "_git_text", return_value="not-a-size"),
+        ):
+            with self.assertRaisesRegex(GitBoundaryError, "git_blob_size_invalid"):
+                adapter._tree_entries("HEAD", PathCaseMode.SENSITIVE)
+
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(raw_root).resolve(strict=True)
+            attempt = replace(attempt_worktree(), path=str(root))
+            candidate = root / "candidate"
+            with (
+                mock.patch.object(
+                    git_boundary.os,
+                    "walk",
+                    return_value=((str(root), (), ("candidate",)),),
+                ),
+                mock.patch.object(git_boundary.os, "lstat", side_effect=OSError("race")),
+            ):
+                with self.assertRaisesRegex(GitBoundaryError, "worktree_scan_race"):
+                    adapter._validate_materialized_result(attempt, ())
+
+            parent = root / "src"
+            parent.mkdir()
+            escaped = ChangedPath("src/deleted.txt", tree_entry("src/deleted.txt"), None)
+            real_resolve = Path.resolve
+
+            def resolve(path: Path, *args, **kwargs):
+                if path == parent:
+                    return root.parent
+                return real_resolve(path, *args, **kwargs)
+
+            with mock.patch.object(Path, "resolve", autospec=True, side_effect=resolve):
+                with self.assertRaisesRegex(GitBoundaryError, "git_path_escape"):
+                    adapter._validate_materialized_result(attempt, (escaped,))
+
+        with mock.patch.object(adapter, "_guard_target", side_effect=ValueError("bad")):
+            rejected = adapter.validate_result(
+                attempt_worktree(), process_tree_terminated=True
+            )
+        self.assertIn("ValueError", rejected.violations)
+
+    def test_stage_promotion_and_cleanup_recovery_paths_are_observable(self) -> None:
+        adapter = adapter_stub()
+        adapter._mutation_lock = SimpleNamespace(acquire=lambda: nullcontext())
+        manifest = result_manifest()
+        validation = ResultValidation(True, manifest, None, (), SHA256)
+        command = StageResultCommand(
+            operation_id="OP-STAGE-RECOVERY",
+            identity=manifest.identity,
+            local_repository_id=manifest.local_repository_id,
+            target_workspace_hash=SHA256,
+            result_manifest_hash=manifest.manifest_hash,
+            result_commit_sha=manifest.result_commit_sha,
+            result_tree_sha=manifest.result_tree_sha,
+            staged_ref="refs/wish-builder/staged/recovery",
+        )
+        effect = boundary_effect(
+            command,
+            event_type=JournalEventType.EFFECT_REQUESTED,
+            operation=EffectOperation.RESULT_STAGE,
+            object_type=EffectObjectType.RESULT_BUNDLE,
+        )
+        absent = SimpleNamespace(disposition=AttemptEffectDisposition.ABSENT)
+        recovered = SimpleNamespace(disposition=AttemptEffectDisposition.APPLIED)
+        with (
+            mock.patch.object(adapter, "_validate_stage_effect", return_value=command),
+            mock.patch.object(adapter, "_guard_target"),
+            mock.patch.object(adapter, "_verify_result_manifest"),
+            mock.patch.object(
+                adapter, "_stage_observation", side_effect=(absent, recovered)
+            ),
+            mock.patch.object(
+                git_boundary, "_run_git", side_effect=GitBoundaryError("stage_failed")
+            ),
+        ):
+            self.assertIs(recovered, adapter.stage_result(effect, validation))
+
+        inspected = SimpleNamespace(disposition=AttemptEffectDisposition.APPLIED)
+        with (
+            mock.patch.object(adapter, "_validate_stage_binding"),
+            mock.patch.object(adapter, "_guard_target_structure"),
+            mock.patch.object(adapter, "_verify_result_manifest"),
+            mock.patch.object(adapter, "_stage_observation", return_value=inspected),
+        ):
+            self.assertIs(inspected, adapter.inspect_stage(command, validation))
+
+        with mock.patch.object(git_boundary, "_run_git", return_value=b"\xff"):
+            invalid = adapter._stage_observation(command, validation)
+        self.assertEqual(AttemptEffectDisposition.UNKNOWN, invalid.disposition)
+
+        plan = promotion_plan()
+        promotion_effect = boundary_effect(
+            plan.command,
+            event_type=JournalEventType.PROMOTION_REQUESTED,
+            operation=EffectOperation.RESULT_PROMOTION,
+            object_type=EffectObjectType.GIT_REF,
+        )
+        absent_promotion = SimpleNamespace(
+            disposition=git_boundary.PromotionDisposition.ABSENT
+        )
+        recovered_promotion = SimpleNamespace(
+            disposition=git_boundary.PromotionDisposition.UNKNOWN
+        )
+        with (
+            mock.patch.object(adapter, "_validate_promotion_effect"),
+            mock.patch.object(
+                adapter,
+                "_inspect_promotion_locked",
+                side_effect=(absent_promotion, recovered_promotion),
+            ),
+            mock.patch.object(adapter, "_guard_target"),
+            mock.patch.object(adapter, "_verify_staged_source"),
+            mock.patch.object(adapter, "_verify_promotion_plan"),
+            mock.patch.object(
+                git_boundary,
+                "_run_git",
+                side_effect=GitBoundaryError("promotion_failed"),
+            ),
+        ):
+            self.assertIs(
+                recovered_promotion,
+                adapter.apply_promotion(promotion_effect, plan),
+            )
+
+        cleanup = cleanup_plan().candidate
+        with mock.patch.object(
+            adapter,
+            "_registered_worktree_paths",
+            side_effect=GitBoundaryError("worktree_list_failed"),
+        ):
+            inspection = adapter.inspect_cleanup(cleanup)
+        self.assertEqual(("worktree_list_failed",), inspection.details)
+        with (
+            mock.patch.object(adapter, "_registered_worktree_paths", return_value=()),
+            mock.patch.object(git_boundary.os, "lstat", side_effect=OSError("race")),
+        ):
+            inspection = adapter.inspect_cleanup(cleanup)
+        self.assertEqual(("attempt_lstat_failed:OSError",), inspection.details)
+
+        unbound = promotion_plan(acceptance_bound=False)
+        with tempfile.TemporaryDirectory() as raw_attempts:
+            adapter.attempts_root = Path(raw_attempts)
+            with (
+                mock.patch.object(adapter, "_guard_attempt_root"),
+                mock.patch.object(adapter, "_guard_target"),
+                mock.patch.object(adapter, "_verify_staged_source"),
+                mock.patch.object(adapter, "_verify_promotion_plan"),
+                mock.patch.object(
+                    git_boundary,
+                    "_git_text",
+                    side_effect=(
+                        unbound.command.candidate_commit_sha,
+                        unbound.command.candidate_tree_sha,
+                    ),
+                ),
+                mock.patch.object(git_boundary, "_run_git", return_value=b""),
+                mock.patch.object(
+                    adapter,
+                    "_registered_worktree_paths",
+                    side_effect=GitBoundaryError("worktree_list_failed"),
+                ),
+                self.assertRaisesRegex(
+                    GitBoundaryError, "acceptance_candidate_cleanup_incomplete"
+                ),
+            ):
+                with adapter.materialize_promotion_candidate(unbound):
+                    pass
+
+        with tempfile.TemporaryDirectory() as raw_attempts:
+            adapter.attempts_root = Path(raw_attempts)
+            registered = mock.Mock(return_value=())
+
+            def run_git(_repository, arguments, **_kwargs):
+                if "remove" in arguments:
+                    raise GitBoundaryError("remove_failed")
+                return b""
+
+            with (
+                mock.patch.object(adapter, "_guard_attempt_root"),
+                mock.patch.object(adapter, "_guard_target"),
+                mock.patch.object(adapter, "_verify_staged_source"),
+                mock.patch.object(adapter, "_verify_promotion_plan"),
+                mock.patch.object(
+                    git_boundary,
+                    "_git_text",
+                    side_effect=(
+                        unbound.command.candidate_commit_sha,
+                        unbound.command.candidate_tree_sha,
+                    ),
+                ),
+                mock.patch.object(git_boundary, "_run_git", side_effect=run_git),
+                mock.patch.object(
+                    adapter,
+                    "_registered_worktree_paths",
+                    registered,
+                ),
+                self.assertRaisesRegex(
+                    GitBoundaryError, "acceptance_candidate_cleanup_incomplete"
+                ),
+            ):
+                with adapter.materialize_promotion_candidate(unbound) as candidate:
+                    registered.return_value = (candidate,)
 
 
 if __name__ == "__main__":

@@ -361,7 +361,7 @@ def import_trellis_snapshot(
     )
     candidate["trellis_graph_digest"] = graph_digest
     manifest = _admit_manifest(candidate)
-    if manifest.trellis_graph_digest != graph_digest:  # pragma: no cover - contract guard
+    if manifest.trellis_graph_digest != graph_digest:
         raise TrellisGraphImportError(
             "graph_digest_mismatch",
             ("trellis_graph_digest",),

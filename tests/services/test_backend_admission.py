@@ -30,6 +30,7 @@ from wish_builder.contracts.compatibility import (
 )
 from wish_builder.contracts.manifest_v2 import WorkerProvider
 from wish_builder.contracts.serialization import canonical_sha256
+from wish_builder.services import backend_admission as backend_admission_module
 from wish_builder.services.backend_admission import (
     BackendAdmissionReason,
     admit_backend,
@@ -110,6 +111,85 @@ class BackendAdmissionTests(unittest.TestCase):
                         BackendAdmissionReason.DISPATCH_NOT_QUALIFIED,
                         result.reason,
                     )
+
+    def test_final_boundary_revalidates_exact_nested_types(self) -> None:
+        self.assertIsNone(backend_admission_module._revalidate_artifact(object()))
+        self.assertIsNone(
+            backend_admission_module._revalidate_qualification(object())
+        )
+
+        scenarios_bundle = self.qualified_bundle()
+        scenarios_artifact = scenarios_bundle.platform(
+            Provider.CODEX,
+            Platform.LINUX,
+        ).qualification.artifact
+        assert scenarios_artifact is not None
+        object.__setattr__(scenarios_artifact, "scenarios", (object(),))
+        self.assertIsNone(
+            backend_admission_module._revalidate_artifact(scenarios_artifact)
+        )
+
+        overlap_bundle = self.qualified_bundle(
+            max_concurrent_turns=2,
+            observed_max_concurrent_turns=2,
+        )
+        overlap_artifact = overlap_bundle.platform(
+            Provider.CODEX,
+            Platform.LINUX,
+        ).qualification.artifact
+        assert overlap_artifact is not None
+        object.__setattr__(overlap_artifact, "disjoint_sibling_overlap", object())
+        self.assertIsNone(
+            backend_admission_module._revalidate_artifact(overlap_artifact)
+        )
+
+    def test_disabled_qualification_and_official_digest_mismatch_fail_closed(
+        self,
+    ) -> None:
+        primitive = _disabled_v2_primitive()
+        primitive["published"] = True
+        decoded = decode_compatibility_bundle_primitive(_rehash_root(primitive))
+        self.assertTrue(decoded.ok, decoded.report.render_text())
+        assert decoded.value is not None
+        disabled_bundle = decoded.value
+        disabled = admit_backend(
+            self.manifest(
+                WorkerProvider.CODEX,
+                Platform.LINUX,
+                max_concurrency=1,
+                bundle=disabled_bundle,
+            ),
+            bundle=disabled_bundle,
+            platform=Platform.LINUX,
+        )
+        self.assertEqual(
+            BackendAdmissionReason.DISPATCH_NOT_QUALIFIED,
+            disabled.reason,
+        )
+
+        enabled_bundle = self.qualified_bundle()
+        mismatched_trellis = mock.Mock(
+            compatibility_digest="sha256:" + "9" * 64,
+        )
+        with mock.patch.object(
+            backend_admission_module,
+            "load_bundled_trellis_compatibility",
+            return_value=mismatched_trellis,
+        ):
+            mismatched = admit_backend(
+                self.manifest(
+                    WorkerProvider.CODEX,
+                    Platform.LINUX,
+                    max_concurrency=1,
+                    bundle=enabled_bundle,
+                ),
+                bundle=enabled_bundle,
+                platform=Platform.LINUX,
+            )
+        self.assertEqual(
+            BackendAdmissionReason.QUALIFICATION_EVIDENCE_MISMATCH,
+            mismatched.reason,
+        )
 
     def test_each_frozen_digest_is_checked_before_qualification(self) -> None:
         manifest = self.manifest(WorkerProvider.CODEX, Platform.WINDOWS)

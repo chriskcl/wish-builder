@@ -221,6 +221,24 @@ class TrellisAuthoritativeProjectionBranchClosureTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "store_unreadable"):
                 checkout._guard_authoritative_task_store(self.repository)
 
+        with mock.patch.object(
+            Path,
+            "resolve",
+            side_effect=OSError("resolve denied"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "store_unreadable"):
+                checkout._guard_authoritative_task_store(self.repository)
+
+        escaped_trellis = self.root / "escaped" / ".trellis"
+        escaped_tasks = escaped_trellis / "tasks"
+        with mock.patch.object(
+            Path,
+            "resolve",
+            side_effect=(escaped_trellis, escaped_tasks),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "store_escape"):
+                checkout._guard_authoritative_task_store(self.repository)
+
         fake_link = mock.Mock(st_mode=stat.S_IFLNK, st_file_attributes=0)
         with mock.patch.object(
             checkout.os,

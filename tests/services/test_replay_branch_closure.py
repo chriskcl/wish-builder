@@ -78,6 +78,23 @@ class ReplayDecoderBranchClosureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "noncanonical"):
             replay_module._canonical_object(b"[]")
 
+    def test_fast_string_and_canonical_object_wrap_decoder_failures(self) -> None:
+        with self.assertRaisesRegex(
+            replay_module._FastDecodeFallback,
+            "invalid Unicode scalar",
+        ):
+            replay_module._validate_replay_json_string("\ud800")
+
+        with (
+            mock.patch.object(
+                replay_module.json,
+                "loads",
+                side_effect=RecursionError("too deep"),
+            ),
+            self.assertRaisesRegex(ValueError, "depth_limit"),
+        ):
+            replay_module._canonical_object(b"{}")
+
 
 class ReplayAttemptBranchClosureTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -362,6 +379,21 @@ class CheckpointPositionBranchClosureTests(unittest.TestCase):
         self.assertFalse(
             replay_module._checkpoint_position_valid(((1, path),), checkpoint)
         )
+
+    def test_os_error_during_checkpoint_validation_is_invalid(self) -> None:
+        path = self.root / "segment-00000001.jsonl"
+        path.write_bytes(self.raw)
+        with mock.patch.object(
+            replay_module.os,
+            "lstat",
+            side_effect=OSError("read denied"),
+        ):
+            self.assertFalse(
+                replay_module._checkpoint_position_valid(
+                    ((1, path),),
+                    self.checkpoint(1, len(self.raw)),
+                )
+            )
 
 
 class ReplayIndexBranchClosureTests(unittest.TestCase):

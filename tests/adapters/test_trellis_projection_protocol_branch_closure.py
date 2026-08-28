@@ -336,6 +336,7 @@ class TrellisProjectionProtocolBranchClosureTests(unittest.TestCase):
             "bridge": _bridge_metadata(),
         }
         cases = (
+            ("projection_json_invalid", "print('{')"),
             (
                 "projection_unexpected_stderr",
                 "import sys; sys.stderr.write('warning'); print('{}')",
@@ -381,6 +382,10 @@ class TrellisProjectionProtocolBranchClosureTests(unittest.TestCase):
             ),
             (
                 _bridge_metadata(coreArchiveVerified=False),
+                "projection_bridge_identity",
+            ),
+            (
+                _bridge_metadata(coreArchiveSha256="bad"),
                 "projection_bridge_identity",
             ),
         ):
