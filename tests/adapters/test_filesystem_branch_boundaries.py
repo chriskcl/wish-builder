@@ -375,7 +375,12 @@ class FilesystemBranchBoundaryTests(unittest.TestCase):
             with (
                 self.subTest(create_result=create_result, flush_result=flush_result),
                 mock.patch.object(filesystem.ctypes, "WinDLL", return_value=kernel32, create=True),
-                mock.patch.object(filesystem.ctypes, "get_last_error", return_value=5),
+                mock.patch.object(
+                    filesystem.ctypes,
+                    "get_last_error",
+                    return_value=5,
+                    create=True,
+                ),
                 mock.patch.object(
                     filesystem.ctypes,
                     "WinError",

@@ -1204,17 +1204,32 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
     def test_materialized_result_and_promotion_boundaries_fail_closed(self) -> None:
         adapter = adapter_stub()
         with tempfile.TemporaryDirectory() as raw_root:
-            root = Path(raw_root)
+            root = Path(raw_root).resolve(strict=True)
             attempt = replace(attempt_worktree(), path=str(root))
             deleted = ChangedPath("gone.txt", tree_entry("gone.txt"), None)
             adapter._validate_materialized_result(attempt, (deleted,))
 
             one_file_walk = ((str(root), (), ("candidate",)),)
+            candidate = root / "candidate"
+            real_lstat = git_boundary.os.lstat
+
+            def lstat_result(result):
+                def observe(path):
+                    if Path(path) == candidate:
+                        return result
+                    return real_lstat(path)
+
+                return observe
+
             regular = SimpleNamespace(st_mode=stat.S_IFREG, st_nlink=1)
             with (
                 mock.patch.object(git_boundary, "MAX_TREE_ENTRIES", 0),
                 mock.patch.object(git_boundary.os, "walk", return_value=one_file_walk),
-                mock.patch.object(git_boundary.os, "lstat", return_value=regular),
+                mock.patch.object(
+                    git_boundary.os,
+                    "lstat",
+                    side_effect=lstat_result(regular),
+                ),
             ):
                 with self.assertRaisesRegex(GitBoundaryError, "worktree_path_limit"):
                     adapter._validate_materialized_result(attempt, (deleted,))
@@ -1222,7 +1237,11 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
             linked = SimpleNamespace(st_mode=stat.S_IFLNK, st_nlink=1)
             with (
                 mock.patch.object(git_boundary.os, "walk", return_value=one_file_walk),
-                mock.patch.object(git_boundary.os, "lstat", return_value=linked),
+                mock.patch.object(
+                    git_boundary.os,
+                    "lstat",
+                    side_effect=lstat_result(linked),
+                ),
             ):
                 with self.assertRaisesRegex(GitBoundaryError, "link_or_reparse"):
                     adapter._validate_materialized_result(attempt, (deleted,))
@@ -1230,7 +1249,11 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
             special = SimpleNamespace(st_mode=0, st_nlink=1)
             with (
                 mock.patch.object(git_boundary.os, "walk", return_value=one_file_walk),
-                mock.patch.object(git_boundary.os, "lstat", return_value=special),
+                mock.patch.object(
+                    git_boundary.os,
+                    "lstat",
+                    side_effect=lstat_result(special),
+                ),
             ):
                 with self.assertRaisesRegex(GitBoundaryError, "special_file"):
                     adapter._validate_materialized_result(attempt, (deleted,))
@@ -1239,7 +1262,11 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
             directory = SimpleNamespace(st_mode=stat.S_IFDIR, st_nlink=1)
             with (
                 mock.patch.object(git_boundary.os, "walk", return_value=()),
-                mock.patch.object(git_boundary.os, "lstat", return_value=directory),
+                mock.patch.object(
+                    git_boundary.os,
+                    "lstat",
+                    side_effect=lstat_result(directory),
+                ),
             ):
                 with self.assertRaisesRegex(GitBoundaryError, "not_regular"):
                     adapter._validate_materialized_result(attempt, (added,))
@@ -1247,7 +1274,11 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
             hardlink = SimpleNamespace(st_mode=stat.S_IFREG, st_nlink=2)
             with (
                 mock.patch.object(git_boundary.os, "walk", return_value=()),
-                mock.patch.object(git_boundary.os, "lstat", return_value=hardlink),
+                mock.patch.object(
+                    git_boundary.os,
+                    "lstat",
+                    side_effect=lstat_result(hardlink),
+                ),
             ):
                 with self.assertRaisesRegex(GitBoundaryError, "hardlink_rejected"):
                     adapter._validate_materialized_result(attempt, (added,))
@@ -1407,6 +1438,36 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
             ):
                 GitWorktreeAdapter(repository, root_file, workspace)
 
+            canonical_attempts = path_identity(attempts, 3)
+            short_alias = replace(
+                canonical_attempts,
+                lexical_path=str(root / "RUNNER~1" / "attempts"),
+            )
+            with (
+                mock.patch.object(
+                    git_boundary,
+                    "capture_filesystem_identity",
+                    side_effect=(
+                        short_alias,
+                        canonical_attempts,
+                        canonical_attempts,
+                    ),
+                ),
+                mock.patch.object(
+                    GitWorktreeAdapter,
+                    "_verify_repository_profile",
+                ),
+                mock.patch.object(
+                    git_boundary,
+                    "_git_object_id_length",
+                    return_value=40,
+                ),
+            ):
+                adapter = GitWorktreeAdapter(repository, attempts, workspace)
+                adapter._guard_attempt_root()
+            self.assertEqual(attempts.resolve(strict=True), adapter.attempts_root)
+            self.assertEqual(canonical_attempts, adapter.attempts_root_identity)
+
     def test_create_attempt_reconciles_both_known_post_failure_outcomes(self) -> None:
         adapter = adapter_stub()
         adapter._mutation_lock = SimpleNamespace(acquire=lambda: nullcontext())
@@ -1473,7 +1534,7 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
         self.assertEqual(("attempt_path_replaced",), replaced_observation.details)
 
         with tempfile.TemporaryDirectory() as raw_root:
-            root = Path(raw_root)
+            root = Path(raw_root).resolve(strict=True)
             path = root / "attempt"
             path.mkdir()
             adapter.attempts_root = root

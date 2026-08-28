@@ -32,6 +32,7 @@ TEXT_SUFFIXES = {
     ".yaml",
     ".yml",
 }
+TEXT_FILENAMES = {"LICENSE"}
 
 
 class RuntimeDriftError(RuntimeError):
@@ -119,8 +120,10 @@ def runtime_manifest_bytes(
     skill_root = repository_root / "wish-builder"
     files = []
     for source, relative_destination in runtime_file_map(repository_root):
-        source_content = source.read_bytes()
-        runtime_content = archive_bytes(source)
+        # Git may materialize text files as CRLF or LF. Manifest hashes describe
+        # the canonical distribution bytes so the tracked manifest is portable.
+        source_content = archive_bytes(source)
+        runtime_content = source_content
         files.append(
             {
                 "destination": relative_destination.as_posix(),
@@ -320,7 +323,10 @@ def distributable_files(skill_root: Path = SKILL_ROOT) -> list[Path]:
 
 def archive_bytes(path: Path) -> bytes:
     data = path.read_bytes()
-    if path.suffix.lower() not in TEXT_SUFFIXES:
+    if (
+        path.suffix.lower() not in TEXT_SUFFIXES
+        and path.name not in TEXT_FILENAMES
+    ):
         return data
     text = data.decode("utf-8")
     return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")

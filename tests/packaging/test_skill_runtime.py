@@ -14,6 +14,7 @@ from pathlib import Path
 from scripts.build_skill_zip import (
     REPOSITORY_ROOT,
     RuntimeDriftError,
+    archive_bytes,
     assert_runtime_current,
     build,
     runtime_file_map,
@@ -41,6 +42,7 @@ class SkillRuntimePackagingTests(unittest.TestCase):
             "wish_builder/contracts/schema.json": b'{"schema":1}\n',
             "scripts/ci_backend_qualification.py": b"print('fixture qualification')\n",
             "wish-builder/SKILL.md": b"---\nname: fixture\ndescription: fixture\n---\n",
+            "wish-builder/LICENSE": b"fixture license\n",
         }
         for relative, content in files.items():
             path = root / relative
@@ -106,16 +108,46 @@ class SkillRuntimePackagingTests(unittest.TestCase):
         skill_root = REPOSITORY_ROOT / "wish-builder"
         for destination, source in expected.items():
             source_bytes = source.read_bytes()
+            canonical_source_bytes = archive_bytes(source)
             self.assertEqual(source_bytes, (skill_root / destination).read_bytes())
             self.assertEqual(
                 source.relative_to(REPOSITORY_ROOT).as_posix(),
                 entries[destination]["source"],
             )
-            self.assertEqual(len(source_bytes), entries[destination]["source_size"])
             self.assertEqual(
-                hashlib.sha256(source_bytes).hexdigest(),
+                len(canonical_source_bytes), entries[destination]["source_size"]
+            )
+            self.assertEqual(
+                hashlib.sha256(canonical_source_bytes).hexdigest(),
                 entries[destination]["source_sha256"],
             )
+
+    def test_manifest_and_zip_are_stable_across_text_line_endings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            lf_root = temporary_root / "lf"
+            crlf_root = temporary_root / "crlf"
+            self._fixture_repository(lf_root)
+            self._fixture_repository(crlf_root)
+
+            for path in crlf_root.rglob("*"):
+                if path.is_file():
+                    path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+
+            sync_runtime(lf_root)
+            sync_runtime(crlf_root)
+            self.assertEqual(
+                runtime_manifest_bytes(lf_root),
+                runtime_manifest_bytes(crlf_root),
+            )
+
+            lf_zip = temporary_root / "lf.zip"
+            crlf_zip = temporary_root / "crlf.zip"
+            self.assertEqual(
+                build(lf_zip, lf_root),
+                build(crlf_zip, crlf_root),
+            )
+            self.assertEqual(lf_zip.read_bytes(), crlf_zip.read_bytes())
 
     def test_documented_manifest_v2_example_matches_the_closed_decoder(self) -> None:
         contracts = (

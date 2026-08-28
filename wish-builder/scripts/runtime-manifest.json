@@ -74,11 +74,11 @@
     },
     {
       "destination": "scripts/wish_builder/adapters/git_worktree.py",
-      "runtime_sha256": "2aee581101adc0baa270b864c223322bb0f1773b4da15887fa8d5251b09be8fc",
-      "runtime_size": 104592,
+      "runtime_sha256": "b2d64b1441afd860ce43b2635826f005d773813aa8b8138cd8fac1016249967d",
+      "runtime_size": 105386,
       "source": "wish_builder/adapters/git_worktree.py",
-      "source_sha256": "2aee581101adc0baa270b864c223322bb0f1773b4da15887fa8d5251b09be8fc",
-      "source_size": 104592
+      "source_sha256": "b2d64b1441afd860ce43b2635826f005d773813aa8b8138cd8fac1016249967d",
+      "source_size": 105386
     },
     {
       "destination": "scripts/wish_builder/adapters/process_identity.py",
@@ -98,11 +98,11 @@
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/codex_app_server.py",
-      "runtime_sha256": "53075557bb3f211f883454c91c45c86a7d80f1f589b6939601514626f02c2c4f",
-      "runtime_size": 64831,
+      "runtime_sha256": "a7e2850d2e88d2e89d0b0abb0d71e47c9aa0fc881513fd13252f6fa2d0ecf9e6",
+      "runtime_size": 64872,
       "source": "wish_builder/adapters/providers/codex_app_server.py",
-      "source_sha256": "53075557bb3f211f883454c91c45c86a7d80f1f589b6939601514626f02c2c4f",
-      "source_size": 64831
+      "source_sha256": "a7e2850d2e88d2e89d0b0abb0d71e47c9aa0fc881513fd13252f6fa2d0ecf9e6",
+      "source_size": 64872
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/jsonl_rpc.py",
@@ -541,8 +541,8 @@
       "runtime_sha256": "06158ff8cf65d5fccc67bddb8f8cca30043291842722b54f8d4d9c56394f630c",
       "runtime_size": 93443,
       "source": "wish_builder/processes/production.py",
-      "source_sha256": "33191b344fff734d7da76a81715c22d0667199ab3c1691da897a889af773f17f",
-      "source_size": 93445
+      "source_sha256": "06158ff8cf65d5fccc67bddb8f8cca30043291842722b54f8d4d9c56394f630c",
+      "source_size": 93443
     },
     {
       "destination": "scripts/wish_builder/processes/production_recovery.py",

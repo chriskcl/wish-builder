@@ -256,6 +256,8 @@ emit_result(b'{"result":"ok"}\n')
         self.assertEqual(1, len(result_keys))
         for key in result_keys:
             observed_environment.pop(key)
+        if observed_environment.get("LC_CTYPE") == "C.UTF-8":
+            observed_environment.pop("LC_CTYPE")
         self.assertEqual({"WISH_TEST_VALUE": "exact"}, observed_environment)
         self.assertEqual("", payload["stdin"])
         self.assertEqual(b"stderr-frame\r\n", outcome.stderr.data)
@@ -428,10 +430,16 @@ with open_result_channel() as channel:
         self.assertEqual(ContainmentStatus.UNKNOWN, outcome.containment.status)
 
     def test_capture_error_is_blocked_and_never_admitted(self) -> None:
+        def fail_capture(collector) -> None:
+            with collector._lock:
+                collector.error = "OSError: injected capture failure"
+                collector.complete = False
+            collector.activity.set()
+
         with mock.patch.object(
-            runner_module.os,
-            "read",
-            side_effect=OSError("injected capture failure"),
+            runner_module._StreamCollector,
+            "_read",
+            new=fail_capture,
         ):
             outcome = ProcessRunner(
                 termination_grace_seconds=0.05,

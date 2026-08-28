@@ -429,7 +429,7 @@ class WishCtlTests(unittest.TestCase):
             self.assertEqual(snapshot.source_sha256, summary["source_sha256"])
             port.export_snapshot.assert_called_once_with("parent-wish")
             self.assertEqual(
-                str(core_root),
+                str(core_root.resolve(strict=True)),
                 constructor.call_args.kwargs["environment"][
                     "WISH_BUILDER_TRELLIS_CORE_ROOT"
                 ],

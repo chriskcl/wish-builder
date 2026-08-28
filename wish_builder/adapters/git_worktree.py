@@ -912,6 +912,24 @@ class GitWorktreeAdapter:
         if not attempts_resolved.is_dir():
             raise GitBoundaryError("attempt_root_not_directory", str(attempts))
         try:
+            canonical_attempts_identity = capture_filesystem_identity(
+                attempts_resolved
+            )
+        except GitIdentityError as exc:
+            raise GitBoundaryError(
+                "attempt_root_unavailable", str(attempts_resolved)
+            ) from exc
+        if canonical_attempts_identity.is_link_or_reparse_point or (
+            canonical_attempts_identity.target_device,
+            canonical_attempts_identity.target_inode,
+            canonical_attempts_identity.access_control_hash,
+        ) != (
+            attempts_identity.target_device,
+            attempts_identity.target_inode,
+            attempts_identity.access_control_hash,
+        ):
+            raise GitBoundaryError("attempt_root_drift", str(attempts_resolved))
+        try:
             attempts_resolved.relative_to(target_resolved)
         except ValueError:
             pass
@@ -926,7 +944,7 @@ class GitWorktreeAdapter:
 
         self.repository = target_resolved
         self.attempts_root = attempts_resolved
-        self.attempts_root_identity = attempts_identity
+        self.attempts_root_identity = canonical_attempts_identity
         self._expected_workspace = expected_workspace
         self._clock = clock
         self._failpoint = failpoint

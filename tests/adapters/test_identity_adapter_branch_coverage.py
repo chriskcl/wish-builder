@@ -78,7 +78,14 @@ class GitIdentityErrorBranchTests(unittest.TestCase):
             with self.assertRaisesRegex(GitIdentityError, "path_unavailable"):
                 git_identity._canonical_existing_path(missing)
 
+            lexical = Path(temporary).absolute()
+            resolved = lexical.resolve(strict=True)
             with (
+                mock.patch.object(
+                    git_identity,
+                    "_canonical_existing_path",
+                    return_value=(lexical, resolved),
+                ),
                 mock.patch.object(git_identity.os, "lstat", side_effect=OSError("race")),
                 self.assertRaisesRegex(GitIdentityError, "filesystem_identity_failed"),
             ):
@@ -180,21 +187,36 @@ class GitIdentityErrorBranchTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary:
             repository = Path(temporary)
+            candidate = repository / "link.txt"
+            real_lstat = os.lstat
+
+            def stable_lstat(path):
+                if Path(path) == candidate:
+                    return link_stat
+                return real_lstat(path)
+
             run_git = fingerprint_run_git(b"link.txt\0")
             with (
                 mock.patch.object(git_identity, "_run_git", side_effect=run_git),
-                mock.patch.object(git_identity.os, "lstat", return_value=link_stat),
+                mock.patch.object(git_identity.os, "lstat", side_effect=stable_lstat),
                 mock.patch.object(git_identity.os, "readlink", return_value="target.txt"),
             ):
                 digest = git_identity._scope_fingerprint(repository, ("src/**",))
             self.assertRegex(digest, r"^sha256:[0-9a-f]{64}$")
+
+            candidate_stats = iter((link_stat, changed_stat))
+
+            def racing_lstat(path):
+                if Path(path) == candidate:
+                    return next(candidate_stats)
+                return real_lstat(path)
 
             with (
                 mock.patch.object(git_identity, "_run_git", side_effect=run_git),
                 mock.patch.object(
                     git_identity.os,
                     "lstat",
-                    side_effect=(link_stat, changed_stat),
+                    side_effect=racing_lstat,
                 ),
                 mock.patch.object(git_identity.os, "readlink", return_value="target.txt"),
                 self.assertRaisesRegex(GitIdentityError, "workspace_probe_race"),

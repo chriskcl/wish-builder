@@ -398,6 +398,7 @@ class CodexAppServerClient:
                 if remaining <= 0:
                     raise CodexAppServerError("codex_response_timeout", method)
                 self._condition.wait(remaining)
+            self._raise_if_unavailable()
             frame = self._responses.pop(request_id)
         error = frame.get("error")
         if error is not None:

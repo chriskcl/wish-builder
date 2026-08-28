@@ -295,8 +295,10 @@ class DistributionEvidenceTests(unittest.TestCase):
                         canonical = name.replace("\\", "/").encode("ascii")
                         noncanonical = name.encode("ascii")
                         raw = path.read_bytes()
-                        self.assertIn(canonical, raw)
-                        path.write_bytes(raw.replace(canonical, noncanonical))
+                        if canonical in raw:
+                            path.write_bytes(raw.replace(canonical, noncanonical))
+                        else:
+                            self.assertIn(noncanonical, raw)
                     with self.assertRaisesRegex(
                         DistributionEvidenceError,
                         rf"{role} archive contains an unsafe member path",
