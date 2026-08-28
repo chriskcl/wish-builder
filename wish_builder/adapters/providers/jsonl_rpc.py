@@ -1016,7 +1016,14 @@ class JsonlRpcBackendChannel:
         session_file = self._state.get("session_file")
         if type(session_file) is not str or not Path(session_file).is_file():
             session_file = None
-        data = client.start(session_file=session_file)
+        try:
+            data = client.start(session_file=session_file)
+        except BaseException:
+            try:
+                client.close()
+            except Exception:
+                pass
+            raise
         self._client = client
         self._state["native_session_id"] = data["sessionId"]
         observed_file = data.get("sessionFile")

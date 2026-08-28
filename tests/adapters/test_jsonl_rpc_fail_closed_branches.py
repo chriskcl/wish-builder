@@ -672,6 +672,28 @@ class JsonlRpcFailClosedBranchTests(unittest.TestCase):
             self.assertEqual("native-1", client.start()["sessionId"])
             self.assert_rpc_error("rpc_process_already_started", client.start)
 
+        windows = self.client()
+        popen = Mock(return_value=process)
+        with (
+            patch.object(rpc.os, "name", "nt"),
+            patch.object(
+                rpc.subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                512,
+                create=True,
+            ),
+            patch.object(rpc.subprocess, "Popen", popen),
+            patch.object(rpc.threading, "Thread", return_value=Mock()),
+            patch.object(
+                windows,
+                "request",
+                return_value={"data": {"sessionId": "native-windows"}},
+            ),
+        ):
+            self.assertEqual("native-windows", windows.start()["sessionId"])
+        self.assertEqual(512, popen.call_args.kwargs["creationflags"])
+        self.assertNotIn("start_new_session", popen.call_args.kwargs)
+
         failed = self.client()
         with patch.object(rpc.subprocess, "Popen", side_effect=OSError("denied")):
             self.assert_rpc_error("rpc_process_start_failed", failed.start)
@@ -861,8 +883,17 @@ class JsonlRpcFailClosedBranchTests(unittest.TestCase):
         )
 
         failing_client = self.client()
-        with patch.object(
-            failing_client, "start", side_effect=rpc.JsonlRpcError("start_failed")
+        with (
+            patch.object(
+                failing_client,
+                "start",
+                side_effect=rpc.JsonlRpcError("start_failed"),
+            ),
+            patch.object(
+                failing_client,
+                "close",
+                wraps=failing_client.close,
+            ) as close_failed_client,
         ):
             failed = rpc.JsonlRpcBackendChannel(
                 self.config("failed"),
@@ -871,6 +902,31 @@ class JsonlRpcFailClosedBranchTests(unittest.TestCase):
             )
             self.addCleanup(failed.close)
             self.assertIn("start_failed", failed.reserve(reserve_effect).evidence)
+            close_failed_client.assert_called_once_with()
+
+        close_crash_client = self.client()
+        with (
+            patch.object(
+                close_crash_client,
+                "start",
+                side_effect=rpc.JsonlRpcError("start_failed"),
+            ),
+            patch.object(
+                close_crash_client,
+                "close",
+                side_effect=RuntimeError("close failed"),
+            ),
+        ):
+            close_crash = rpc.JsonlRpcBackendChannel(
+                self.config("failed-close"),
+                clock=lambda: OBSERVED_AT,
+                client_factory=lambda *_args, **_kwargs: close_crash_client,
+            )
+            self.addCleanup(close_crash.close)
+            self.assertIn(
+                "start_failed",
+                close_crash.reserve(reserve_effect).evidence,
+            )
 
         invalid = rpc.JsonlRpcBackendChannel(
             self.config("invalid-factory"),

@@ -110,6 +110,33 @@ class GitIdentityErrorBranchTests(unittest.TestCase):
         ):
             git_identity._access_control_hash(control_path, SimpleNamespace())
 
+        def return_descriptor(
+            path: object,
+            security: object,
+            descriptor: object,
+            size: int,
+            required: object,
+        ) -> bool:
+            del path, security
+            if size == 0:
+                required._obj.value = 4  # type: ignore[attr-defined]
+                return False
+            descriptor[0] = 1  # type: ignore[index]
+            return True
+
+        get_security = mock.Mock(side_effect=return_descriptor)
+        library = SimpleNamespace(GetFileSecurityW=get_security)
+        with (
+            mock.patch.object(git_identity.os, "name", "nt"),
+            mock.patch.object(ctypes, "WinDLL", return_value=library, create=True),
+            mock.patch.object(ctypes, "get_last_error", return_value=122, create=True),
+        ):
+            observed = git_identity._access_control_hash(
+                control_path,
+                SimpleNamespace(),
+            )
+        self.assertRegex(observed, r"^sha256:[0-9a-f]{64}$")
+
         def fail_descriptor(
             path: object,
             security: object,
@@ -356,6 +383,61 @@ class ProtectedControlRootBranchTests(unittest.TestCase):
             self.assertRaises(OSError),
         ):
             git_identity._close_windows_handle(10)
+
+    def test_windows_handle_helpers_and_protected_root_succeed(self) -> None:
+        def report_directory(handle: int, information: object) -> bool:
+            self.assertEqual(10, handle)
+            information._obj.dwFileAttributes = 0x10  # type: ignore[attr-defined]
+            information._obj.dwVolumeSerialNumber = 7  # type: ignore[attr-defined]
+            information._obj.nFileIndexHigh = 0  # type: ignore[attr-defined]
+            information._obj.nFileIndexLow = 9  # type: ignore[attr-defined]
+            return True
+
+        get_information = mock.Mock(side_effect=report_directory)
+        create_file = mock.Mock(return_value=10)
+        close_handle = mock.Mock(return_value=True)
+        kernel32 = SimpleNamespace(
+            CloseHandle=close_handle,
+            CreateFileW=create_file,
+            GetFileInformationByHandle=get_information,
+        )
+        with mock.patch.object(
+            ctypes,
+            "WinDLL",
+            return_value=kernel32,
+            create=True,
+        ):
+            self.assertEqual(
+                (7, 9, 0x10),
+                git_identity._windows_directory_handle_identity(10),
+            )
+            self.assertEqual(
+                10,
+                git_identity._open_windows_directory_handle("control"),
+            )
+            git_identity._close_windows_handle(10)
+        create_file.assert_called_once()
+        close_handle.assert_called_once_with(10)
+
+        expected = filesystem_identity()
+        observed = ControlRootComparison(True, None, expected)
+        protected = ProtectedControlRoot(expected, 10, (7, 9, 0x10), windows=True)
+        with (
+            mock.patch.object(
+                git_identity,
+                "revalidate_control_root",
+                return_value=observed,
+            ),
+            mock.patch.object(
+                git_identity,
+                "_windows_directory_handle_identity",
+                return_value=(7, 9, 0x10),
+            ),
+        ):
+            self.assertEqual(observed, protected.revalidate())
+        with mock.patch.object(git_identity, "_close_windows_handle") as close:
+            protected.close()
+        close.assert_called_once_with(10)
 
     def test_constructor_rejects_invalid_runtime_values(self) -> None:
         expected = filesystem_identity()
@@ -757,6 +839,36 @@ class ProcessIdentityBranchTests(unittest.TestCase):
             self.assertRaises(ProcessLookupError),
         ):
             process_identity._windows_process_start_id(123)
+        close_handle.assert_called_once_with(10)
+
+    def test_windows_start_probe_returns_creation_time_for_live_process(self) -> None:
+        def live_process_times(
+            _: object,
+            creation: object,
+            exit_time: object,
+            __: object,
+            ___: object,
+        ) -> bool:
+            creation._obj.dwLowDateTime = 123  # type: ignore[attr-defined]
+            exit_time._obj.dwLowDateTime = 0  # type: ignore[attr-defined]
+            return True
+
+        close_handle = mock.Mock(return_value=True)
+        kernel32 = SimpleNamespace(
+            OpenProcess=mock.Mock(return_value=10),
+            GetProcessTimes=mock.Mock(side_effect=live_process_times),
+            CloseHandle=close_handle,
+        )
+        with mock.patch.object(
+            process_identity.ctypes,
+            "WinDLL",
+            return_value=kernel32,
+            create=True,
+        ):
+            self.assertEqual(
+                "windows-filetime:123",
+                process_identity._windows_process_start_id(123),
+            )
         close_handle.assert_called_once_with(10)
 
 

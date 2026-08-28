@@ -663,6 +663,18 @@ class ReplayFilesystemBranchClosureTests(unittest.TestCase):
         synced.assert_called_once_with(17)
         closed.assert_called_once_with(17)
 
+    def test_windows_parent_sync_uses_the_filesystem_adapter(self) -> None:
+        path = self.root / "file.bin"
+        with (
+            mock.patch.object(replay_module.os, "name", "nt"),
+            mock.patch(
+                "wish_builder.adapters.storage.filesystem."
+                "FilesystemJournalStorage._sync_windows_directory"
+            ) as sync_windows,
+        ):
+            replay_module._sync_file_parent(path)
+        sync_windows.assert_called_once_with(path.parent)
+
     def test_valid_filesystem_identity_delegates_revalidation(self) -> None:
         identity = FilesystemIdentity(
             "root",

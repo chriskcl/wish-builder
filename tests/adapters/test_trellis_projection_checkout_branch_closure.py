@@ -300,6 +300,14 @@ class TrellisAuthoritativeProjectionBranchClosureTests(unittest.TestCase):
             checkout._git(self.repository, "status")
         self.assertTrue(process.killed)
 
+        succeeded = _Popen([b"output"])
+        with mock.patch.object(
+            checkout.subprocess,
+            "Popen",
+            return_value=succeeded,
+        ):
+            self.assertEqual(b"output", checkout._git(self.repository, "status"))
+
         failed = _Popen([], return_code=1)
         with (
             mock.patch.object(checkout.subprocess, "Popen", return_value=failed),

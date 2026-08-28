@@ -283,7 +283,7 @@ class SkillRuntimePackagingTests(unittest.TestCase):
                 archive.extractall(root / "extracted")
 
             skill_root = root / "extracted" / "wish-builder"
-            scripts_root = skill_root / "scripts"
+            scripts_root = (skill_root / "scripts").resolve()
             manifest = json.loads(
                 (scripts_root / "runtime-manifest.json").read_text(encoding="utf-8")
             )

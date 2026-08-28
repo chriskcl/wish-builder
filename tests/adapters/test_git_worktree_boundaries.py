@@ -1373,6 +1373,26 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
             ):
                 self.fail("a terminal lock failure must not enter the critical section")
 
+            locking = mock.Mock()
+            fake_msvcrt = SimpleNamespace(
+                LK_NBLCK=1,
+                LK_UNLCK=2,
+                locking=locking,
+            )
+            with (
+                mock.patch.object(git_boundary.os, "name", "nt"),
+                mock.patch.dict("sys.modules", {"msvcrt": fake_msvcrt}),
+                lock.acquire(),
+            ):
+                pass
+            self.assertEqual(
+                [
+                    mock.call(mock.ANY, fake_msvcrt.LK_NBLCK, 1),
+                    mock.call(mock.ANY, fake_msvcrt.LK_UNLCK, 1),
+                ],
+                locking.call_args_list,
+            )
+
     def test_constructor_rejects_mismatched_linked_and_nondirectory_roots(self) -> None:
         def path_identity(path: Path, inode: int) -> FilesystemIdentity:
             canonical = str(path.resolve(strict=True))

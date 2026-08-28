@@ -815,6 +815,25 @@ class CodexAppServerFailClosedBranchTests(unittest.TestCase):
             notify.assert_called_once_with("initialized", None)
             self.assert_codex_error("codex_process_already_started", client.connect)
 
+        windows = self.client()
+        popen = Mock(return_value=process)
+        with (
+            patch.object(codex.os, "name", "nt"),
+            patch.object(
+                codex.subprocess,
+                "CREATE_NEW_PROCESS_GROUP",
+                512,
+                create=True,
+            ),
+            patch.object(codex.subprocess, "Popen", popen),
+            patch.object(codex.threading, "Thread", return_value=Mock()),
+            patch.object(windows, "request", return_value={}),
+            patch.object(windows, "notify"),
+        ):
+            windows.connect()
+        self.assertEqual(512, popen.call_args.kwargs["creationflags"])
+        self.assertNotIn("start_new_session", popen.call_args.kwargs)
+
         failed = self.client()
         with patch.object(codex.subprocess, "Popen", side_effect=OSError("denied")):
             self.assert_codex_error("codex_process_start_failed", failed.connect)

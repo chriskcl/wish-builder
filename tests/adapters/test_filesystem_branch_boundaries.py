@@ -359,6 +359,13 @@ class FilesystemBranchBoundaryTests(unittest.TestCase):
         fsync.assert_called_once_with(21)
         close.assert_called_once_with(21)
 
+        with (
+            mock.patch.object(filesystem.os, "name", "nt"),
+            mock.patch.object(self.storage, "_sync_windows_directory") as sync_windows,
+        ):
+            self.storage._sync_directory(self.root, "sync", None)
+        sync_windows.assert_called_once_with(self.root)
+
         invalid_handle = filesystem.ctypes.c_void_p(-1).value
         for create_result, flush_result in (
             (invalid_handle, True),
