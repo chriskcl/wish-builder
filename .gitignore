@@ -2,22 +2,30 @@
 __pycache__/
 *.py[cod]
 .coverage
+.coverage.*
+.coverage-*
+coverage.json
+coverage-*.json
+coverage-*-data
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .venv/
 build/
 dist/
+dist-rebuilt/
+work/
+*.tgz
 *.egg-info/
 
-# .NET
-**/bin/
-**/obj/
-TestResults/
-artifacts/
+# Local verification artifacts (the canonical Skill ZIP remains tracked)
+wish-builder-skill.previous.zip
+wish-builder-skill.verify.zip
+release/verification/
 
 # Editors and operating systems
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
+.gstack/

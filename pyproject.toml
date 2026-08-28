@@ -7,6 +7,9 @@ name = "wish-builder"
 version = "0.1.0.dev0"
 description = "Human-governed autonomous software delivery from a product wish"
 readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+authors = [{ name = "chriskcl" }]
 requires-python = ">=3.11"
 dependencies = []
 classifiers = [
@@ -19,11 +22,23 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 
+[project.urls]
+Homepage = "https://github.com/chriskcl/wish-builder"
+Repository = "https://github.com/chriskcl/wish-builder"
+Issues = "https://github.com/chriskcl/wish-builder/issues"
+
 [project.scripts]
 wishctl = "wish_builder.cli.wishctl:main"
 
 [tool.setuptools.packages.find]
 include = ["wish_builder*"]
+
+[tool.setuptools.package-data]
+wish_builder = [
+  "bridges/trellis_core/*.json",
+  "bridges/trellis_core/*.mjs",
+  "compatibility/*.json",
+]
 
 [tool.coverage.run]
 branch = true

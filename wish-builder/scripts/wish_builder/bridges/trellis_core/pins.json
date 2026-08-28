@@ -1,0 +1,10 @@
+{
+  "archiveSha256": "sha256:3af3e71fbaba3b4e7f081ca7df39dc9d00f9c527d855dc159263f4a34cf8587a",
+  "channelModule": "dist/channel/index.js",
+  "npmIntegrity": "sha512-UYMVMM47Zyr/ns39U/f620cs7XaFKX2yez91QMV40Eah+uxxEdGwYHgNjDPZxwMhlr/0TIsZuMM+KF6lcbxg9w==",
+  "npmShasum": "65b82a3a03af7400de943fe52564dfd8a95a4703",
+  "packageName": "@mindfoldhq/trellis-core",
+  "packageTreeSha256": "sha256:49602e2bbd8a9f172c63e0bcd341810b3a70fe592adf1860c15a213898c790af",
+  "packageVersion": "0.6.15",
+  "schemaVersion": 1
+}

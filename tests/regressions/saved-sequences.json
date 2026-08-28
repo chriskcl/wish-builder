@@ -1,0 +1,421 @@
+{
+  "decoder_cases": [
+    {
+      "depth": 5,
+      "expected_digest": "sha256:b091996e3109f136bb6364fec35ac5fda3e36e7fd7a26a965bb00dbecd7db658",
+      "id": "strict-json-shape-corpus-v1",
+      "sample_count": 256,
+      "seed": 1592598785
+    }
+  ],
+  "minimized_failures": [
+    {
+      "event_count": 1,
+      "expected_reason": "sequence_gap",
+      "id": "state-sequence-gap-v1",
+      "mutation": "sequence_gap",
+      "prefix": "frozen_graph"
+    },
+    {
+      "event_count": 1,
+      "expected_reason": "hash_chain_mismatch",
+      "id": "state-hash-chain-mismatch-v1",
+      "mutation": "previous_hash",
+      "prefix": "frozen_graph"
+    },
+    {
+      "event_count": 1,
+      "expected_reason": "stale_epoch",
+      "id": "state-stale-epoch-v1",
+      "mutation": "coordinator_epoch",
+      "prefix": "frozen_graph"
+    },
+    {
+      "event_count": 1,
+      "expected_reason": "illegal_transition",
+      "id": "state-illegal-transition-v1",
+      "mutation": "transition_pair",
+      "prefix": "frozen_graph"
+    }
+  ],
+  "reference_model": {
+    "legal_sequences": [
+      {
+        "digest": "sha256:68569b7288375c997cbdc60cb5599319a3327d8e49a12279572370fd54e0d847",
+        "event_count": 56,
+        "id": "complete-order-1",
+        "task_order": [
+          "TASK-001",
+          "TASK-002",
+          "TASK-003",
+          "TASK-004"
+        ]
+      },
+      {
+        "digest": "sha256:350661ca2fa2ea2186387e1f5a63a34e767dcc6e1d15daf8430732e1a9944e7d",
+        "event_count": 56,
+        "id": "complete-order-2",
+        "task_order": [
+          "TASK-001",
+          "TASK-003",
+          "TASK-002",
+          "TASK-004"
+        ]
+      }
+    ],
+    "minimized_witnesses": [
+      {
+        "events": [
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:0008c06ae98a3c8b472b8953d2d2b89c0e4f78f58c8ae78ed0725b38b6f381ff",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "run_initialized",
+            "from_state": "none",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "run",
+            "task_id": null,
+            "to_state": "preflight"
+          },
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:d3c2f8e41525a4f0be369dc0ab852fbf6b1eda04af4b8d8d1b13ba8119ec8369",
+            "event_id": "EVENT-REF-CONFLICT",
+            "event_type": "run_initialized",
+            "from_state": "none",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "run",
+            "task_id": null,
+            "to_state": "preflight"
+          }
+        ],
+        "expected_reason": "sequence_conflict",
+        "id": "sequence-conflict"
+      },
+      {
+        "events": [
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:0008c06ae98a3c8b472b8953d2d2b89c0e4f78f58c8ae78ed0725b38b6f381ff",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "run_initialized",
+            "from_state": "none",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "run",
+            "task_id": null,
+            "to_state": "preflight"
+          },
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:633ac31ddef76c00b1984d3ab7bfb41a6a01fa7acb672d3f4b8457e6ef60c7db",
+            "event_id": "EVENT-REF-000002",
+            "event_type": "preflight_completed",
+            "from_state": "preflight",
+            "previous_event_hash": "sha256:0008c06ae98a3c8b472b8953d2d2b89c0e4f78f58c8ae78ed0725b38b6f381ff",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 2,
+            "subject": "run",
+            "task_id": null,
+            "to_state": "discovery"
+          },
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:0008c06ae98a3c8b472b8953d2d2b89c0e4f78f58c8ae78ed0725b38b6f381ff",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "run_initialized",
+            "from_state": "none",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "run",
+            "task_id": null,
+            "to_state": "preflight"
+          }
+        ],
+        "expected_reason": "stale_sequence",
+        "id": "stale-sequence"
+      },
+      {
+        "events": [
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:5c976f82406154ffbd83ca754effa630d29fb7122a95504192dd8feab3806612",
+            "event_id": "EVENT-REF-GAP",
+            "event_type": "run_initialized",
+            "from_state": "none",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 3,
+            "subject": "run",
+            "task_id": null,
+            "to_state": "preflight"
+          }
+        ],
+        "expected_reason": "sequence_gap",
+        "id": "sequence-gap"
+      },
+      {
+        "events": [
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:0008c06ae98a3c8b472b8953d2d2b89c0e4f78f58c8ae78ed0725b38b6f381ff",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "run_initialized",
+            "from_state": "none",
+            "previous_event_hash": "sha256:cf7dba8eb10168ad46cb0d76b746dec24a89793126c50b69795f8eac4b6e824d",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "run",
+            "task_id": null,
+            "to_state": "preflight"
+          }
+        ],
+        "expected_reason": "hash_chain_mismatch",
+        "id": "hash-chain-mismatch"
+      },
+      {
+        "events": [
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:0008c06ae98a3c8b472b8953d2d2b89c0e4f78f58c8ae78ed0725b38b6f381ff",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "run_initialized",
+            "from_state": "none",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-WRONG-RUN",
+            "sequence": 1,
+            "subject": "run",
+            "task_id": null,
+            "to_state": "preflight"
+          }
+        ],
+        "expected_reason": "run_mismatch",
+        "id": "run-mismatch"
+      },
+      {
+        "events": [
+          {
+            "attempt": null,
+            "coordinator_epoch": 2,
+            "correlation_id": null,
+            "event_hash": "sha256:0008c06ae98a3c8b472b8953d2d2b89c0e4f78f58c8ae78ed0725b38b6f381ff",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "run_initialized",
+            "from_state": "none",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "run",
+            "task_id": null,
+            "to_state": "preflight"
+          }
+        ],
+        "expected_reason": "stale_epoch",
+        "id": "stale-epoch"
+      },
+      {
+        "events": [
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:0008c06ae98a3c8b472b8953d2d2b89c0e4f78f58c8ae78ed0725b38b6f381ff",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "run_initialized",
+            "from_state": "none",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "run",
+            "task_id": "TASK-001",
+            "to_state": "preflight"
+          }
+        ],
+        "expected_reason": "identity_mismatch",
+        "id": "identity-mismatch"
+      },
+      {
+        "events": [
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:c4146bf169d637eb2d0f5bca188bc5c70c7a989ec647ee60a0dfdf7f61439ea7",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "task_verified",
+            "from_state": "approved",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "task",
+            "task_id": "TASK-001",
+            "to_state": "verified"
+          }
+        ],
+        "expected_reason": "illegal_transition",
+        "id": "illegal-transition"
+      },
+      {
+        "events": [
+          {
+            "attempt": null,
+            "coordinator_epoch": 1,
+            "correlation_id": null,
+            "event_hash": "sha256:8669c6bd762c55703d6a323b2f2ac353a41724d9a2f544012d521a129096927a",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "preflight_completed",
+            "from_state": "preflight",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "run",
+            "task_id": null,
+            "to_state": "discovery"
+          }
+        ],
+        "expected_reason": "state_mismatch",
+        "id": "state-mismatch"
+      },
+      {
+        "events": [
+          {
+            "attempt": 1,
+            "coordinator_epoch": 1,
+            "correlation_id": "CORRELATION-ONE",
+            "event_hash": "sha256:e7f3c664ef387ac9edabcded3bcd919023138c091e2c6c3b078de9669e7c9e4a",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "attempt_reserved",
+            "from_state": "planned",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "attempt",
+            "task_id": "TASK-001",
+            "to_state": "reserved"
+          },
+          {
+            "attempt": 2,
+            "coordinator_epoch": 1,
+            "correlation_id": "CORRELATION-TWO",
+            "event_hash": "sha256:e7861b395b0f727fcc3d4cb4fddbf320f7add5b0df2e6aff49d840f7bea3f60e",
+            "event_id": "EVENT-REF-000002",
+            "event_type": "attempt_reserved",
+            "from_state": "planned",
+            "previous_event_hash": "sha256:e7f3c664ef387ac9edabcded3bcd919023138c091e2c6c3b078de9669e7c9e4a",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 2,
+            "subject": "attempt",
+            "task_id": "TASK-001",
+            "to_state": "reserved"
+          }
+        ],
+        "expected_reason": "active_attempt_exists",
+        "id": "active-attempt-exists"
+      },
+      {
+        "events": [
+          {
+            "attempt": 99,
+            "coordinator_epoch": 1,
+            "correlation_id": "CORRELATION-STALE",
+            "event_hash": "sha256:985d0508ab246e3299f0a42d24d1d41527e3e99ff39b64d668a5ef4032e0675c",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "dispatch_requested",
+            "from_state": "reserved",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "attempt",
+            "task_id": "TASK-001",
+            "to_state": "dispatch_requested"
+          }
+        ],
+        "expected_reason": "stale_attempt",
+        "id": "stale-attempt"
+      },
+      {
+        "events": [
+          {
+            "attempt": 1,
+            "coordinator_epoch": 1,
+            "correlation_id": "CORRELATION-ONE",
+            "event_hash": "sha256:e7f3c664ef387ac9edabcded3bcd919023138c091e2c6c3b078de9669e7c9e4a",
+            "event_id": "EVENT-REF-000001",
+            "event_type": "attempt_reserved",
+            "from_state": "planned",
+            "previous_event_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 1,
+            "subject": "attempt",
+            "task_id": "TASK-001",
+            "to_state": "reserved"
+          },
+          {
+            "attempt": 1,
+            "coordinator_epoch": 1,
+            "correlation_id": "CORRELATION-WRONG",
+            "event_hash": "sha256:41731a9a3481102941923f1fc358b35096688540b35178afb13e988ec3d9184a",
+            "event_id": "EVENT-REF-000002",
+            "event_type": "attempt_released",
+            "from_state": "reserved",
+            "previous_event_hash": "sha256:e7f3c664ef387ac9edabcded3bcd919023138c091e2c6c3b078de9669e7c9e4a",
+            "reason_code": null,
+            "run_id": "WISH-001",
+            "sequence": 2,
+            "subject": "attempt",
+            "task_id": "TASK-001",
+            "to_state": "terminated"
+          }
+        ],
+        "expected_reason": "stale_correlation",
+        "id": "stale-correlation"
+      }
+    ],
+    "seed": 1592594944
+  },
+  "schema_version": 2,
+  "state_generator": {
+    "expected_digest": "sha256:0f7d7bc179ec050f8e17754facea00e09e219828b86e1805cf50e8f16d451925",
+    "id": "wave-state-sequences-v1",
+    "sample_count": 64,
+    "seed": 1592598533
+  }
+}
