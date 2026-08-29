@@ -1253,6 +1253,11 @@ class CodexAppServerFailClosedBranchTests(unittest.TestCase):
             EffectStatus.APPLIED,
             channel._turn_observation(channel._operation("send-1")).status,
         )
+        self.assertEqual(EffectStatus.APPLIED, channel.inspect_turn("send-1").status)
+
+        channel._operation("send-1")["observation"] = pending_observation
+        self.assertEqual(TurnState.FAILED, channel.inspect_turn("send-1").state)
+
         channel._operation("send-1")["observation"] = pending_observation
         channel._operation("send-1").pop("provider_turn_id")
         self.assertEqual(TurnState.UNKNOWN, channel.inspect_turn("send-1").state)
