@@ -98,11 +98,11 @@
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/codex_app_server.py",
-      "runtime_sha256": "a7e2850d2e88d2e89d0b0abb0d71e47c9aa0fc881513fd13252f6fa2d0ecf9e6",
-      "runtime_size": 64872,
+      "runtime_sha256": "af2dc04e42045d53183c4cdbaf5a4e01aa939df58ea870db4e9c44caef8f7ba4",
+      "runtime_size": 66445,
       "source": "wish_builder/adapters/providers/codex_app_server.py",
-      "source_sha256": "a7e2850d2e88d2e89d0b0abb0d71e47c9aa0fc881513fd13252f6fa2d0ecf9e6",
-      "source_size": 64872
+      "source_sha256": "af2dc04e42045d53183c4cdbaf5a4e01aa939df58ea870db4e9c44caef8f7ba4",
+      "source_size": 66445
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/jsonl_rpc.py",

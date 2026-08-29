@@ -129,6 +129,8 @@ from wish_builder.services.ports import (  # noqa: E402
 
 HARNESS_VERSION = "1.0.0"
 CRASH_CHILD_EXIT = 86
+_WORKTREE_CLEANUP_RETRY_SECONDS = 5.0
+_WORKTREE_CLEANUP_RETRY_INTERVAL_SECONDS = 0.05
 _REVISION_LENGTHS = {40, 64}
 _SDK_PINS: dict[Provider, tuple[str, str, str, str]] = {
     Provider.CODEX: (
@@ -709,16 +711,30 @@ class WorktreeManager:
             return
         subprocess.run(("git", "-C", str(self.workspace), "worktree", "remove", "--force", str(path)), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=60)
         if path.exists():
-            shutil.rmtree(path, ignore_errors=False)
+            _remove_tree(path)
         self.paths.discard(path)
 
     def close(self) -> None:
         for path in tuple(self.paths):
-            try:
-                self.remove(path)
-            except (OSError, subprocess.SubprocessError):
-                pass
-        shutil.rmtree(self.root, ignore_errors=True)
+            self.remove(path)
+        _remove_tree(self.root)
+
+
+def _remove_tree(path: Path) -> None:
+    deadline = time.monotonic() + _WORKTREE_CLEANUP_RETRY_SECONDS
+    while True:
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError as exc:
+            if os.name != "nt" or getattr(exc, "winerror", None) != 32:
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(_WORKTREE_CLEANUP_RETRY_INTERVAL_SECONDS, remaining))
 
 
 def _attempt(
@@ -1400,6 +1416,16 @@ def _run_crash_child(path: Path) -> int:
         )
         reserved = _require_applied(channel.reserve(_prepared_effect(identity, reserve, EffectOperation.RESERVE_CHANNEL, 5001)), code="crash_reserve_not_applied")
         sent = _require_applied(channel.send(_prepared_effect(identity, send, EffectOperation.SEND_TASK_PACKET, 5002)), code="crash_send_not_applied")
+        sent = _require_applied(
+            _wait_terminal(
+                channel,
+                send.operation_id,
+                config["timeoutMilliseconds"] / 1_000,
+            ),
+            code="crash_turn_not_applied",
+        )
+        if sent.state is not TurnState.DONE or sent.result_digest is None:
+            raise LiveQualificationError("crash_turn_not_done")
         if sent.message_id is None or sent.turn_id is None:
             raise LiveQualificationError("crash_child_send_identity_missing")
         result = {
@@ -2114,7 +2140,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _validate_run_id(value: str) -> str:
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}", value):
+    try:
+        ExecutionIdentity(value, 0)
+    except (TypeError, ValueError):
         raise LiveQualificationError("invalid_run_id")
     return value
 
@@ -2247,7 +2275,7 @@ def _run_public(args: argparse.Namespace) -> bytes:
         candidate = verify_backend_qualification_candidate(evidence)
         os.replace(evidence, output)
     finally:
-        shutil.rmtree(temporary, ignore_errors=True)
+        _remove_tree(temporary)
     return candidate.report_bytes
 
 

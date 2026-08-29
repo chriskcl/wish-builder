@@ -8,7 +8,9 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from scripts import ci_live_backend_qualification as live_harness
 from wish_builder.compatibility import load_bundled_compatibility
 from wish_builder.contracts.compatibility import Platform, Provider
 from wish_builder.contracts.qualification_evidence import (
@@ -125,10 +127,7 @@ for raw in sys.stdin.buffer:
         streaming.set()
         emit({"id": request_id, "type": "response", "command": kind, "success": True})
         emit({"type": "agent_start"})
-        if "crash-reconcile" in dispatch_id.lower():
-            finish(dispatch_id)
-        else:
-            threading.Thread(target=finish, args=(dispatch_id,), daemon=True).start()
+        threading.Thread(target=finish, args=(dispatch_id,), daemon=True).start()
     elif kind == "abort":
         abort.set()
         emit({"id": request_id, "type": "response", "command": kind, "success": True})
@@ -314,6 +313,52 @@ class LiveBackendQualificationTests(unittest.TestCase):
         self.assertNotEqual(0, completed.returncode)
         self.assertFalse(output.exists())
         self.assertIn(b"unrecognized arguments", completed.stderr)
+
+    def test_run_id_uses_the_runtime_stable_id_contract(self) -> None:
+        self.assertEqual(
+            "QUAL-CODEX-001",
+            live_harness._validate_run_id("QUAL-CODEX-001"),
+        )
+        for value in ("qual-codex-001", "QUAL.CODEX.001", "A" * 65):
+            with self.subTest(value=value), self.assertRaises(
+                live_harness.LiveQualificationError
+            ) as raised:
+                live_harness._validate_run_id(value)
+            self.assertEqual("invalid_run_id", raised.exception.code)
+
+    def test_windows_worktree_cleanup_retries_transient_sharing_locks(self) -> None:
+        locked = PermissionError(13, "locked", str(self.root))
+        locked.winerror = 32
+        with (
+            mock.patch.object(live_harness.os, "name", "nt"),
+            mock.patch.object(
+                live_harness.shutil, "rmtree", side_effect=(locked, None)
+            ) as remove,
+            mock.patch.object(
+                live_harness.time, "monotonic", side_effect=(0.0, 0.1)
+            ),
+            mock.patch.object(live_harness.time, "sleep") as sleep,
+        ):
+            live_harness._remove_tree(self.root)
+        self.assertEqual(2, remove.call_count)
+        sleep.assert_called_once()
+
+    def test_windows_worktree_cleanup_fails_after_the_retry_deadline(self) -> None:
+        locked = PermissionError(13, "locked", str(self.root))
+        locked.winerror = 32
+        with (
+            mock.patch.object(live_harness.os, "name", "nt"),
+            mock.patch.object(
+                live_harness.shutil, "rmtree", side_effect=locked
+            ) as remove,
+            mock.patch.object(
+                live_harness.time, "monotonic", side_effect=(0.0, 4.9, 5.0)
+            ),
+            mock.patch.object(live_harness.time, "sleep"),
+            self.assertRaises(PermissionError),
+        ):
+            live_harness._remove_tree(self.root)
+        self.assertEqual(2, remove.call_count)
 
 
 if __name__ == "__main__":

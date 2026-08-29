@@ -361,6 +361,22 @@ class CodexAppServerClient:
                     raise CodexAppServerError("codex_turn_terminal_timeout")
                 self._condition.wait(remaining)
 
+    def wait_for_turn_active(
+        self, thread_id: str, turn_id: str, *, timeout_seconds: float | None = None
+    ) -> dict[str, object]:
+        timeout = self._response_timeout if timeout_seconds is None else float(timeout_seconds)
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while True:
+                for frame in self._notifications:
+                    if _active_frame_matches(frame, thread_id, turn_id):
+                        return dict(frame)
+                self._raise_if_unavailable()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CodexAppServerError("codex_turn_activation_timeout")
+                self._condition.wait(remaining)
+
     def completed_notification(
         self, thread_id: str, turn_id: str
     ) -> dict[str, object] | None:
@@ -610,6 +626,10 @@ class CodexClientPort(Protocol):
         self, thread_id: str, turn_id: str, *, timeout_seconds: float | None = None
     ) -> dict[str, object]: ...
 
+    def wait_for_turn_active(
+        self, thread_id: str, turn_id: str, *, timeout_seconds: float | None = None
+    ) -> dict[str, object]: ...
+
     def completed_notification(
         self, thread_id: str, turn_id: str
     ) -> dict[str, object] | None: ...
@@ -834,12 +854,6 @@ class CodexAppServerChannel:
                         operation = self._operation(command.operation_id)
                         operation["provider_turn_id"] = provider_turn_id
                         operation["provider_event_position"] = client.event_position
-                        operation["observation"] = self._applied_turn(
-                            command.operation_id,
-                            TurnState.RUNNING,
-                            typed.command_hash,
-                            evidence=("codex_turn_accepted",),
-                        ).to_primitive()
                         self._save_state()
 
                 provider_turn_id = client.begin_turn(
@@ -849,6 +863,16 @@ class CodexAppServerChannel:
                     output_schema=self._config.output_schema or CODEX_COMPLETION_SCHEMA,
                     on_accepted=record_turn,
                 )
+                client.wait_for_turn_active(thread_id, provider_turn_id)
+                operation = self._operation(command.operation_id)
+                operation["provider_event_position"] = client.event_position
+                operation["observation"] = self._applied_turn(
+                    command.operation_id,
+                    TurnState.RUNNING,
+                    typed.command_hash,
+                    evidence=("codex_turn_active",),
+                ).to_primitive()
+                self._save_state()
                 self._apply_live_terminal_locked(command.operation_id, provider_turn_id)
             except (CodexAppServerError, OSError, ValueError) as exc:
                 operation = self._operation(command.operation_id)
@@ -1404,6 +1428,19 @@ def _completed_frame_matches(
         and _is_object(turn)
         and turn.get("id") == turn_id
     )
+
+
+def _active_frame_matches(
+    frame: dict[str, object], thread_id: str, turn_id: str
+) -> bool:
+    method = frame.get("method")
+    params = frame.get("params")
+    if not _is_object(params) or params.get("threadId") != thread_id:
+        return False
+    if method == "turn/started":
+        turn = params.get("turn")
+        return _is_object(turn) and turn.get("id") == turn_id
+    return method == "item/started" and params.get("turnId") == turn_id
 
 
 def _turn_items(turn: dict[str, object]) -> list[dict[str, object]]:

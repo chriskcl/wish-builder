@@ -81,6 +81,9 @@ class RecoveryClient:
     def wait_for_turn_completed(self, thread_id: str, turn_id: str, **_kwargs):
         raise AssertionError("recovery must not wait for live notifications")
 
+    def wait_for_turn_active(self, thread_id: str, turn_id: str, **_kwargs):
+        raise AssertionError("recovery must not wait for live notifications")
+
     def completed_notification(self, thread_id: str, turn_id: str):
         return None
 
@@ -526,6 +529,60 @@ class CodexAppServerFailClosedBranchTests(unittest.TestCase):
         self.assert_codex_error(
             "codex_response_invalid", lambda: client.request("initialize", {})
         )
+
+    def test_turn_activation_requires_an_exact_started_notification(self) -> None:
+        client = self.client()
+        turn_started = {
+            "method": "turn/started",
+            "params": {
+                "threadId": "thread-1",
+                "turn": {"id": "turn-1"},
+            },
+        }
+        item_started = {
+            "method": "item/started",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "item": {"id": "item-1"},
+            },
+        }
+        client._notifications.extend(
+            (
+                {
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": "other-thread",
+                        "turn": {"id": "turn-1"},
+                    },
+                },
+                turn_started,
+                item_started,
+            )
+        )
+        self.assertEqual(
+            turn_started,
+            client.wait_for_turn_active("thread-1", "turn-1"),
+        )
+
+        item_client = self.client()
+        item_client._notifications.append(item_started)
+        self.assertEqual(
+            item_started,
+            item_client.wait_for_turn_active("thread-1", "turn-1"),
+        )
+
+        timeout = self.client()
+        process = Mock()
+        process.poll.return_value = None
+        timeout._process = process
+        with patch.object(codex.time, "monotonic", side_effect=(0.0, 1.0)):
+            self.assert_codex_error(
+                "codex_turn_activation_timeout",
+                lambda: timeout.wait_for_turn_active(
+                    "thread-1", "turn-1", timeout_seconds=0.5
+                ),
+            )
 
     def test_state_loading_and_observation_helpers_reject_ambiguity(self) -> None:
         unsafe = self.root / "unsafe"

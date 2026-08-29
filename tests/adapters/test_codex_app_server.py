@@ -52,6 +52,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -60,11 +61,14 @@ state_path = Path(os.environ["CODEX_FAKE_STATE"])
 log_path = Path(os.environ["CODEX_FAKE_LOG"])
 thread_id = os.environ.get("CODEX_FAKE_THREAD", "codex-thread-001")
 child_path = os.environ.get("CODEX_FAKE_CHILD")
+write_lock = threading.Lock()
+active_turns = set()
 
 def emit(value, *, crlf=False):
     ending = "\r\n" if crlf else "\n"
-    sys.stdout.buffer.write((json.dumps(value, separators=(",", ":")) + ending).encode())
-    sys.stdout.buffer.flush()
+    with write_lock:
+        sys.stdout.buffer.write((json.dumps(value, separators=(",", ":")) + ending).encode())
+        sys.stdout.buffer.flush()
 
 def load_state():
     if state_path.exists():
@@ -103,6 +107,14 @@ def complete_turn(turn, status="completed", valid=True):
     state = load_state()
     state["turns"] = [turn if item["id"] == turn["id"] else item for item in state["turns"]]
     save_state(state)
+
+def activate_turn(turn_id):
+    time.sleep(0.2)
+    active_turns.add(turn_id)
+    emit({"method": "item/started", "params": {
+        "threadId": thread_id, "turnId": turn_id,
+        "item": {"id": "cmd-1", "type": "commandExecution", "status": "inProgress"},
+    }})
 
 if child_path:
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
@@ -154,17 +166,22 @@ for raw in sys.stdin.buffer:
             deadline = time.monotonic() + 10
             while len(list(barrier.iterdir())) < 2 and time.monotonic() < deadline:
                 time.sleep(0.01)
-        emit({"method": "item/started", "params": {
-            "threadId": thread_id, "turnId": turn_id,
-            "item": {"id": "cmd-1", "type": "commandExecution", "status": "inProgress"},
-        }})
-        emit({"id": request_id, "result": {"turn": turn}})
+        if scenario == "activation_race":
+            emit({"id": request_id, "result": {"turn": turn}})
+            threading.Thread(target=activate_turn, args=(turn_id,), daemon=True).start()
+        else:
+            active_turns.add(turn_id)
+            emit({"method": "item/started", "params": {
+                "threadId": thread_id, "turnId": turn_id,
+                "item": {"id": "cmd-1", "type": "commandExecution", "status": "inProgress"},
+            }})
+            emit({"id": request_id, "result": {"turn": turn}})
         if scenario in {"crash_done", "crash_in_progress"}:
             if scenario == "crash_done":
                 complete_turn(turn)
             sys.stdout.buffer.flush()
             os._exit(19)
-        if scenario not in {"cancel", "cancel_ack_only"}:
+        if scenario not in {"cancel", "cancel_ack_only", "activation_race"}:
             valid = scenario != "bad_result"
             complete_turn(turn, valid=valid)
             agent = turn["items"][-1]
@@ -173,6 +190,9 @@ for raw in sys.stdin.buffer:
             }})
             emit({"method": "turn/completed", "params": {"threadId": thread_id, "turn": turn}})
     elif method == "turn/interrupt":
+        if scenario == "activation_race" and params["turnId"] not in active_turns:
+            emit({"id": request_id, "error": {"code": -32000, "message": "no active turn to interrupt"}})
+            continue
         state = load_state()
         turn = next(item for item in state["turns"] if item["id"] == params["turnId"])
         emit({"id": request_id, "result": {}})
@@ -441,6 +461,24 @@ class CodexAppServerChannelTests(unittest.TestCase):
                 self.assertEqual(TurnState.CANCELLED, cancelled.state)
                 methods = [frame["method"] for frame in fixture.wire()]
                 self.assertIn("turn/interrupt", methods)
+            finally:
+                channel.close()
+
+    def test_cancel_waits_until_the_provider_marks_the_turn_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = CodexFixture(Path(directory), scenario="activation_race")
+            channel, _, sent = self.reserve_and_send(fixture)
+            try:
+                self.assertEqual(TurnState.RUNNING, sent.state)
+                self.assertIn("codex_turn_active", sent.evidence)
+                _, _, cancel = self.commands()
+                cancelled = channel.cancel(
+                    prepared_effect(self.identity, cancel, EffectOperation.CANCEL_TURN, 3)
+                )
+                self.assertEqual(EffectStatus.APPLIED, cancelled.status)
+                self.assertEqual(TurnState.CANCELLED, cancelled.state)
+                methods = [frame["method"] for frame in fixture.wire()]
+                self.assertEqual(1, methods.count("turn/interrupt"))
             finally:
                 channel.close()
 
