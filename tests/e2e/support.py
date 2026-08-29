@@ -584,6 +584,8 @@ class E2EHarness:
         marker: Path,
         *,
         delay: float = 0.0,
+        barrier: Path | None = None,
+        barrier_count: int = 0,
     ) -> ProcessOutcome:
         repository_root = Path(__file__).resolve().parents[2]
         environment = [EnvironmentVariable("PYTHONPATH", str(repository_root))]
@@ -592,17 +594,24 @@ class E2EHarness:
                 EnvironmentVariable("SYSTEMROOT", os.environ["SYSTEMROOT"])
             )
         names = tuple(item.name for item in environment)
+        arguments = [
+            "-m",
+            "tests.e2e.worker_fixture",
+            relative_path,
+            content,
+            str(marker),
+            "--delay",
+            str(delay),
+        ]
+        if barrier is not None:
+            if barrier_count < 2:
+                raise AssertionError("worker barrier requires at least two participants")
+            arguments.extend(
+                ("--barrier", str(barrier), "--barrier-count", str(barrier_count))
+            )
         request = ProcessRequest.create(
             executable=sys.executable,
-            arguments=(
-                "-m",
-                "tests.e2e.worker_fixture",
-                relative_path,
-                content,
-                str(marker),
-                "--delay",
-                str(delay),
-            ),
+            arguments=tuple(arguments),
             cwd=attempt.path,
             environment=tuple(environment),
             timeout_seconds=10,

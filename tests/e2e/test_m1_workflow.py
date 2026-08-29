@@ -197,6 +197,7 @@ class ActiveM1WorkflowE2ETests(unittest.TestCase):
         completion_order = []
         outcomes = {}
         delays = {"TASK-003": 0.30, "TASK-004": 0.05}
+        barrier = self.root / "markers" / "parallel-barrier"
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = {}
             for task_id, prepared in preparations.items():
@@ -209,6 +210,8 @@ class ActiveM1WorkflowE2ETests(unittest.TestCase):
                     f"implemented {task_id}",
                     marker,
                     delay=delays[task_id],
+                    barrier=barrier,
+                    barrier_count=2,
                 )
                 futures[future] = task_id
             for future in as_completed(futures):
