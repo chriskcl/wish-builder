@@ -193,7 +193,15 @@ class ProcessRunnerTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
 
     def tearDown(self) -> None:
-        self.temporary.cleanup()
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                self.temporary.cleanup()
+                return
+            except PermissionError:
+                if os.name != "nt" or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
 
     def request(
         self,
