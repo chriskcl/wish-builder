@@ -65,11 +65,12 @@ class ExternalEvidenceBranchClosureTests(unittest.TestCase):
         closed.assert_called_once_with(23)
 
     def test_directory_sync_is_a_noop_on_windows(self) -> None:
+        target = Path("control")
         with (
             mock.patch.object(evidence.os, "name", "nt"),
             mock.patch.object(evidence.os, "open") as opened,
         ):
-            evidence._sync_directory(Path("control"))
+            evidence._sync_directory(target)
         opened.assert_not_called()
 
     def test_store_rejects_a_filesystem_root(self) -> None:
