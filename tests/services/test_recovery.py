@@ -8,6 +8,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from tests.kernel.test_validation import valid_manifest
+from wish_builder.adapters import (
+    LeaseOwnerProcessProbeResult,
+    LeaseOwnerProcessState,
+)
 from wish_builder.adapters.storage import FilesystemJournalStorage
 from wish_builder.contracts import (
     AdapterKind,
@@ -128,6 +132,15 @@ def recovery(root: str | Path):
     )
 
 
+def dead_prior_owner_process(
+    lease_owner: LeaseOwner,
+    *,
+    local_host_id: str,
+) -> LeaseOwnerProcessProbeResult:
+    del lease_owner, local_host_id
+    return LeaseOwnerProcessProbeResult(LeaseOwnerProcessState.DEAD)
+
+
 def service(
     root: str | Path,
     lease_owner: LeaseOwner,
@@ -152,6 +165,7 @@ def service(
         lease_ttl_seconds=90,
         lease_clock_skew_seconds=2,
         max_conflict_retries=max_conflict_retries,
+        prior_owner_process_probe=dead_prior_owner_process,
     )
 
 
