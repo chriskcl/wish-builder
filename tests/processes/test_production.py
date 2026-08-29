@@ -10,7 +10,9 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -107,6 +109,18 @@ def initialize_repository(path: Path) -> None:
     source.write_text("base\n", encoding="utf-8")
     git(path, "add", ".")
     git(path, "commit", "-m", "baseline")
+
+
+class IncrementingAuthorityClock:
+    def __init__(self) -> None:
+        self._value = BASE_TIME
+        self._lock = threading.Lock()
+
+    def __call__(self):
+        with self._lock:
+            value = self._value
+            self._value += timedelta(microseconds=1)
+            return value
 
 
 class ProductionRuntimeContractTests(unittest.TestCase):
@@ -767,6 +781,7 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
             launch_profile_digest=self.cell.launch_profile_digest,
             policy_digest=self.cell.capabilities.policy_digest,
         )
+        self.authority_clock = IncrementingAuthorityClock()
 
     def components(self) -> ProductionForegroundRunComponents:
         command = (
@@ -792,6 +807,7 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
                 self.manifest,
                 runtime_root=self.runtime_root,
                 workspace_root=self.repository,
+                authority_clock=self.authority_clock,
             )
         self.addCleanup(built.close)
         return built
@@ -832,7 +848,23 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
                     runtime_root=None,
                     workspace_root=self.repository,
                 )
+            with self.assertRaisesRegex(TypeError, "authority_clock"):
+                ProductionForegroundRunComponents.from_runtime_inputs(
+                    self.manifest,
+                    runtime_root=self.runtime_root,
+                    workspace_root=self.repository,
+                    authority_clock=object(),
+                )
         self.assertFalse(self.runtime_root.exists())
+
+    def test_factory_shares_the_injected_authority_clock(self) -> None:
+        built = self.components()
+
+        self.assertIs(self.authority_clock, built._authority_clock)
+        self.assertIs(
+            self.authority_clock,
+            built._journal._storage._authority_clock,
+        )
 
     def test_factory_closes_protected_control_handle_when_late_composition_fails(
         self,

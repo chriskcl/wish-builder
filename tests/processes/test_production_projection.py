@@ -9,6 +9,7 @@ from unittest import mock
 from tests.processes import test_production_lifecycle as lifecycle_tests
 from tests.processes.test_coordinator import one_task_manifest
 from tests.processes.test_production import (
+    IncrementingAuthorityClock,
     git,
     initialize_repository,
     one_task_graph_snapshot,
@@ -136,6 +137,7 @@ class ProductionTrellisProjectionTests(unittest.TestCase):
             launch_profile_digest=self.cell.launch_profile_digest,
             policy_digest=self.cell.capabilities.policy_digest,
         )
+        self.authority_clock = IncrementingAuthorityClock()
 
     def _new_runtime(self):
         self.component_index += 1
@@ -207,6 +209,7 @@ class ProductionTrellisProjectionTests(unittest.TestCase):
                 self.manifest,
                 runtime_root=runtime_root,
                 workspace_root=repository,
+                authority_clock=self.authority_clock,
             )
         built._lifecycle_factory = factory.lifecycle_for
         self.addCleanup(built.close)

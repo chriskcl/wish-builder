@@ -979,11 +979,14 @@ class ProductionForegroundRunComponents:
         runtime_root: str | os.PathLike[str] | None,
         workspace_root: str | os.PathLike[str],
         provider_sdk_root: str | os.PathLike[str] | None = None,
+        authority_clock: Callable[[], datetime] = _utc_datetime,
     ) -> "ProductionForegroundRunComponents":
         """Build the effectful component set after backend admission."""
 
         if type(manifest) is not ExecutionManifestV2:
             raise TypeError("manifest must be an ExecutionManifestV2")
+        if not callable(authority_clock):
+            raise TypeError("authority_clock must be callable")
         if runtime_root is None:
             raise ValueError("runtime_root is required after backend admission")
         layout = ProductionRuntimeLayout.for_run(
@@ -1024,7 +1027,7 @@ class ProductionForegroundRunComponents:
                 layout.journal_root,
                 manifest.run_id,
                 control_root=protected,
-                authority_clock=_utc_datetime,
+                authority_clock=authority_clock,
             )
             journal = DurableJournal(manifest.run_id, storage)
             checkpoint_store = CheckpointStore(
@@ -1139,6 +1142,7 @@ class ProductionForegroundRunComponents:
                 projection_service=projection_service,
                 coordinator_id=coordinator_id,
                 owner=owner,
+                authority_clock=authority_clock,
             )
         except Exception:
             if protected is not None:
