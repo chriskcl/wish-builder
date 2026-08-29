@@ -140,6 +140,24 @@ _REQUIRED_PLATFORM_SKIPS = {
 _TRELLIS_RUNTIME_SKIPS = frozenset(
     {
         (
+            "tests.adapters.test_trellis_graph_snapshot."
+            "TrellisGraphSnapshotAdapterIntegrationTests."
+            "test_incomplete_parent_membership_fails_closed",
+            "official Trellis 0.6.15 fixture is unavailable",
+        ),
+        (
+            "tests.adapters.test_trellis_graph_snapshot."
+            "TrellisGraphSnapshotAdapterIntegrationTests."
+            "test_official_records_flow_through_port_and_manifest_import",
+            "official Trellis 0.6.15 fixture is unavailable",
+        ),
+        (
+            "tests.adapters.test_trellis_projection."
+            "OfficialTrellisLifecycleIntegrationTests."
+            "test_official_records_run_through_graph_e2e_recovery_and_projection",
+            "official Trellis 0.6.15 fixture is unavailable",
+        ),
+        (
             "tests.adapters.test_trellis_projection."
             "TrellisProjectionAdapterIntegrationTests."
             "test_existing_projection_writer_lock_fails_closed_without_writing",

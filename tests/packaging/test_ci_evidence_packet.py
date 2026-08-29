@@ -750,6 +750,48 @@ class EvidencePacketTests(unittest.TestCase):
             cell["skipped_tests"],
         )
 
+    def test_missing_official_trellis_fixture_is_an_allowed_skip(self) -> None:
+        summary_path = self.root / "python-ubuntu-latest-3.13" / "ci-summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        skipped_tests = [
+            {
+                "reason": "official Trellis 0.6.15 fixture is unavailable",
+                "test_id": (
+                    "tests.adapters.test_trellis_graph_snapshot."
+                    "TrellisGraphSnapshotAdapterIntegrationTests."
+                    "test_incomplete_parent_membership_fails_closed"
+                ),
+            },
+            {
+                "reason": "official Trellis 0.6.15 fixture is unavailable",
+                "test_id": (
+                    "tests.adapters.test_trellis_graph_snapshot."
+                    "TrellisGraphSnapshotAdapterIntegrationTests."
+                    "test_official_records_flow_through_port_and_manifest_import"
+                ),
+            },
+            {
+                "reason": "official Trellis 0.6.15 fixture is unavailable",
+                "test_id": (
+                    "tests.adapters.test_trellis_projection."
+                    "OfficialTrellisLifecycleIntegrationTests."
+                    "test_official_records_run_through_graph_e2e_recovery_and_projection"
+                ),
+            },
+        ]
+        summary["skipped"] += len(skipped_tests)
+        summary["skipped_tests"].extend(skipped_tests)
+        self._write_json(summary_path, summary)
+
+        packet = self.build()
+        cell = next(
+            item
+            for item in packet["python_matrix"]
+            if item["cell_id"] == "ubuntu-latest-py3.13"
+        )
+        for skipped_test in skipped_tests:
+            self.assertIn(skipped_test, cell["skipped_tests"])
+
     def test_duplicate_json_key_is_rejected(self) -> None:
         coverage = self.root / "coverage" / "coverage-gate.json"
         coverage.write_bytes(b'{"schema_version":1,"schema_version":1}\n')
