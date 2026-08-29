@@ -1288,6 +1288,24 @@ class SafetyEvidenceTests(unittest.TestCase):
         self.assertEqual(frozenset({7, 9}), universe[6])
         self.assertEqual(frozenset({-1, 11}), universe[10])
 
+    def test_except_handler_projection_spans_the_full_handler_body(self) -> None:
+        source = (
+            "def run():\n"
+            "    try:\n"
+            "        work()\n"
+            "    except OSError:\n"
+            "        recover()\n"
+            "        cleanup()\n"
+        )
+
+        handler = next(
+            projection
+            for projection in _branch_projections(source)
+            if projection.kind == "ExceptHandler"
+        )
+
+        self.assertEqual((4, 6), (handler.first_line, handler.last_line))
+
     def test_snapshot_hunks_cannot_hide_the_actual_source_diff(self) -> None:
         old_source = (
             "def promote(allowed, ready):\n"
