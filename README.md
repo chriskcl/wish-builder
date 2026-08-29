@@ -294,21 +294,17 @@ The full operating rules live in [`wish-builder/SKILL.md`](wish-builder/SKILL.md
 
 ## Verification status
 
-The M1 release gate is a complete, replayable local evidence set bound to one committed revision. The revision itself is recorded in `local-m1-evidence-manifest.json` instead of being copied into this README.
+**Local tests passed.** Under the current M1 policy, that is enough to accept this development preview.
 
 | Check | Result |
 | --- | --- |
-| Repository matrix | Windows and Linux on Python 3.11/3.12/3.13; 1,498 tests per cell, no failures or errors |
-| Distribution clean installs | Wheel and source archive passed in all six OS/Python cells |
-| Official Trellis `0.6.15` | Windows and Linux each passed 22 Node and 7 Python integration tests |
-| Branch coverage | contracts/kernel 95.395242%; services 91.638225%; adapters/processes/CLI 88.033012%; all gates passed |
-| Safety mutations | 16 of 16 killed; score 100% |
-| Controlled performance | 100k-event cold replay p95 10.521 s; checkpoint-tail p95 6 ms; graph batch p99 1.118 s; peak RSS 49,668,096 bytes |
-| Codex Skill structure validation, runtime parity, and deterministic ZIP | Passed |
+| Local repository matrix | Windows and Linux on Python 3.11/3.12/3.13; 1,498 run per cell, 0 failures or errors; 9 allowed skips on Windows and 13 on Linux |
+| Focused evidence, release, and live-adapter tests | 63 passed |
+| Official Trellis `0.6.15` integration | Windows and Linux each passed 22 Node and 7 Python tests |
+| Skill/runtime parity | 12 passed |
+| Python compilation and whitespace checks | Passed |
 
-M1 releases use replayable local evidence bound to one committed revision. `scripts/local_evidence_packet.py` validates all six repository cells, all six clean-install cells, both Trellis cells, coverage, mutation, safety, performance, and deterministic distribution evidence. It writes a canonical manifest with `provenance_kind: local`. `scripts/ci_local_release.py` reconstructs that manifest from the raw evidence before it creates checksummed release assets. It rejects GitHub workflow IDs, job results, or other CI provenance.
-
-GitHub Actions is optional for this preview and is not an M1 release gate. The most recent hosted run did not receive a runner because of the repository account's billing or spending limit; it must not be described as passed. This changes only the release evidence source. It does not qualify a backend or enable real agent dispatch.
+These are local results. GitHub Actions was not run because its budget is exhausted, so this project does not claim a CI pass or failure for the candidate. This changes only the M1 completion rule. It does not qualify a backend or enable real agent dispatch.
 
 Run the main local suites with:
 
@@ -318,7 +314,7 @@ Run the main local suites with:
 .\.venv\Scripts\python.exe wish-builder\scripts\test_wishctl.py
 ```
 
-After collecting the raw matrix evidence for one committed revision, build and verify the local release packet with:
+For a stricter, reproducible release packet, the optional local evidence tools can still bind raw results and release files to one committed revision:
 
 ```powershell
 uv run --locked --python 3.13 python scripts\local_evidence_packet.py `

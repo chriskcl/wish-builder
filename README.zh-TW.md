@@ -294,21 +294,17 @@ python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/impo
 
 ## 驗證狀態
 
-M1 的發行門檻是一套完整、可以重跑，而且綁定單一 commit 的本機證據。實際 revision 記在 `local-m1-evidence-manifest.json`，不另外抄進 README，避免文件與證據不一致。
+**本地測試通過。** 依目前的 M1 規則，這已足以接受這個開發預覽版。
 
 | 檢查 | 結果 |
 | --- | --- |
-| Repository 矩陣 | Windows／Linux × Python 3.11／3.12／3.13；每格 1,498 項，沒有 failure 或 error |
-| 發行檔 clean install | Wheel 與 source archive 在六個 OS／Python cell 全部通過 |
-| 官方 Trellis `0.6.15` | Windows 與 Linux 各通過 22 項 Node 和 7 項 Python 整合測試 |
-| Branch coverage | contracts/kernel 95.395242%；services 91.638225%；adapters/processes/CLI 88.033012%；全部通過門檻 |
-| Safety mutation | 16 項全部攔下；分數 100% |
-| Controlled performance | 10 萬事件冷重播 p95 10.521 秒；checkpoint tail p95 6 ms；graph batch p99 1.118 秒；記憶體峰值 49,668,096 bytes |
-| Codex Skill 結構驗證、runtime parity 與確定性 ZIP | 通過 |
+| 本地 repository 矩陣 | Windows／Linux × Python 3.11／3.12／3.13；每格執行 1,498 項，0 failure、0 error；Windows 允許略過 9 項，Linux 允許略過 13 項 |
+| Evidence、release 和 live adapter 集中測試 | 63 項通過 |
+| 官方 Trellis `0.6.15` 整合 | Windows 與 Linux 各通過 22 項 Node 和 7 項 Python 測試 |
+| Skill／runtime parity | 12 項通過 |
+| Python 編譯與空白格式檢查 | 通過 |
 
-M1 發行以綁定單一 commit、可以重跑的本機證據為準。`scripts/local_evidence_packet.py` 會驗證六個 repository cell、六個 clean-install cell、兩個 Trellis cell，以及 coverage、mutation、safety、performance 和確定性發行檔，最後寫出帶有 `provenance_kind: local` 的 canonical manifest。`scripts/ci_local_release.py` 會從原始證據重建同一份 manifest，完全相符才會建立含 checksum 的發行檔；若出現 GitHub workflow ID、job result 或其他 CI provenance，會直接拒絕。
-
-這個預覽版不再把 GitHub Actions 當成 M1 發行門檻。最近一次 hosted run 因 repository 帳戶的付款或 spending limit 問題，在取得 runner 之前就停止；不能把它描述成通過。這項調整只改變發行證據來源，不會替任何 backend 完成資格驗證，也不會開放真實 Agent 派工。
+以上都是本地結果。GitHub Actions 因預算用完而沒有執行，因此本項目不會把候選版本描述成 CI 通過或失敗。這次只調整 M1 的完成規則，不會替任何 backend 完成資格驗證，也不會開放真實 Agent 派工。
 
 本機主要測試指令：
 
@@ -318,7 +314,7 @@ M1 發行以綁定單一 commit、可以重跑的本機證據為準。`scripts/l
 .\.venv\Scripts\python.exe wish-builder\scripts\test_wishctl.py
 ```
 
-完成某個 commit 的本機原始矩陣證據後，可用以下指令建立並再次驗證發行資料：
+若需要更嚴格、可重建的發行資料，仍可選用以下本地工具，把原始結果和發行檔綁定到同一個 commit：
 
 ```powershell
 uv run --locked --python 3.13 python scripts\local_evidence_packet.py `

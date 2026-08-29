@@ -22,12 +22,11 @@ This file records user-visible changes to Wish Builder.
   coordinator components so stale provider state cannot create a duplicate channel or turn.
 - Fixed Windows lease-owner probing so an exited process whose kernel object is still retained
   by an open handle is reported dead instead of being mistaken for the exact live owner.
-- Added a local M1 evidence manifest that binds the complete Windows/Linux, Python 3.11/3.12/3.13
-  matrix, clean installs, official Trellis integration, coverage, mutations, safety, performance,
-  and deterministic distributions to one committed revision.
-- Made hosted CI optional for the development preview. Local release promotion reconstructs the
-  manifest from raw evidence and rejects CI-only provenance; backend dispatch qualification remains
-  separate and every backend/OS cell stays disabled.
+- Changed the M1 acceptance rule so passing local tests is sufficient for the development preview.
+  Hosted CI is not run when its budget is unavailable, and no CI result is claimed.
+- Added an optional local evidence manifest and release verifier for teams that want a stricter,
+  revision-bound release packet; backend dispatch qualification remains separate and every
+  backend/OS cell stays disabled.
 - Kept the existing CI-backed release verifier as an optional path with a hash-locked build
   toolchain, deterministic rebuild and byte comparison, plus protected-environment review.
 
