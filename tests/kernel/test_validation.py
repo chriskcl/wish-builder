@@ -174,6 +174,117 @@ class KernelValidationTests(unittest.TestCase):
         self.assertIn("manifest.dependency_cycle", rules)
         self.assertIn("manifest.requirement_reference", rules)
 
+    def test_unrelated_unknown_dependency_does_not_hide_wave_barrier(self) -> None:
+        value = valid_manifest()
+        value["tasks"][1]["depends_on"] = ["TASK-999"]
+        value["tasks"][3]["depends_on"] = []
+        report = validate_manifest_shape(value)
+        rules_by_path = {(issue.rule_id, issue.path) for issue in report.issues}
+        self.assertIn(
+            (
+                "manifest.dependency_reference",
+                ("tasks", "TASK-002", "depends_on", "TASK-999"),
+            ),
+            rules_by_path,
+        )
+        self.assertIn(
+            ("manifest.wave_barrier", ("tasks", "TASK-004", "depends_on")),
+            rules_by_path,
+        )
+        self.assertNotIn(
+            ("manifest.wave_barrier", ("tasks", "TASK-002", "depends_on")),
+            rules_by_path,
+        )
+
+    def test_changed_safety_rules_have_direct_evidence(self) -> None:
+        cases = (
+            (
+                "unknown dependency",
+                lambda value: value["tasks"][1].update(depends_on=["TASK-999"]),
+                ValidationPhase.PLANNING,
+                "manifest.dependency_reference",
+                ReasonCode.UNKNOWN_DEPENDENCY,
+            ),
+            (
+                "later-wave dependency",
+                lambda value: value["tasks"][0].update(depends_on=["TASK-002"]),
+                ValidationPhase.PLANNING,
+                "manifest.later_wave_dependency",
+                ReasonCode.LATER_WAVE_DEPENDENCY,
+            ),
+            (
+                "contract change outside wave zero",
+                lambda value: value["tasks"][1].update(may_change_contracts=True),
+                ValidationPhase.PLANNING,
+                "manifest.contract_change_wave",
+                ReasonCode.CONTRACT_CHANGE_OUTSIDE_WAVE_ZERO,
+            ),
+            (
+                "shared issue",
+                lambda value: value["tasks"][2].update(issue_id=2),
+                ValidationPhase.EXECUTION,
+                "manifest.unique_issue",
+                ReasonCode.SHARED_ISSUE_IDENTITY,
+            ),
+            (
+                "shared branch",
+                lambda value: value["tasks"][2].update(branch="feat/2-task-002"),
+                ValidationPhase.EXECUTION,
+                "manifest.unique_branch",
+                ReasonCode.SHARED_BRANCH_IDENTITY,
+            ),
+            (
+                "shared PR",
+                lambda value: (
+                    value["tasks"][1].update(status="pr_open", pr_id=22),
+                    value["tasks"][2].update(status="pr_open", pr_id=22),
+                ),
+                ValidationPhase.EXECUTION,
+                "manifest.unique_pr",
+                ReasonCode.SHARED_PR_IDENTITY,
+            ),
+            (
+                "missing issue",
+                lambda value: value["tasks"][1].update(issue_id=None),
+                ValidationPhase.EXECUTION,
+                "manifest.execution_issue",
+                ReasonCode.MISSING_EXECUTION_IDENTITY,
+            ),
+            (
+                "missing branch",
+                lambda value: value["tasks"][1].update(branch=None),
+                ValidationPhase.EXECUTION,
+                "manifest.execution_branch",
+                ReasonCode.MISSING_EXECUTION_IDENTITY,
+            ),
+            (
+                "missing Gate A",
+                lambda value: value["approved"].pop("gate_a"),
+                ValidationPhase.PLANNING,
+                "manifest.gate_a_approval",
+                ReasonCode.GATE_APPROVAL_MISSING,
+            ),
+            (
+                "missing Gate B",
+                lambda value: value["approved"].pop("gate_b"),
+                ValidationPhase.EXECUTION,
+                "manifest.gate_b_approval",
+                ReasonCode.GATE_APPROVAL_MISSING,
+            ),
+        )
+        for name, mutate, phase, expected_rule, expected_reason in cases:
+            with self.subTest(name=name):
+                value = valid_manifest()
+                mutate(value)
+                report = validate_manifest_shape(value, phase)
+                matching = [
+                    issue
+                    for issue in report.issues
+                    if issue.rule_id == expected_rule
+                    and issue.reason_code is expected_reason
+                ]
+                self.assertTrue(matching, report.render_text())
+
     def test_parallel_ownership_rule_is_typed(self) -> None:
         value = valid_manifest()
         value["tasks"][2]["owned_paths"] = ["SRC/A/components/**"]
@@ -447,7 +558,9 @@ class KernelValidationTests(unittest.TestCase):
         ) as comparisons:
             report = validate_manifest(decoded.value)
         self.assertTrue(report.ok, report.render_text())
-        self.assertEqual(390_600, comparisons.call_count)
+        # All four owned/auxiliary field combinations are checked while the
+        # compiled summaries keep the admitted envelope below the scan bound.
+        self.assertEqual(402_318, comparisons.call_count)
         self.assertLess(comparisons.call_count, 500_000)
 
     def test_wave_barriers_cannot_be_bypassed(self) -> None:

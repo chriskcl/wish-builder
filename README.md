@@ -1,336 +1,349 @@
-<a id="readme-top"></a>
+# Wish Builder
 
-<div align="center">
-  <h1>Wish Builder</h1>
-  <p>把一句產品想法，變成有規劃、有人把關、能逐步完成的軟體專案。</p>
-</div>
+English | [繁體中文](README.zh-TW.md)
 
-Wish Builder 是一個給 Codex 使用的 Skill，也就是一套讓 Codex 按固定步驟工作的規則。你先說想做什麼，它會整理需求、提出產品與技術方案，再把工作拆成可以逐一完成的小任務。你確認方向後，它才會安排開發 Agent。這些 Agent 各自負責一項小任務，包括寫程式、測試、審閱和整理文件。
+Turn a product idea into a reviewed, traceable software project that agents can carry forward.
 
-它不是「輸入一句話，直接交出一堆程式碼」的工具。產品方向和系統架構仍由人決定；重複而明確的工程工作，才交給 Agent 自動處理。
+Wish Builder is a Codex Skill for work that needs more than a one-shot code prompt. You describe the direction. [gstack](https://github.com/garrytan/gstack) helps shape the product and engineering plan. A person approves the scope and architecture. [Trellis](https://github.com/mindfold-ai/Trellis) then creates the editable tasks and dependencies. Wish Builder checks that graph, freezes the approved version, and supervises execution.
 
-## 目錄
+It does not contain a second task planner or task database. Trellis owns the working task graph. Wish Builder owns the approved execution snapshot and the rules that keep agents inside it.
 
-- [這個專案解決什麼問題](#這個專案解決什麼問題)
-- [適合誰使用](#適合誰使用)
-- [運作方式](#運作方式)
-- [安裝](#安裝)
-- [第一次使用](#第一次使用)
-- [你需要做哪些決定](#你需要做哪些決定)
-- [安全邊界](#安全邊界)
-- [專案結構](#專案結構)
-- [驗證工具](#驗證工具)
-- [測試狀態](#測試狀態)
-- [常見問題](#常見問題)
-- [開發計劃](#開發計劃)
-- [參與開發](#參與開發)
-- [授權](#授權)
+> **Status:** development preview (`0.1.0.dev1`). The local control plane, immutable execution snapshot checks, fail-closed admission, Journal and recovery boundaries, Git adapter, and Wish Builder import/projection bridge for official Trellis `0.6.15` are implemented. The assembled lifecycle, including crashes around Git changes, is tested end to end with controlled subprocess workers.
+>
+> Real dispatch remains closed because none of the six Pi, Oh My Pi, or Codex backend/OS cells has a complete live qualification record. The only persistent live evidence currently recorded is a Windows Pi startup and handshake check; it sent no model turn. The Windows Oh My Pi cell is blocked because its live probe requires a configured model and provider credential; no credential was requested or used. Codex and the remaining cells have deterministic fixtures or incomplete qualification records. Active cancellation, crash/restart reconciliation without redelivery, cleanup, parallel overlap, and platform evidence are still incomplete, so every cell remains `enabledForDispatch=false`. Official Trellis `0.6.15` also lacks cross-process compare-and-swap (CAS), so projection stays single-writer and fail-closed. Worker dispatch and Trellis projection are separate: workers write only isolated Git worktrees and the Journal, while one writer later projects results to Trellis. The GitHub repository remains private and no release has been published. The code is licensed under GPL-3.0-only.
 
-## 這個專案解決什麼問題
+## Why it exists
 
-只把一個模糊想法交給 Agent，常見結果是：需求還沒想清楚就開始寫程式、各個 Agent 同時修改同一批檔案、做到一半才發現架構不合適，最後也說不清哪項需求由哪個改動完成。
+A short product idea is a good starting point, but it is not enough to safely coordinate several coding agents. Work can start before the requirements settle, agents can edit the same files, and architecture problems can surface after implementation is already underway.
 
-Wish Builder 把過程分成兩部分：
+Wish Builder keeps the work in a predictable order:
 
-1. **先把方向定清楚。** gstack 協助整理使用者、問題、範圍、設計和工程方案。人負責確認產品與架構。
-2. **再讓 Agent 執行。** Trellis 保存任務內容與進度，總控 Agent 依照先後關係派工、檢查、合併和收尾。
+1. Clarify the product before touching product code.
+2. Let a person approve the scope and architecture.
+3. Let Trellis turn the approved documents into small tasks with explicit dependencies.
+4. Validate and freeze one exact task graph before dispatch.
+5. Run independent work in parallel, then test, review, and merge it in a stable order.
 
-這樣做的目標不是讓人完全消失，而是把人的時間留給真正重要的決定。
+The point is not to remove people from the project. It is to spend human attention on product and architecture decisions, while agents handle well-bounded engineering work.
 
-## 適合誰使用
-
-Wish Builder 適合以下情況：
-
-- 你有一個產品方向，但還沒有完整需求文件。
-- 你願意在開工前確認產品範圍和系統架構。
-- 你希望確認任務拆分後，Agent 能自行完成大部分工程工作。
-- 專案可以拆成多個彼此較少衝突的小改動。
-- 你需要保留需求、Issue、Pull Request、測試和文件之間的記錄。
-
-以下情況通常不需要它：
-
-- 只改一行文字或修一個很小的錯誤。
-- 正在處理需要立刻人工介入的正式環境事故。
-- 你不打算審閱產品方向、架構或高風險操作。
-
-## 運作方式
-
-```mermaid
-flowchart TD
-    A["你提出一個產品方向"] --> B["檢查專案與所需工具"]
-    B --> C["gstack 整理需求並審閱方案"]
-    C --> D{"Gate A：你確認產品與架構"}
-    D -->|需要修改| C
-    D -->|通過| E["拆成可獨立完成的小任務"]
-    E --> F{"Gate B：你確認任務與執行權限"}
-    F -->|需要修改| E
-    F -->|通過| G["Trellis 保存任務、檢查項目與進度"]
-    G --> H["開發 Agent 依照先後關係執行"]
-    H --> I["測試、審閱、合併與更新文件"]
-    I --> J["產生交付記錄並歸檔"]
-```
-
-流程會按以下順序進行：
-
-1. **準備檢查**：確認 Git、gstack、Trellis、測試指令和可用的 Agent 數量。
-2. **需求整理**：依序使用 `office-hours`、`plan-ceo-review`、`plan-eng-review`，有畫面時再使用 `plan-design-review`。
-3. **Gate A**：你確認要做什麼、不要做什麼，以及系統各部分如何分工。
-4. **任務拆分**：先處理共用介面和基礎資料，再平行開發互不衝突的部分，最後串起整個產品。
-5. **Gate B**：你確認完整任務表、先後關係、測試方法、合併順序和 Agent 可使用的權限。
-6. **自動執行**：總控 Agent 派出開發 Agent。每個小任務對應一個 Issue（工作單）和一個 Pull Request（程式碼變更單）。
-7. **收尾**：執行整體測試、畫面檢查、文件更新和需求追蹤，最後由 Trellis 歸檔。
-
-Wish Builder 只使用一個總控排程。它不會同時讓 Trellis `/parallel` 和另一套 Agent 排程處理同一批任務，避免重複派工和互相覆蓋。
-
-## 安裝
-
-### 使用前準備
-
-目標專案需要：
-
-- 支援 Skills 的 Codex
-- Git 專案
-- [gstack](https://github.com/garrytan/gstack)
-- [Trellis](https://github.com/mindfold-ai/Trellis)
-- Node.js 18 或以上版本
-- Python 3.11 或以上版本
-
-只有需要建立遠端 Issue 和 Pull Request 時，才需要 GitHub 或其他程式碼託管平台的存取權。
-
-如果缺少工具，Wish Builder 會先列出缺少的項目和安裝方式。它不會自行安裝全域工具、登入帳號或修改專案設定。
-
-### 方法一：從 GitHub 安裝
-
-把本專案發布到 GitHub 後，將 `<OWNER>` 和 `<REPO>` 換成實際名稱，再在 Codex 中輸入：
+## How it works
 
 ```text
-Use $skill-installer to install
-https://github.com/<OWNER>/<REPO>/tree/main/wish-builder
+┌────────────────────────────────────────┐
+│ You describe the product direction     │
+└───────────────────┬────────────────────┘
+                    │
+                    v
+┌────────────────────────────────────────┐
+│ gstack reviews run in child sessions   │
+└───────────────────┬────────────────────┘
+                    │
+                    v
+┌────────────────────────────────────────┐
+│ Wish Builder batches human decisions   │
+└───────────────────┬────────────────────┘
+                    │
+                    v
+┌────────────────────────────────────────┐
+│ Gate A: approve product + architecture │
+└───────────────┬────────────────────────┘
+         PASS   │       NEEDS CHANGES → return to gstack
+                v
+┌────────────────────────────────────────┐
+│ Trellis creates tasks + dependencies   │<────┐
+└───────────────────┬────────────────────┘     │
+                    │                          │
+                    v                          │
+┌────────────────────────────────────────┐     │
+│ Wish Builder imports + validates       │─────┘
+└───────────────────┬────────────────────┘  INVALID → return to Trellis
+                    │
+                    v
+┌────────────────────────────────────────┐
+│ Gate B: approve graph + digests        │
+└───────────────┬────────────────────────┘
+         PASS   │       NEEDS CHANGES → return to Trellis
+                v
+┌────────────────────────────────────────┐
+│ Freeze, dispatch, verify, and recover  │
+└───────────────────┬────────────────────┘
+                    │
+                    v
+┌────────────────────────────────────────┐
+│ Test, review, merge, and archive       │
+└────────────────────────────────────────┘
 ```
 
-安裝完成後，從下一個 Codex 對話開始即可使用 `$wish-builder`。
+This is the intended end-to-end workflow. The current preview includes the assembled local lifecycle and crash recovery path, verified with controlled subprocess workers. Trellis compatibility passes for import and single-writer projection, while the separate backend qualification record still stops every backend before real dispatch. A startup or handshake check is not a model turn; no backend/OS cell has completed the full cancellation, crash/restart reconciliation, cleanup, parallel-overlap, and platform evidence set.
 
-### 方法二：安裝 ZIP
+The planning stage normally uses `office-hours`, `plan-ceo-review`, and `plan-eng-review`, plus `plan-design-review` when the product has a user interface. Each review runs in its own non-interactive child session. The child temporarily follows the review's explicit recommendation so it can finish, then returns the practical result, alternatives, ease of changing later, and technical reasoning. Wish Builder records only easy, reversible engineering choices automatically. Product, architecture, cost, security, and other material choices are rewritten in plain language and collected for Gate A. A gstack recommendation is advice, not human approval. A child that tries to question the user directly or returns incomplete decision data is stopped.
 
-先下載 [wish-builder-skill.zip](wish-builder-skill.zip)。ZIP 內已包含正確的頂層 `wish-builder/` 目錄。
+Gate A is where a person approves what will be built and how the main parts fit together.
 
-Windows PowerShell：
+Trellis then prepares the candidate task graph. Wish Builder checks dependencies, owned paths, acceptance commands, and task size. Problems go back to Trellis; Wish Builder does not invent a separate task list. The graph snapshot, revision digest, and manifest used for this check are Wish Builder-derived contracts, not official Trellis APIs.
+
+Gate B approves the material graph projected from one stable Trellis task-record read, the Wish Builder-derived graph and execution-manifest digests, the scheduler, worker backend, and permission set. The Wish Builder-derived task-record revision digest is retained as provenance; status, progress, and other lifecycle-only changes do not invalidate Gate B when the canonical graph digest is unchanged. A meaningful change to the Trellis graph invalidates that approval. Product code is not changed and implementation agents are not dispatched before Gate B passes.
+
+## Who owns what
+
+| Trellis owns | Wish Builder owns |
+| --- | --- |
+| Creating and splitting tasks | Validating the imported task graph |
+| Editing task dependencies | Gate B and content digests |
+| Task context and lifecycle | The immutable execution snapshot |
+| Implement, Check, and Finish steps | Admission, fencing, Journal, and recovery |
+| Task history and archive | Result validation and merge admission |
+
+There is no PRD-to-task generator, task CRUD system, second board, or second task database in this project.
+
+## Scheduling and agent backends
+
+The design defines two mutually exclusive scheduler modes:
+
+| `scheduler_mode` | `worker_backend` | Intended responsibility | Current M1 status |
+| --- | --- | --- | --- |
+| `trellis` | `trellis` | Trellis schedules sibling tasks; Wish Builder validates and supervises | Disabled: the Trellis scheduler path has no qualified pre-launch admission and fencing integration; `0.6.15` also has no cross-process CAS |
+| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Wish Builder schedules from the frozen graph into isolated worktrees; one separate writer later projects Journal results to Trellis | Local lifecycle and crash recovery are verified; dispatch is disabled because backend/OS evidence is incomplete |
+
+For M1, only `scheduler_mode=wish_builder` is accepted by the current Python control plane. Each run chooses one backend. If that backend is unavailable, unqualified, or paired with the wrong scheduler, the run stops instead of silently switching to something else. With the bundled qualification record, `wishctl run` returns `dispatch_not_qualified` and does not dispatch an agent.
+
+When the Trellis scheduler is implemented later, `GraphIndex` will remain a validation and recovery index, not a second dispatcher.
+
+Backend qualification is intentionally conservative:
+
+| Backend | Windows evidence | Linux evidence | Production dispatch |
+| --- | --- | --- | --- |
+| Codex | Deterministic fixture; full live qualification required | Deterministic fixture; full live qualification required | Disabled |
+| Pi | Startup and handshake only; no model turn | Deterministic fixture; full live qualification required | Disabled |
+| Oh My Pi | Live turn blocked: configured model and provider credential are required | Deterministic fixture; full live qualification required | Disabled |
+
+No backend/OS cell has completed the required qualification evidence for active cancellation, crash/restart reconciliation without redelivery, cleanup, parallel overlap, and its target platform. All six provider/OS entries therefore remain `enabledForDispatch=false`. Trellis compatibility and backend qualification remain separate records: the former binds the frozen graph and projection adapter, while the latter records Agent-cell evidence. Active `wish_builder` dispatch requires an enabled backend cell bound to the approved Trellis compatibility digest; it does not require Trellis projection CAS because workers never write Trellis. The future Trellis-owned scheduler does not use an Agent backend/OS cell, but it needs a later manifest schema plus qualified pre-launch admission, fencing, stop/reject behavior, and concurrent-write ownership. Claude Code and macOS are deferred until the first three backends and the Windows/Linux matrix are stable.
+
+Trellis compatibility and backend qualification are separate contracts:
+
+- [`wish_builder/compatibility/trellis-0.6.15.json`](wish_builder/compatibility/trellis-0.6.15.json) qualifies the official `@mindfoldhq/trellis@0.6.15` and `@mindfoldhq/trellis-core@0.6.15` packages for the documented import and single-writer projection boundary.
+- [`wish_builder/compatibility/backend-qualification-0.6.15.json`](wish_builder/compatibility/backend-qualification-0.6.15.json) records backend/OS dispatch evidence; every cell is currently disabled.
+
+Never install or resolve `@latest` for this integration. `0.7.0-dev.2` was a local test fixture later withdrawn from Wish Builder; it was never an official Trellis release and is not supported. Official Trellis `0.6.15` has no reliable cross-process CAS. M1 therefore permits one projection writer at a time, accepts only stable task-record reads, checks the expected SHA-256 before writing, verifies SHA-256 and content after writing, and fails closed on conflicts or unknown outcomes. These digest checks protect projection integrity; they are not CAS and do not act as a worker-dispatch lock. Backend workers write only isolated Git worktrees and the Journal. The separate Trellis scheduler mode needs its own qualified pre-launch admission, fencing, and concurrent-write ownership.
+
+## What is implemented
+
+The repository currently includes:
+
+- strict input contracts and deterministic error messages;
+- deterministic Wish Builder graph snapshots derived from official Trellis `0.6.15` task records, followed by manifest v2 generation;
+- single-writer lifecycle projection into the authoritative Trellis repository through official Core `loadTaskRecord` and `writeTaskRecord`, with stable reads, pre/post-write digest checks, and no automatic retry after a pre-write digest conflict;
+- dependency, owned-path, ready-set, and requirement-trace checks;
+- Gate decisions tied to content hashes, so later edits invalidate old approval;
+- an append-only Journal, leases, epochs, fencing, checkpoints, replay, and `GraphIndex` rebuilds;
+- coordinator components with isolated attempt worktrees, stable promotion order, and fixture subprocess E2E coverage;
+- ordinary project acceptance commands run inside the materialized promotion candidate before the target branch advances;
+- subprocess containment, output limits, timeout handling, and fail-closed recovery;
+- Git staging, promotion, cleanup, quarantine, and trace/export services;
+- package-to-Skill runtime synchronization and a reproducible development ZIP;
+- local tests for contracts, scheduling, recovery, Git effects, packaging, and controlled performance.
+
+These parts are real and tested. The assembled local lifecycle, including recovery from crashes around Git changes, is covered end to end with controlled subprocess workers. It sits behind the guarded `wishctl run` entry, but the bundled backend records stop the command before real dispatch. The remaining backend work is to produce complete, content-addressed qualification evidence for a real model turn, cancellation, crash/restart reconciliation, cleanup, parallel overlap, and each supported platform.
+
+Real Issue, Pull Request, hosting, credential, background supervisor, and production deployment adapters are outside the current implementation.
+
+## Install the development preview
+
+### Requirements
+
+- Python 3.11 or newer
+- Git
+- Node.js 18.17 or newer
+- Codex with Skill support
+- gstack
+- `@mindfoldhq/trellis@0.6.15`
+- a verified local SDK copy of `@mindfoldhq/trellis-core@0.6.15` for the bridge
+
+The Python runtime itself has no third-party package dependency. Wish Builder reports missing tools before it starts and does not install global tools, sign in to accounts, or change repository settings without approval.
+
+Install the Trellis CLI by exact version:
+
+```bash
+npm install -g @mindfoldhq/trellis@0.6.15
+```
+
+The Core bridge accepts either an extracted `@mindfoldhq/trellis-core@0.6.15` package root or its verified official npm tarball. The tarball is an input for local verification and is never bundled into a Wish Builder release. Do not substitute `@latest` or another prerelease.
+
+### Install from the local ZIP
+
+The repository contains a synchronized development archive named [`wish-builder-skill.zip`](wish-builder-skill.zip). It is useful for local evaluation, but it is not a published release.
+
+Windows PowerShell:
 
 ```powershell
 Expand-Archive .\wish-builder-skill.zip -DestinationPath "$env:USERPROFILE\.codex\skills"
 ```
 
-macOS 或 Linux：
+macOS or Linux:
 
 ```bash
 mkdir -p ~/.codex/skills
 unzip wish-builder-skill.zip -d ~/.codex/skills
 ```
 
-安裝後應該可以看到：
+The installed file should appear at:
 
 ```text
 ~/.codex/skills/wish-builder/SKILL.md
 ```
 
-目前 ZIP 的 SHA-256：
+Current ZIP SHA-256:
 
 ```text
-64b2c0123b1fb856d9641a29045507e15eb332c6f977a8829effcd5bd63585a3
+cfe78dad83087ec5492e2192fb1d7e5e71cfa6c83a7a2755df4bdf62b5d9fc53
 ```
 
-## 第一次使用
+The GitHub repository is currently private, so it is not an installation source for other users yet. Once it is made public, Codex's Skill installer can install the repository's `wish-builder/` directory.
 
-1. 在 Codex 開啟你想開發的 Git 專案。
-2. 輸入一個簡短方向，例如：
+## Start a project
 
-   ```text
-   Use $wish-builder in this repository.
+Open the target Git repository in Codex and give Wish Builder a short direction:
 
-   我想做一個給兩位室友使用的共同記帳工具。
-   先做本機版本，不需要付款或銀行連接。
-   我確認產品架構和任務拆分後，你可以自行完成開發；
-   只有方向跑偏、高風險操作或需要正式部署時才停下來問我。
-   ```
+```text
+Use $wish-builder in this repository.
 
-3. Wish Builder 會先檢查環境，再準備 Gate A。這時還不會修改產品程式碼。
+Build a shared expense tracker for two roommates.
+Keep the first version local-only, with no payments or bank connections.
+After I approve the product, architecture, and task graph, continue on your own.
+Stop only if the work leaves the approved plan, needs a high-risk action,
+or is ready for production deployment.
+```
 
-你不需要一開始就寫完整需求。產品使用者、主要問題、成功標準和不做的項目，會在 Gate A 前逐步整理出來。
+You do not need a full specification at the start. The early reviews identify the user, problem, success criteria, boundaries, and architecture. In the current preview, use this flow to evaluate planning and manifest preparation; do not treat it as a promise of unattended production dispatch.
 
-## 你需要做哪些決定
+## Decisions that still need a person
 
-| 決定點 | 什麼時候出現 | 你要確認什麼 |
+| Decision | When it appears | What you approve |
 | --- | --- | --- |
-| Setup Gate | 缺少工具或需要登入時 | 是否安裝、初始化、登入或修改專案設定 |
-| Gate A | 寫程式之前 | 產品目標、範圍、系統架構、資料與安全設計 |
-| Gate B | 派出開發 Agent 之前 | 任務拆分、先後關係、測試、合併方式和執行權限 |
-| Gate C | 需要正式部署時 | 部署位置、風險和回復方式 |
-| 偏離提醒 | 執行結果超出已核准內容時 | 是否改變範圍、架構、公開介面或安全邊界 |
+| Setup gate | A tool, login, or repository change is required | Installation, initialization, authentication, or configuration |
+| Gate A | Before Trellis prepares the task graph | Product goal, scope, architecture, data, and security choices |
+| Gate B | Before implementation agents are dispatched | The material graph projected from Trellis task records, Wish Builder-derived graph and manifest digests, scheduler, backend, tests, merge policy, and permissions |
+| Gate C | Before production deployment | Destination, risks, checks, and rollback plan |
+| Drift decision | Work leaves the approved boundary | Whether to revise the scope, architecture, public interface, or security boundary |
 
-Gate A 和 Gate B 都需要你明確回覆「通過」或列出修改內容。原始願望不等於核准。
+A wish is not an approval. Gate A and Gate B require an explicit pass or a list of changes.
 
-## 安全邊界
+## Safety boundaries
 
-在 Gate B 通過前，Wish Builder 不會：
+Without separate approval, Wish Builder will not:
 
-- 修改產品程式碼
-- 建立遠端 Issue 或 Pull Request
-- 派出 Agent 進行實作
+- request, store, or rotate credentials;
+- spend money or change billing;
+- deploy to production;
+- delete production data or weaken access controls;
+- perform an irreversible data migration;
+- change an approved product direction, architecture, or public interface;
+- run Trellis and Wish Builder as competing dispatchers for the same graph.
 
-未取得額外同意時，它也不會：
+Normal implementation choices and ordinary test failures stay with the coordinator. Scope changes, high-risk actions, and unresolved repeated failures return to a person.
 
-- 索取、保存或更換登入資料
-- 付款或修改帳單
-- 部署到正式環境
-- 刪除正式資料或降低存取權限
-- 執行無法回復的資料轉換
-- 改變已核准的產品方向、架構或公開介面
+## Command-line checks
 
-一般的程式寫法、小型修正和測試失敗，會由總控 Agent 自行處理。只有超出已核准範圍，或同一任務連續失敗時，才會重新找你決定。
+`wishctl` turns important workflow rules into repeatable checks. It uses only the Python standard library at runtime.
 
-## 專案結構
-
-```text
-.
-|-- README.md                              專案首頁與使用說明
-|-- pyproject.toml                         Python 套件與 wishctl 指令設定
-|-- wish_builder/                          正式 Python 原始碼
-|-- scripts/                               相容啟動器與 ZIP 建置工具
-|-- tests/                                 Repository 基線與 wishctl 測試
-|-- src/WishBuilder.CredentialService/     Windows credential service 骨架
-|-- release/provenance/                    .NET 版本與支援期限證據
-|-- wish-builder-skill.zip                 可直接分發的 Skill 壓縮檔
-`-- wish-builder/                     可獨立安裝的 Skill
-    |-- SKILL.md                      主流程與兩個人工決定點
-    |-- agents/openai.yaml            Codex 顯示名稱與預設提示
-    |-- references/
-    |   |-- artifact-contracts.md     任務、核准文件與追蹤格式
-    |   |-- execution.md              派工、合併、失敗處理與恢復
-    |   |-- policy.md                 權限、安全和文件規則
-    |   `-- tool-bridges.md           gstack、Trellis 和 Agent 的分工
-    `-- scripts/
-        |-- wishctl.py                任務計劃驗證工具
-        `-- test_wishctl.py           自動測試
-```
-
-想了解完整執行規則，可以直接閱讀 [wish-builder/SKILL.md](wish-builder/SKILL.md)。
-
-## 驗證工具
-
-`wishctl.py` 是一個不需要額外 Python 套件的檢查工具。它把容易出錯的規則做成固定檢查，而不是只靠 Agent 記住。
-
-| 指令 | 用途 |
+| Command | Purpose |
 | --- | --- |
-| `validate` | 檢查核准記錄、任務依賴、檔案範圍、Issue/PR 對應、測試和回復方式 |
-| `ready` | 找出目前可以開始，而且不會互相衝突的任務 |
-| `drift` | 檢查某個 Agent 是否修改了不屬於該任務的檔案 |
-| `trace` | 產生「需求到任務、Issue、PR、測試和合併結果」的對照表 |
-| `hash` | 計算 Gate A 或 Gate B 文件的 SHA-256，確認核准的是同一份內容 |
+| `validate` | Validate approvals, graph structure, paths, tests, and recovery data |
+| `ready` | List ready tasks that do not conflict in the frozen graph |
+| `drift` | Check changed files against a task's owned paths |
+| `trace` | Render requirement-to-task and delivery traceability |
+| `hash` | Calculate a Gate artifact SHA-256 |
+| `snapshot-trellis` | Derive a Wish Builder graph snapshot from official Trellis `0.6.15` task records |
+| `import-trellis` | Convert a Wish Builder-derived Trellis graph snapshot into manifest v2 |
+| `decide` | Record a direct CLI Gate decision in the Journal |
+| `resume` | Resume one unknown dispatch from a verified recovery proof |
 
-查看全部指令：
+Examples:
 
 ```bash
 python scripts/wishctl.py --help
-```
-
-檢查一份任務計劃：
-
-```bash
 python scripts/wishctl.py validate path/to/execution-manifest.json --stage planning
+python scripts/wishctl.py snapshot-trellis <parent-task-id> --core-archive path/to/mindfoldhq-trellis-core-0.6.15.tgz --output trellis-graph.json
+python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/import-settings.json --output execution-manifest.json
 ```
 
-只安裝 Skill ZIP 時，也可以繼續使用
-`python wish-builder/scripts/wishctl.py`；兩個入口使用同一份程式碼。
+The installed Skill exposes the same runtime at `wish-builder/scripts/wishctl.py`.
 
-## 測試狀態
+## Repository layout
 
-目前版本已完成：
-
-- Codex 官方 Skill 格式驗證
-- 官方 Skill 安裝器目錄驗證
-- 21 個 repository 自動測試
-- 13 個可獨立執行的 Skill 內部測試
-- 2 個 .NET fail-closed baseline 測試
-- Python 編譯檢查
-- Python source distribution 與 wheel 建置
-- ZIP 完整性與頂層目錄檢查
-- 3 種流程試跑：缺少工具、舊計劃出現循環或檔案衝突、全新專案停在 Gate A
-
-自行執行測試：
-
-```bash
-python -m unittest discover -s tests -v
-cd wish-builder/scripts
-python -m unittest -v test_wishctl.py
+```text
+.
+|-- README.md                     English overview and usage
+|-- README.zh-TW.md               Traditional Chinese overview and usage
+|-- pyproject.toml                Python package and wishctl entry point
+|-- wish_builder/                 Authoritative Python implementation
+|   |-- adapters/                 Trellis, process, storage, and Git boundaries
+|   |-- compatibility/            Pinned Trellis compatibility and backend qualification evidence
+|   |-- contracts/                Input and artifact contracts
+|   |-- kernel/                   DAG, gates, state, and GraphIndex
+|   |-- presentation/             Trace and export output
+|   |-- processes/                Coordinator and worker execution
+|   `-- services/                 Journal, recovery, cleanup, and Git services
+|-- wish-builder/                 Standalone installable Codex Skill
+|-- scripts/                      Build, sync, and CI checks
+|-- tests/                        Unit, integration, fault, and performance tests
+`-- wish-builder-skill.zip        Reproducible development archive
 ```
 
-Windows credential service 目前仍是遇到未實作功能便停止的骨架，但工具鏈基線已完成：
-Repository 固定 `.NET 10.0.400`、`net10.0-windows`、`win-x64`、Microsoft
-test packages 和兩份 NuGet lockfile；clean-cache locked restore、0 warning Release build、
-2 個測試及兩次相同 SHA-256 的 self-contained single-file publish 均已通過。真正的
-Windows Service、CNG key 和 named-pipe 功能尚未實作，啟動時仍會回傳
-`SETUP_REQUIRED`。
+The full operating rules live in [`wish-builder/SKILL.md`](wish-builder/SKILL.md). Artifact formats and tool boundaries are under [`wish-builder/references/`](wish-builder/references/).
 
-## 常見問題
+## Verification status
 
-### 一定要會寫程式才能使用嗎？
+**Local tests passed.** Under the current M1 policy, that is enough to accept this development preview.
 
-不一定。你需要能判斷產品方向是否正確，也需要看懂 Gate A 和 Gate B 的重點。程式實作可以交給 Agent，但涉及使用者、資料、安全和成本的決定仍應由人負責。
+| Check | Result |
+| --- | --- |
+| Earlier local non-performance matrix | Windows and Linux on Python 3.11/3.12/3.13; 1,498 run per cell, 0 failures or errors; 9 allowed skips on Windows and 13 on Linux |
+| Fresh full local suite | Windows on Python 3.13; 1,514 run including 16 performance tests, 0 failures or errors, 3 platform-specific skips |
+| Focused evidence, release, and live-adapter tests | 63 passed |
+| Official Trellis `0.6.15` integration | Windows and Linux each passed 22 Node and 7 Python tests |
+| Skill/runtime parity | 12 passed |
+| Python compilation and whitespace checks | Passed |
 
-### 它可以全程完全無人看管嗎？
+These are local results. GitHub Actions was not run because its budget is exhausted, so this project does not claim a CI pass or failure for the candidate. This changes only the M1 completion rule. It does not qualify a backend or enable real agent dispatch.
 
-不可以，也不建議。正常情況下你至少要處理 Gate A 和 Gate B。通過後，大部分日常工程工作可以自動進行；方向改變、高風險操作或正式部署仍會停下來確認。
+Run the main local suites with:
 
-### 可以用在已經有程式碼的專案嗎？
+```powershell
+.\.venv\Scripts\python.exe scripts\ci_test_suite.py --exclude-package performance
+.\.venv\Scripts\python.exe scripts\ci_test_suite.py --only-package performance
+.\.venv\Scripts\python.exe wish-builder\scripts\test_wishctl.py
+```
 
-可以。Wish Builder 會先查看現有文件、測試、Git 狀態和 Trellis 任務。它會保留與目前工作無關的修改，也會在恢復舊任務時重新核對實際狀態。
+For a stricter, reproducible release packet, the optional local evidence tools can still bind raw results and release files to one committed revision:
 
-### 沒有 GitHub 可以使用嗎？
+```powershell
+uv run --locked --python 3.13 python scripts\local_evidence_packet.py `
+  --evidence-root <evidence-root> --candidate-revision <commit-sha> `
+  --safety-base-ref <base-ref> --output <manifest.json> `
+  --digest-output <manifest.sha256>
 
-可以先在本機規劃和執行。需要建立 Issue、Pull Request 或自動合併時，才需要對應平台的權限。
+uv run --locked --python 3.13 python scripts\ci_local_release.py `
+  --repository-root . --evidence-root <evidence-root> `
+  --safety-base-ref <base-ref> --distribution-root <distribution-root> `
+  --manifest <manifest.json> --manifest-digest <manifest.sha256> `
+  --output-dir <release-assets> --revision <commit-sha> `
+  --version 0.1.0.dev1 --tag v0.1.0.dev1
+```
 
-### 為什麼不直接使用 gstack `autoplan`？
+## Before enabling live dispatch
 
-這個專案要求架構由人把關。`office-hours` 和各項 plan review 會提供建議，但 Gate A 必須由人核准，因此不使用會自動做完早期決定的 `autoplan`。
+- Qualify the assembled lifecycle against live project backends, including cancellation and recovery around Git changes.
+- Complete the cancellation, crash/restart reconciliation, cleanup, parallel-overlap, and platform evidence before enabling any backend cell.
+- Add the real Issue, Pull Request, and hosting adapters needed by the chosen workflow.
+- Complete one public example from a short product wish through reviewed, merged changes.
 
-### 中斷後可以繼續嗎？
+## Contributing
 
-可以。進度、決定、任務狀態和核准記錄都會保存在 Trellis 的父任務中。下次啟動時會先核對 Git、任務、Issue、Pull Request 和測試結果，再從正確階段繼續。
+Start with the concrete problem a change solves. Workflow changes should update the Skill, its reference documents, and the related tests together. Changes to `wishctl` should include a small test that reproduces the problem.
 
-## 開發計劃
+Do not remove an approval gate, owned-path check, fencing rule, or fail-closed recovery behavior without a replacement that provides the same protection.
 
-- [x] 完成 gstack、Trellis 和多 Agent 的分工流程
-- [x] 加入 Gate A、Gate B 和部署前 Gate C
-- [x] 加入任務依賴、檔案範圍與需求追蹤驗證
-- [x] 完成三種邊界情況試跑
-- [x] 建立 Python 套件、相容指令、可重現 Skill ZIP 和第一版 CI
-- [x] 完成 .NET 10 locked restore、測試與可重現 publish 基線
-- [ ] 實作 Windows Service、CNG key 和 authenticated named-pipe
-- [ ] 實作執行核心、Trellis adapter 和受監督的 Agent 排程
-- [ ] 選擇開源授權並發布正式 GitHub 儲存庫
-- [ ] 在真實專案完成一次從願望到全部 Pull Request 合併的公開案例
+## License
 
-## 參與開發
-
-提出修改前，請先說明它解決的實際問題。涉及流程的改動應同時更新 `SKILL.md`、相關 reference 和測試；涉及 `wishctl.py` 的改動應加入可以重現問題的測試案例。
-
-建議流程：
-
-1. Fork 專案。
-2. 建立一個範圍清楚的分支。
-3. 修改並執行測試。
-4. 開啟 Pull Request，說明改了什麼、如何驗證，以及是否影響兩個 Gate。
-
-請不要在沒有替代安全措施的情況下移除人工核准點、檔案範圍檢查或失敗時的停止規則。
-
-## 授權
-
-本專案目前尚未選擇開源授權。正式公開發布前需要加入 `LICENSE`；在此之前，程式碼不會自動取得自由使用、修改或再發布的權利。
-
-## 致謝
-
-- [gstack](https://github.com/garrytan/gstack)：提供產品、工程、設計、審閱和 QA 流程。
-- [Trellis](https://github.com/mindfold-ai/Trellis)：保存任務內容、執行步驟、檢查記錄和歸檔。
-- [Best README Template](https://github.com/othneildrew/Best-README-Template)：本 README 的章節結構參考來源。
-
-<p align="right"><a href="#readme-top">回到頂部</a></p>
+Wish Builder is licensed under the [GNU General Public License v3.0 only](LICENSE). See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled and development-tool notices.

@@ -35,27 +35,37 @@ and confirming that no new unresolved choice appeared.
 Invalidate Gate A when the product promise, target user, architecture boundary, public contract,
 data ownership, security model, or irreversible migration strategy changes.
 
+Only after Gate A may Trellis turn the approved product and architecture documents into candidate
+tasks and dependencies. Candidate task preparation is not permission to implement or dispatch.
+
 ## Gate B
 
 Gate B approves execution, not just a task list. Show:
 
 - requirement-to-task coverage and explicit deferred items;
-- the dependency graph and serial/parallel waves;
+- the imported Trellis parent task ID and the stable task-record input used to project the material
+  graph, plus the Wish Builder-derived revision provenance and canonical graph digest;
+- the dependency graph, serial/parallel waves, and exact execution-manifest digest;
 - every leaf's Issue/PR scope, ownership, acceptance, tests, risk, docs, and rollback;
 - contract freeze and merge order;
-- worker count and scheduler backend;
+- worker count, the mutually exclusive `scheduler_mode`, its allowed `worker_backend`,
+  `lease_ttl_seconds`, and `lease_clock_skew_seconds`;
 - external mutation, auto-merge, and deployment policy;
 - escalation thresholds.
 
 The initial wish, Gate A, or approval of an older packet does not count. Store approval evidence
-and artifact hash. A material decomposition or policy change invalidates Gate B.
+and artifact hash. A material Trellis task-graph or policy change invalidates Gate B. Stop new
+admissions, import and validate the newly projected material graph, compile a new manifest, and
+obtain fresh approval. Trellis lifecycle progress that leaves the canonical graph digest unchanged
+does not invalidate Gate B.
 
 ## Post-Approval Autonomy
 
 The recommended guarded-autonomy policy permits the coordinator after Gate B to:
 
 - create approved Issues, worktrees, branches, commits, and Draft PRs;
-- dispatch and supervise bounded workers;
+- admit and supervise bounded workers through the one scheduler mode and worker backend selected
+  at Gate B;
 - run tests, reviews, QA, documentation, and bounded repairs;
 - squash-merge low- and medium-risk PRs when required evidence is green;
 - create repair Issues that stay inside approved scope and architecture.
@@ -70,6 +80,13 @@ It does not permit the coordinator to:
 - expand effort beyond the approved drift threshold.
 
 Record repository-specific changes to this policy in `decisions.md`.
+
+Active M1 requires `scheduler_mode=wish_builder` with `worker_backend=pi`, `oh_my_pi`, or `codex`:
+Wish Builder dispatches that backend from the frozen graph while Trellis stores task context and
+progress. Reject every other pair. A future schema may add `trellis + trellis`, where Trellis
+dispatches siblings and Wish Builder validates admission, fencing, results, and merge policy, but
+that path is not representable or executable in M1. Changing either field is a material Gate B
+policy change.
 
 ## Escalation
 
@@ -101,7 +118,10 @@ status, evidence, attempts, recommendation, alternatives, and downstream impact.
 
 ## Documentation
 
-Repository docs and Trellis artifacts are the source of truth. Keep:
+Repository docs and Trellis artifacts are the planning source of truth. Before Gate B, the
+editable Trellis task graph is the task source of truth. After Gate B, the approved immutable
+execution manifest is the admission baseline and the Journal plus Trellis lifecycle state are the
+runtime source of truth. Keep:
 
 - implementation and interaction behavior in repository documentation;
 - requirements and acceptance in `prd.md`;

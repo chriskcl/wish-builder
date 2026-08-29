@@ -14,6 +14,7 @@ from wish_builder.contracts import (
     ValidationIssue,
     ValidationReport,
     ValidationStage,
+    canonical_json_bytes,
     decode_manifest_bytes,
     decode_manifest_primitive,
 )
@@ -134,7 +135,123 @@ class StrictDecoderTests(unittest.TestCase):
                 result = decode_manifest_bytes(case.raw)
                 self.assertFalse(result.ok)
                 self.assertIsNone(result.value)
-                self.assertIn(case.expected_rule, {issue.rule_id for issue in result.issues})
+                expected_bytes = canonical_json_bytes(case.expected_report)
+                self.assertEqual(case.expected_report, result.report.to_primitive())
+                self.assertEqual(expected_bytes, result.report.to_json_bytes())
+                self.assertEqual(
+                    hashlib.sha256(expected_bytes).hexdigest(),
+                    result.report.sha256(),
+                )
+                self.assertEqual(case.expected_source_sha256, result.source_sha256)
+
+    def test_duplicate_key_diagnostic_retains_the_full_object_path(self) -> None:
+        root = decode_manifest_bytes(b'{"value":1,"value":2}')
+        nested = decode_manifest_bytes(
+            b'{"outer":{"items":[{"value":1,"value":2}]}}'
+        )
+        self.assertEqual(
+            [("json.duplicate_key", ("value",), ReasonCode.DUPLICATE_OBJECT_KEY)],
+            [(issue.rule_id, issue.path, issue.reason_code) for issue in root.issues],
+        )
+        self.assertEqual(
+            [
+                (
+                    "json.duplicate_key",
+                    ("outer", "items", 0, "value"),
+                    ReasonCode.DUPLICATE_OBJECT_KEY,
+                )
+            ],
+            [(issue.rule_id, issue.path, issue.reason_code) for issue in nested.issues],
+        )
+        self.assertNotEqual(root.report.to_json_bytes(), nested.report.to_json_bytes())
+
+    def test_malformed_set_records_have_order_independent_diagnostics(self) -> None:
+        value = valid_manifest()
+        malformed = [
+            {"text": "missing id", "status": "approved"},
+            {"id": "bad-id", "text": "invalid id", "status": "approved"},
+            {"id": 17, "text": "wrong id", "status": "approved"},
+        ]
+        left = copy.deepcopy(value)
+        right = copy.deepcopy(value)
+        left["requirements"] = malformed
+        right["requirements"] = list(reversed(malformed))
+        first = decode_manifest_primitive(left)
+        second = decode_manifest_primitive(right)
+        self.assertFalse(first.ok)
+        self.assertEqual(first.report.to_json_bytes(), second.report.to_json_bytes())
+        self.assertEqual(first.report.sha256(), second.report.sha256())
+        self.assertTrue(
+            all(
+                type(issue.path[1]) is str and issue.path[1].startswith("@")
+                for issue in first.issues
+                if issue.path and issue.path[0] == "requirements"
+            )
+        )
+
+    def test_identical_malformed_records_receive_stable_collision_ordinals(self) -> None:
+        value = valid_manifest()
+        duplicate = {"text": "missing id", "status": "approved"}
+        value["requirements"] = [copy.deepcopy(duplicate), copy.deepcopy(duplicate)]
+        first = decode_manifest_primitive(value)
+        value["requirements"].reverse()
+        second = decode_manifest_primitive(value)
+        paths = {
+            issue.path[1]
+            for issue in first.issues
+            if issue.path and issue.path[0] == "requirements"
+        }
+        self.assertTrue(any(path.endswith("~1") for path in paths))
+        self.assertTrue(any(path.endswith("~2") for path in paths))
+        self.assertEqual(first.report.to_json_bytes(), second.report.to_json_bytes())
+
+    def test_raw_duplicate_key_paths_follow_stable_record_ids_not_array_positions(self) -> None:
+        value = valid_manifest()
+        raw_tasks = []
+        for task in value["tasks"]:
+            encoded = json.dumps(task, separators=(",", ":"), sort_keys=True)
+            if task["id"] == "TASK-001":
+                encoded = encoded.replace(
+                    '"title":"Foundation"',
+                    '"title":"Foundation","title":"Duplicate"',
+                )
+            raw_tasks.append(encoded)
+
+        def decode(order: list[int]):
+            primitive = copy.deepcopy(value)
+            primitive.pop("tasks")
+            prefix = json.dumps(primitive, separators=(",", ":"), sort_keys=True)[:-1]
+            payload = prefix + ',"tasks":[' + ",".join(raw_tasks[index] for index in order) + "]}"
+            return decode_manifest_bytes(payload.encode("utf-8"))
+
+        first = decode(list(range(len(raw_tasks))))
+        second = decode(list(reversed(range(len(raw_tasks)))))
+        self.assertFalse(first.ok)
+        self.assertEqual(first.report.to_json_bytes(), second.report.to_json_bytes())
+        duplicate = [issue for issue in first.issues if issue.rule_id == "json.duplicate_key"]
+        self.assertEqual([("tasks", "TASK-001", "title")], [issue.path for issue in duplicate])
+
+    def test_set_like_string_array_diagnostics_are_order_independent(self) -> None:
+        left = valid_manifest()
+        left["tasks"][0]["requirement_ids"] = [["invalid"], "REQ-001"]
+        right = copy.deepcopy(left)
+        right["tasks"][0]["requirement_ids"].reverse()
+
+        first = decode_manifest_bytes(
+            json.dumps(left, separators=(",", ":")).encode("utf-8")
+        )
+        second = decode_manifest_bytes(
+            json.dumps(right, separators=(",", ":")).encode("utf-8")
+        )
+        self.assertFalse(first.ok)
+        self.assertEqual(first.report.to_json_bytes(), second.report.to_json_bytes())
+        paths = [
+            issue.path
+            for issue in first.issues
+            if issue.rule_id == "schema.string_type"
+        ]
+        self.assertEqual(1, len(paths))
+        self.assertEqual(("tasks", "TASK-001", "requirement_ids"), paths[0][:3])
 
     def test_raw_integer_parser_is_bounded_and_uses_stable_diagnostics(self) -> None:
         rejected = (
@@ -196,6 +313,98 @@ class StrictDecoderTests(unittest.TestCase):
         self.assertIn("schema.unknown_field", {item.rule_id for item in root_result.issues})
         self.assertIn("schema.unknown_field", {item.rule_id for item in nested_result.issues})
         self.assertIn(("tasks", "TASK-001", "surprise"), {item.path for item in nested_result.issues})
+
+    def test_direct_decoder_boundary_matrix_has_field_level_diagnostics(self) -> None:
+        cases = []
+
+        invalid_timestamp = valid_manifest()
+        invalid_timestamp["approved"]["gate_a"]["approved_at"] = "not-a-time"
+        cases.append(
+            (
+                "invalid timestamp",
+                invalid_timestamp,
+                "value.utc_timestamp",
+                ("approved", "gate_a", "approved_at"),
+                ReasonCode.INVALID_TIMESTAMP,
+            )
+        )
+
+        invalid_hash = valid_manifest()
+        invalid_hash["approved"]["gate_a"]["artifact_hash"] = "sha256:short"
+        cases.append(
+            (
+                "invalid hash",
+                invalid_hash,
+                "value.sha256_reference",
+                ("approved", "gate_a", "artifact_hash"),
+                ReasonCode.INVALID_HASH,
+            )
+        )
+
+        too_many_requirements = valid_manifest()
+        too_many_requirements["requirements"] = [
+            {"id": f"REQ-{index:03d}", "text": "Requirement", "status": "approved"}
+            for index in range(257)
+        ]
+        cases.append(
+            (
+                "requirement limit",
+                too_many_requirements,
+                "value.requirement_limit",
+                ("requirements",),
+                ReasonCode.ITEM_LIMIT_EXCEEDED,
+            )
+        )
+
+        too_many_tasks = valid_manifest()
+        template = too_many_tasks["tasks"][0]
+        too_many_tasks["tasks"] = [
+            {
+                **copy.deepcopy(template),
+                "id": f"TASK-{index:03d}",
+                "issue_id": index + 1,
+                "branch": f"feat/{index + 1}",
+            }
+            for index in range(65)
+        ]
+        cases.append(
+            (
+                "task limit",
+                too_many_tasks,
+                "value.task_limit",
+                ("tasks",),
+                ReasonCode.ITEM_LIMIT_EXCEEDED,
+            )
+        )
+
+        for name, candidate, rule, path, reason in cases:
+            with self.subTest(name=name):
+                result = decode_manifest_primitive(candidate)
+                self.assertIn(
+                    (rule, path, reason),
+                    {
+                        (issue.rule_id, issue.path, issue.reason_code)
+                        for issue in result.issues
+                    },
+                    result.report.render_text(),
+                )
+
+    def test_documentation_path_limit_is_exact_and_field_scoped(self) -> None:
+        at_limit = valid_manifest()
+        at_limit["tasks"][0]["documentation"] = ["d" * 1024]
+        self.assertTrue(decode_manifest_primitive(at_limit).ok)
+
+        over_limit = valid_manifest()
+        over_limit["tasks"][0]["documentation"] = ["d" * 1025]
+        result = decode_manifest_primitive(over_limit)
+        self.assertEqual(1, len(result.issues))
+        issue = result.issues[0]
+        self.assertEqual("value.string_length", issue.rule_id)
+        self.assertEqual(
+            ("tasks", "TASK-001", "documentation"), issue.path[:3]
+        )
+        self.assertTrue(str(issue.path[3]).startswith("@"))
+        self.assertEqual(ReasonCode.STRING_LIMIT_EXCEEDED, issue.reason_code)
 
     def test_wrong_primitives_and_containers_do_not_coerce(self) -> None:
         cases = []

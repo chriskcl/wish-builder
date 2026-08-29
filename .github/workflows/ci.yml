@@ -2,14 +2,156 @@ name: CI
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
 
 permissions:
   contents: read
 
 jobs:
+  trellis-official-integration:
+    name: Official Trellis 0.6.15 integration on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Fetch exact official Trellis packages
+        shell: pwsh
+        run: |
+          $artifactRoot = Join-Path (Split-Path $env:GITHUB_WORKSPACE) "work/artifacts/trellis-0.6.15"
+          $coreRoot = Join-Path (Split-Path $env:GITHUB_WORKSPACE) "work/tools/trellis-core-0.6.15"
+          $cliRoot = Join-Path (Split-Path $env:GITHUB_WORKSPACE) "work/tools/trellis-0.6.15"
+          $registry = 'https://registry.npmjs.org'
+          New-Item -ItemType Directory -Force $artifactRoot, $coreRoot, $cliRoot | Out-Null
+
+          $cliIntegrity = (npm view '@mindfoldhq/trellis@0.6.15' dist.integrity --registry $registry).Trim()
+          $coreIntegrity = (npm view '@mindfoldhq/trellis-core@0.6.15' dist.integrity --registry $registry).Trim()
+          if ($cliIntegrity -ne 'sha512-grbF8PToesHojsaWkoG4+Aupih7eZHkXH5y33uzPrWQXwIRewwlM1AoeJEttcXAia9nLZzF/ezuR338PWCKv+A==') {
+            throw 'Official Trellis CLI npm integrity does not match the repository pin.'
+          }
+          if ($coreIntegrity -ne 'sha512-UYMVMM47Zyr/ns39U/f620cs7XaFKX2yez91QMV40Eah+uxxEdGwYHgNjDPZxwMhlr/0TIsZuMM+KF6lcbxg9w==') {
+            throw 'Official Trellis Core npm integrity does not match the repository pin.'
+          }
+
+          npm pack '@mindfoldhq/trellis@0.6.15' --registry $registry --pack-destination $artifactRoot
+          npm pack '@mindfoldhq/trellis-core@0.6.15' --registry $registry --pack-destination $artifactRoot
+          $cliArchive = Join-Path $artifactRoot 'mindfoldhq-trellis-0.6.15.tgz'
+          $coreArchive = Join-Path $artifactRoot 'mindfoldhq-trellis-core-0.6.15.tgz'
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $cliArchive).Hash.ToLowerInvariant() -ne '7b97e4247f54e71f22ff80caa328d9e68fb81908f984f15d70a4d81cc2a0306c') {
+            throw 'Official Trellis CLI archive does not match the repository SHA-256 pin.'
+          }
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $coreArchive).Hash.ToLowerInvariant() -ne '3af3e71fbaba3b4e7f081ca7df39dc9d00f9c527d855dc159263f4a34cf8587a') {
+            throw 'Official Trellis Core archive does not match the repository SHA-256 pin.'
+          }
+          tar -xzf $cliArchive -C $cliRoot
+          tar -xzf $coreArchive -C $coreRoot
+      - name: Verify Wish Builder graph, projection, recovery, and M1 workflow against official Trellis
+        run: >-
+          python scripts/ci_trellis_integration.py
+          --revision "${{ github.sha }}"
+          --platform "${{ matrix.os }}"
+          --output trellis-integration-summary.json
+      - name: Upload revision-bound official Trellis evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: active-m1-trellis-${{ matrix.os }}
+          path: trellis-integration-summary.json
+          if-no-files-found: error
+          retention-days: 14
+
   python:
     name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    env:
+      CI_CELL_ID: ${{ matrix.os }}-py${{ matrix.python }}
+      CI_PLATFORM: ${{ matrix.os }}
+      CI_PYTHON_VERSION: ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run unit and integration tests
+        run: >-
+          python scripts/ci_test_suite.py --exclude-package performance
+          --summary-output ci-summary.json
+          --revision "${{ github.sha }}"
+          --cell-id "${{ matrix.os }}-py${{ matrix.python }}"
+          --platform "${{ matrix.os }}"
+          --python-version "${{ matrix.python }}"
+      - name: Compile Python sources
+        run: python -m compileall -q wish_builder scripts wish-builder/scripts
+      - name: Upload revision-bound test summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: active-m1-python-${{ matrix.os }}-${{ matrix.python }}
+          path: ci-summary.json
+          if-no-files-found: error
+          retention-days: 14
+
+  python-distribution:
+    name: Build one canonical Python distribution artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Install hash-locked build toolchain
+        run: >-
+          python -m pip install --disable-pip-version-check
+          --require-hashes --only-binary=:all:
+          -r requirements/build.txt
+      - name: Build reproducible source and wheel distributions twice
+        run: python scripts/build_distributions.py --outdir dist
+      - name: Build the standalone Skill ZIP twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c "from pathlib import Path; from scripts.build_skill_zip import build; build(Path('dist/wish-builder-skill.zip')); build(Path('dist/wish-builder-skill.repeat.zip'))"
+      - name: Record raw distribution hashes
+        run: >-
+          python scripts/ci_distribution_evidence.py
+          --mode build
+          --dist-dir dist
+          --skill-zip dist/wish-builder-skill.zip
+          --skill-zip-repeat dist/wish-builder-skill.repeat.zip
+          --revision "${{ github.sha }}"
+          --output distribution-evidence.json
+      - name: Upload distributions and raw-hash evidence
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: active-m1-distribution
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/wish-builder-skill.zip
+            dist/wish-builder-skill.repeat.zip
+            distribution-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  python-distribution-install:
+    name: Clean-install canonical distributions on Python ${{ matrix.python }} / ${{ matrix.os }}
+    needs: [python-distribution]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -17,86 +159,381 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Run unit tests
-        run: python -m unittest discover -s tests -v
-      - name: Compile Python sources
-        run: python -m compileall -q wish_builder scripts wish-builder/scripts
-
-  dotnet-baseline:
-    name: .NET 10 baseline
-    runs-on: windows-latest
-    env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
-      DOTNET_NOLOGO: "1"
-      TESTINGPLATFORM_TELEMETRY_OPTOUT: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - name: Download the one canonical distribution artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          global-json-file: global.json
-      - name: Verify pinned SDK
-        shell: pwsh
-        run: |
-          $expected = (Get-Content -Raw global.json | ConvertFrom-Json).sdk.version
-          $actual = dotnet --version
-          if ($actual -ne $expected) {
-            throw "Expected .NET SDK $expected, found $actual"
-          }
-      - name: Restore from committed lock files
-        shell: pwsh
-        run: |
-          dotnet restore tests/dotnet/WishBuilder.CredentialService.Tests/WishBuilder.CredentialService.Tests.csproj --locked-mode
-          git diff --exit-code -- "**/packages.lock.json"
-      - name: Build with warnings as errors
+          name: active-m1-distribution
+          path: built-distribution
+      - name: Verify hashes and clean-install the exact wheel and sdist
         run: >-
-          dotnet build src/WishBuilder.CredentialService/WishBuilder.CredentialService.csproj
-          --configuration Release
-          --no-restore
-          -p:ContinuousIntegrationBuild=true
-      - name: Run .NET tests
+          python scripts/ci_distribution_evidence.py
+          --mode verify-cell
+          --dist-dir built-distribution/dist
+          --build-evidence built-distribution/distribution-evidence.json
+          --revision "${{ github.sha }}"
+          --platform "${{ matrix.os }}"
+          --python-version "${{ matrix.python }}"
+          --cell-id "${{ matrix.os }}-py${{ matrix.python }}"
+          --work-dir "${{ runner.temp }}"
+          --output distribution-install-evidence.json
+      - name: Upload revision-bound clean-install evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: active-m1-distribution-install-${{ matrix.os }}-${{ matrix.python }}
+          path: distribution-install-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  coverage:
+    name: Active M1 coverage invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Install pinned coverage runner
+        run: python -m pip install coverage==7.10.6
+      - name: Measure branch coverage without performance instrumentation
         run: >-
-          dotnet test tests/dotnet/WishBuilder.CredentialService.Tests/WishBuilder.CredentialService.Tests.csproj
-          --configuration Release
-          --no-restore
-          -p:ContinuousIntegrationBuild=true
-      - name: Verify deterministic fail-closed publish
-        shell: pwsh
+          python -m coverage run --branch --source=wish_builder
+          scripts/ci_test_suite.py --exclude-package performance --quiet
+      - name: Write canonical coverage input
+        run: python -m coverage json -o coverage.json
+      - name: Enforce tiered floors and direct safety surfaces
+        run: >-
+          python scripts/ci_coverage_gate.py coverage.json
+          --safety-file wish_builder/contracts/serialization.py
+          --safety-file wish_builder/kernel/gates.py
+          --safety-file wish_builder/kernel/state.py
+          --safety-file wish_builder/services/replay.py
+          --safety-file wish_builder/services/recovery.py
+          > coverage-gate.json
+      - name: Inventory raw coverage evidence
+        if: always()
+        run: >-
+          python scripts/ci_evidence_packet.py record-files
+          --kind coverage
+          --revision "${{ github.sha }}"
+          --file coverage.json
+          --file coverage-gate.json
+          --output coverage-raw-evidence.json
+      - name: Upload coverage evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: active-m1-coverage
+          path: |
+            coverage.json
+            coverage-gate.json
+            coverage-raw-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  mutation:
+    name: Active M1 safety mutations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Kill every registered safety mutation
+        run: >-
+          python scripts/ci_mutation_gate.py
+          --json-output mutation-report.json
+      - name: Inventory raw mutation evidence
+        if: always()
+        run: >-
+          python scripts/ci_evidence_packet.py record-files
+          --kind mutation
+          --revision "${{ github.sha }}"
+          --file mutation-report.json
+          --output mutation-raw-evidence.json
+      - name: Upload mutation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: active-m1-mutations
+          path: |
+            mutation-report.json
+            mutation-raw-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  safety-evidence:
+    name: Direct safety-invariant evidence
+    needs: [coverage, mutation]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: active-m1-coverage
+          path: evidence
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: active-m1-mutations
+          path: evidence
+      - name: Resolve changed-safety comparison base
+        id: safety-base
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_REF: ${{ github.ref }}
+          PUSH_REF_NAME: ${{ github.ref_name }}
         run: |
-          $first = Join-Path $env:RUNNER_TEMP "wish-builder-publish-a"
-          $second = Join-Path $env:RUNNER_TEMP "wish-builder-publish-b"
-          $project = "src/WishBuilder.CredentialService/WishBuilder.CredentialService.csproj"
-          dotnet publish $project --configuration Release --no-restore -p:ContinuousIntegrationBuild=true --output $first
-          dotnet publish $project --configuration Release --no-restore -p:ContinuousIntegrationBuild=true --output $second
-          $exeName = "WishBuilder.CredentialService.exe"
-          $firstExe = Join-Path $first $exeName
-          $secondExe = Join-Path $second $exeName
-          $firstHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $firstExe).Hash
-          $secondHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $secondExe).Hash
-          if ($firstHash -ne $secondHash) {
-            throw "Credential service publish is not deterministic: $firstHash != $secondHash"
-          }
-          $evidence = Get-Content -Raw release/provenance/dotnet-support.json | ConvertFrom-Json
-          $expectedHash = $evidence.baseline_qualification.repeat_publish_sha256
-          if ($firstHash.ToLowerInvariant() -ne $expectedHash) {
-            throw "Published executable does not match recorded evidence: $firstHash != $expectedHash"
-          }
-          $publishedNames = @(Get-ChildItem -File -LiteralPath $first | Select-Object -ExpandProperty Name)
-          $unexpected = @($publishedNames | Where-Object { $_ -notin @($exeName, "WishBuilder.CredentialService.pdb") })
-          if ($unexpected.Count -gt 0) {
-            throw "Single-file publish emitted unexpected files: $($unexpected -join ', ')"
-          }
-          & $firstExe --version
-          if ($LASTEXITCODE -ne 0) {
-            throw "Version probe exited $LASTEXITCODE"
-          }
-          $errorFile = Join-Path $env:RUNNER_TEMP "credential-service-stderr.txt"
-          & $firstExe 2> $errorFile
-          $serviceExit = $LASTEXITCODE
-          $serviceError = (Get-Content -Raw -LiteralPath $errorFile).Trim()
-          if ($serviceExit -ne 78 -or $serviceError -notlike "SETUP_REQUIRED:*") {
-            throw "Expected fail-closed exit 78, got $serviceExit with: $serviceError"
-          }
+          set -euo pipefail
+          zero_sha="0000000000000000000000000000000000000000"
+          if [[ "$EVENT_NAME" == "push" && ( "$PUSH_REF" != refs/heads/* || "$PUSH_REF" != "refs/heads/$PUSH_REF_NAME" ) ]]; then
+            echo "Promotable push evidence requires an exact branch ref." >&2
+            exit 1
+          fi
+          if [[ "$EVENT_NAME" == "pull_request" && -n "$PR_BASE_SHA" ]]; then
+            base_ref="$PR_BASE_SHA"
+          elif [[ "$EVENT_NAME" == "push" && -n "$DEFAULT_BRANCH" && "$PUSH_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+            default_ref="refs/remotes/origin/$DEFAULT_BRANCH"
+            git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:$default_ref"
+            mapfile -t merge_bases < <(git merge-base --all HEAD "$default_ref")
+            if [[ "${#merge_bases[@]}" -ne 1 ]]; then
+              echo "Expected exactly one merge base with the default branch; found ${#merge_bases[@]}." >&2
+              exit 1
+            fi
+            base_ref="${merge_bases[0]}"
+          elif [[ "$EVENT_NAME" == "push" && -n "$DEFAULT_BRANCH" && "$PUSH_REF_NAME" == "$DEFAULT_BRANCH" && -n "$PUSH_BEFORE_SHA" && "$PUSH_BEFORE_SHA" != "$zero_sha" ]]; then
+            base_ref="$PUSH_BEFORE_SHA"
+            if ! git cat-file -e "$base_ref^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$base_ref"
+            fi
+          else
+            echo "No trustworthy changed-safety comparison base is available." >&2
+            exit 1
+          fi
+          git rev-parse --verify --end-of-options "$base_ref^{commit}" >/dev/null
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+      - name: Join fixed and changed-branch safety evidence
+        run: >-
+          python scripts/ci_safety_evidence.py
+          evidence/coverage.json evidence/mutation-report.json
+          --base-ref "${{ steps.safety-base.outputs.base_ref }}"
+          --changed-lines-output changed-lines.json
+          --output safety-evidence.json
+      - name: Inventory raw safety evidence
+        if: always()
+        run: >-
+          python scripts/ci_evidence_packet.py record-files
+          --kind safety
+          --revision "${{ github.sha }}"
+          --file changed-lines.json
+          --file safety-evidence.json
+          --output safety-raw-evidence.json
+      - name: Upload joined safety evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: active-m1-safety-evidence
+          path: |
+            changed-lines.json
+            safety-evidence.json
+            safety-raw-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  performance-evidence:
+    name: Performance evidence on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Verify performance contracts without coverage instrumentation
+        run: python scripts/ci_test_suite.py --only-package performance
+      - name: Record shared-runner envelope evidence
+        run: >-
+          python scripts/ci_performance_gate.py run
+          --output performance-evidence.json
+          > performance-gate.raw.json
+      - name: Bind performance gate to the candidate revision
+        if: always()
+        run: >-
+          python scripts/ci_evidence_packet.py stamp-performance
+          --gate-input performance-gate.raw.json
+          --platform "${{ matrix.os }}"
+          --revision "${{ github.sha }}"
+          --output performance-gate.json
+      - name: Inventory raw performance evidence
+        if: always()
+        run: >-
+          python scripts/ci_evidence_packet.py record-files
+          --kind performance
+          --cell-id "${{ matrix.os }}"
+          --revision "${{ github.sha }}"
+          --file performance-evidence.json
+          --file performance-gate.raw.json
+          --file performance-gate.json
+          --output performance-raw-evidence.json
+      - name: Upload platform and storage evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: active-m1-performance-${{ matrix.os }}
+          path: |
+            performance-evidence.json
+            performance-gate.raw.json
+            performance-gate.json
+            performance-raw-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  active-m1-evidence-packet:
+    name: Seal active-M1 evidence for one candidate
+    if: ${{ always() }}
+    needs:
+      - trellis-official-integration
+      - python
+      - python-distribution
+      - python-distribution-install
+      - coverage
+      - mutation
+      - safety-evidence
+      - performance-evidence
+    runs-on: ubuntu-latest
+    env:
+      ACTIVE_M1_NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+      - name: Resolve trusted packet safety base
+        id: packet-safety-base
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_REF: ${{ github.ref }}
+          PUSH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          zero_sha="0000000000000000000000000000000000000000"
+          if [[ "$EVENT_NAME" == "push" && ( "$PUSH_REF" != refs/heads/* || "$PUSH_REF" != "refs/heads/$PUSH_REF_NAME" ) ]]; then
+            echo "Promotable push evidence requires an exact branch ref." >&2
+            exit 1
+          fi
+          if [[ "$EVENT_NAME" == "pull_request" && -n "$PR_BASE_SHA" ]]; then
+            base_ref="$PR_BASE_SHA"
+          elif [[ "$EVENT_NAME" == "push" && -n "$DEFAULT_BRANCH" && "$PUSH_REF_NAME" != "$DEFAULT_BRANCH" ]]; then
+            default_ref="refs/remotes/origin/$DEFAULT_BRANCH"
+            git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:$default_ref"
+            mapfile -t merge_bases < <(git merge-base --all HEAD "$default_ref")
+            if [[ "${#merge_bases[@]}" -ne 1 ]]; then
+              echo "Expected exactly one merge base with the default branch; found ${#merge_bases[@]}." >&2
+              exit 1
+            fi
+            base_ref="${merge_bases[0]}"
+          elif [[ "$EVENT_NAME" == "push" && -n "$DEFAULT_BRANCH" && "$PUSH_REF_NAME" == "$DEFAULT_BRANCH" && -n "$PUSH_BEFORE_SHA" && "$PUSH_BEFORE_SHA" != "$zero_sha" ]]; then
+            base_ref="$PUSH_BEFORE_SHA"
+            if ! git cat-file -e "$base_ref^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$base_ref"
+            fi
+          else
+            echo "No trustworthy changed-safety comparison base is available." >&2
+            exit 1
+          fi
+          git rev-parse --verify --end-of-options "$base_ref^{commit}" >/dev/null
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+      - name: Download all Python matrix summaries from this workflow
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: active-m1-python-*
+          path: evidence
+          merge-multiple: false
+      - name: Download official Trellis integration summaries from this workflow
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: active-m1-trellis-*
+          path: evidence
+          merge-multiple: false
+      - name: Download distribution evidence from this workflow
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: active-m1-distribution
+          path: evidence/active-m1-distribution
+      - name: Download all distribution clean-install cells from this workflow
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: active-m1-distribution-install-*
+          path: evidence
+          merge-multiple: false
+      - name: Download coverage evidence from this workflow
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: active-m1-coverage
+          path: evidence/active-m1-coverage
+      - name: Download mutation evidence from this workflow
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: active-m1-mutations
+          path: evidence/active-m1-mutations
+      - name: Download safety evidence from this workflow
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: active-m1-safety-evidence
+          path: evidence/active-m1-safety-evidence
+      - name: Download performance evidence from this workflow
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: active-m1-performance-*
+          path: evidence
+          merge-multiple: false
+      - name: Validate and seal the candidate evidence packet
+        run: >-
+          python scripts/ci_evidence_packet.py build
+          --evidence-root evidence
+          --candidate-revision "${{ github.sha }}"
+          --needs-json "$ACTIVE_M1_NEEDS_JSON"
+          --workflow-run-id "${{ github.run_id }}"
+          --workflow-run-attempt "${{ github.run_attempt }}"
+          --safety-base-ref "${{ steps.packet-safety-base.outputs.base_ref }}"
+          --output active-m1-evidence-packet.json
+          --digest-output active-m1-evidence-packet.sha256
+      - name: Upload the sealed evidence packet
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: active-m1-evidence-packet
+          path: |
+            active-m1-evidence-packet.json
+            active-m1-evidence-packet.sha256
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,472 @@
+name: Publish verified prerelease
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact Python package version, for example 0.1.0.dev0
+        required: true
+        type: string
+      target_sha:
+        description: Full commit SHA from the successful CI run
+        required: true
+        type: string
+      ci_run_id:
+        description: GitHub Actions run ID containing the sealed evidence and distributions
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: wish-builder-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  verify_candidate:
+    name: Verify candidate with a read-only token
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      run_attempt: ${{ steps.selected-ci.outputs.run_attempt }}
+      trusted_workflow_sha: ${{ steps.trusted_source.outputs.trusted_workflow_sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      TARGET_SHA: ${{ inputs.target_sha }}
+      CI_RUN_ID: ${{ inputs.ci_run_id }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+      WORKFLOW_DEFINITION_SHA: ${{ github.workflow_sha }}
+      WORKFLOW_REF: ${{ github.ref }}
+    steps:
+      - name: Require immutable inputs and a default-branch workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_REF" == "refs/heads/$DEFAULT_BRANCH" ]]
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$ ]]
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TARGET_SHA" == "$TRUSTED_WORKFLOW_SHA" ]]
+          [[ "$WORKFLOW_DEFINITION_SHA" == "$TRUSTED_WORKFLOW_SHA" ]]
+          minimum_gh_version="2.96.0"
+          gh_version="$(gh --version | awk 'NR == 1 { print $3 }')"
+          printf '%s\n%s\n' "$minimum_gh_version" "$gh_version" | sort -V -C
+
+          repository_json="$(gh api "repos/$GITHUB_REPOSITORY")"
+          [[ "$(jq -r .full_name <<<"$repository_json")" == "$GITHUB_REPOSITORY" ]]
+          [[ "$(jq -r .default_branch <<<"$repository_json")" == "$DEFAULT_BRANCH" ]]
+
+      - name: Require protected release approval policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          environment_json="$(gh api "repos/$GITHUB_REPOSITORY/environments/release")"
+          [[ "$(jq -r .name <<<"$environment_json")" == "release" ]]
+          jq -e '
+            any(
+              .protection_rules[]?;
+              .type == "required_reviewers"
+              and (.reviewers | type == "array" and length >= 1)
+              and .prevent_self_review == true
+            )
+          ' <<<"$environment_json" >/dev/null
+          jq -e '
+            .deployment_branch_policy.protected_branches == true
+            and .deployment_branch_policy.custom_branch_policies == false
+          ' <<<"$environment_json" >/dev/null
+
+      - name: Check out trusted verifier code at the workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify immutable trusted workflow source ancestry
+        id: trusted_source
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$TRUSTED_WORKFLOW_SHA" ]]
+          encoded_default_branch="$(jq -rn --arg value "$DEFAULT_BRANCH" '$value | @uri')"
+          default_tip="$(gh api \
+            "repos/$GITHUB_REPOSITORY/branches/$encoded_default_branch" \
+            --jq .commit.sha)"
+          [[ "$default_tip" =~ ^[0-9a-f]{40}$ ]]
+          comparison_json="$(gh api \
+            "repos/$GITHUB_REPOSITORY/compare/$TRUSTED_WORKFLOW_SHA...$default_tip")"
+          comparison_status="$(jq -r .status <<<"$comparison_json")"
+          [[ "$comparison_status" == "ahead" || "$comparison_status" == "identical" ]]
+          [[ "$(jq -r .merge_base_commit.sha <<<"$comparison_json")" == "$TRUSTED_WORKFLOW_SHA" ]]
+          echo "trusted_workflow_sha=$TRUSTED_WORKFLOW_SHA" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install hash-locked build toolchain
+        run: >-
+          python -m pip install --disable-pip-version-check
+          --require-hashes --only-binary=:all:
+          -r requirements/build.txt
+
+      - name: Verify the selected CI run
+        id: selected-ci
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$TARGET_SHA" ]]
+          run_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CI_RUN_ID")"
+          [[ "$(jq -r .repository.full_name <<<"$run_json")" == "$GITHUB_REPOSITORY" ]]
+          [[ "$(jq -r .head_repository.full_name <<<"$run_json")" == "$GITHUB_REPOSITORY" ]]
+          [[ "$(jq -r .head_branch <<<"$run_json")" == "$DEFAULT_BRANCH" ]]
+          [[ "$(jq -r .head_sha <<<"$run_json")" == "$TARGET_SHA" ]]
+          [[ "$(jq -r .status <<<"$run_json")" == "completed" ]]
+          [[ "$(jq -r .conclusion <<<"$run_json")" == "success" ]]
+          [[ "$(jq -r .path <<<"$run_json")" == ".github/workflows/ci.yml" ]]
+          [[ "$(jq -r .event <<<"$run_json")" == "push" ]]
+          run_attempt="$(jq -r .run_attempt <<<"$run_json")"
+          [[ "$run_attempt" =~ ^[1-9][0-9]*$ ]]
+          echo "run_attempt=$run_attempt" >> "$GITHUB_OUTPUT"
+
+      - name: Download canonical distributions from the selected run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: active-m1-distribution
+          path: work/release-input/distribution
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.ci_run_id }}
+
+      - name: Download the sealed evidence packet from the selected run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: active-m1-evidence-packet
+          path: work/release-input/evidence
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.ci_run_id }}
+
+      - name: Rebuild trusted source and compare every promoted byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/build_distributions.py --outdir dist-rebuilt
+          python -c "from pathlib import Path; from scripts.build_skill_zip import build; build(Path('dist-rebuilt/wish-builder-skill.zip')); build(Path('dist-rebuilt/wish-builder-skill.repeat.zip'))"
+          python scripts/ci_distribution_evidence.py \
+            --mode build \
+            --dist-dir dist-rebuilt \
+            --skill-zip dist-rebuilt/wish-builder-skill.zip \
+            --skill-zip-repeat dist-rebuilt/wish-builder-skill.repeat.zip \
+            --revision "$TARGET_SHA" \
+            --output dist-rebuilt/distribution-evidence.json
+
+          cp work/release-input/distribution/distribution-evidence.json \
+            work/release-input/distribution/dist/distribution-evidence.json
+          shopt -s nullglob
+          ci_wheels=(work/release-input/distribution/dist/*.whl)
+          rebuilt_wheels=(dist-rebuilt/*.whl)
+          ci_sdists=(work/release-input/distribution/dist/*.tar.gz)
+          rebuilt_sdists=(dist-rebuilt/*.tar.gz)
+          [[ "${#ci_wheels[@]}" -eq 1 && "${#rebuilt_wheels[@]}" -eq 1 ]]
+          [[ "${#ci_sdists[@]}" -eq 1 && "${#rebuilt_sdists[@]}" -eq 1 ]]
+          [[ "$(basename "${ci_wheels[0]}")" == "$(basename "${rebuilt_wheels[0]}")" ]]
+          [[ "$(basename "${ci_sdists[0]}")" == "$(basename "${rebuilt_sdists[0]}")" ]]
+          cmp --silent "${ci_wheels[0]}" "${rebuilt_wheels[0]}"
+          cmp --silent "${ci_sdists[0]}" "${rebuilt_sdists[0]}"
+          cmp --silent \
+            work/release-input/distribution/dist/wish-builder-skill.zip \
+            dist-rebuilt/wish-builder-skill.zip
+          cmp --silent \
+            work/release-input/distribution/dist/wish-builder-skill.repeat.zip \
+            dist-rebuilt/wish-builder-skill.repeat.zip
+          cmp --silent \
+            work/release-input/distribution/dist/distribution-evidence.json \
+            dist-rebuilt/distribution-evidence.json
+
+          python scripts/ci_release.py \
+            --repository-root . \
+            --distribution-root work/release-input/distribution/dist \
+            --packet work/release-input/evidence/active-m1-evidence-packet.json \
+            --packet-digest work/release-input/evidence/active-m1-evidence-packet.sha256 \
+            --output-dir release-assets \
+            --revision "$TARGET_SHA" \
+            --version "$RELEASE_VERSION" \
+            --tag "v$RELEASE_VERSION" \
+            --ci-run-id "$CI_RUN_ID" \
+            --ci-run-attempt "${{ steps.selected-ci.outputs.run_attempt }}" \
+            > release-promotion.json
+
+      - name: Verify local release checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release-assets && sha256sum --check SHA256SUMS)
+          test "$(jq -r .candidate_revision release-assets/release-manifest.json)" = "$TARGET_SHA"
+          test "$(jq -r .version release-assets/release-manifest.json)" = "$RELEASE_VERSION"
+          test "$(jq -r .tag release-assets/release-manifest.json)" = "v$RELEASE_VERSION"
+          test "$(jq -r .ci_run_id release-assets/release-manifest.json)" = "$CI_RUN_ID"
+          test "$(jq -r .ci_run_attempt release-assets/release-manifest.json)" = "${{ steps.selected-ci.outputs.run_attempt }}"
+          test "$(jq -r .prerelease release-assets/release-manifest.json)" = "true"
+          test "$(jq -r .status release-assets/release-manifest.json)" = "passed"
+
+      - name: Upload the read-only verifier result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-release-assets
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish verified bytes with a write token
+    needs: verify_candidate
+    if: ${{ needs.verify_candidate.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      TARGET_SHA: ${{ inputs.target_sha }}
+      CI_RUN_ID: ${{ inputs.ci_run_id }}
+      CI_RUN_ATTEMPT: ${{ needs.verify_candidate.outputs.run_attempt }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      TRUSTED_WORKFLOW_SHA: ${{ github.sha }}
+      VERIFIED_TRUSTED_WORKFLOW_SHA: ${{ needs.verify_candidate.outputs.trusted_workflow_sha }}
+      WORKFLOW_DEFINITION_SHA: ${{ github.workflow_sha }}
+      WORKFLOW_REF: ${{ github.ref }}
+    steps:
+      - name: Check out the immutable trusted workflow revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Download bytes approved by the read-only verifier
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: verified-release-assets
+          path: release-assets
+
+      - name: Verify local release checksums before write access is used
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_REF" == "refs/heads/$DEFAULT_BRANCH" ]]
+          [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$ ]]
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$TRUSTED_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TARGET_SHA" == "$TRUSTED_WORKFLOW_SHA" ]]
+          [[ "$VERIFIED_TRUSTED_WORKFLOW_SHA" == "$TRUSTED_WORKFLOW_SHA" ]]
+          [[ "$WORKFLOW_DEFINITION_SHA" == "$TRUSTED_WORKFLOW_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$TRUSTED_WORKFLOW_SHA" ]]
+          (cd release-assets && sha256sum --check SHA256SUMS)
+          test "$(jq -r .candidate_revision release-assets/release-manifest.json)" = "$TARGET_SHA"
+          test "$(jq -r .version release-assets/release-manifest.json)" = "$RELEASE_VERSION"
+          test "$(jq -r .tag release-assets/release-manifest.json)" = "v$RELEASE_VERSION"
+          test "$(jq -r .ci_run_id release-assets/release-manifest.json)" = "$CI_RUN_ID"
+          test "$(jq -r .ci_run_attempt release-assets/release-manifest.json)" = "$CI_RUN_ATTEMPT"
+          test "$(jq -r .prerelease release-assets/release-manifest.json)" = "true"
+          test "$(jq -r .status release-assets/release-manifest.json)" = "passed"
+
+          encoded_default_branch="$(jq -rn --arg value "$DEFAULT_BRANCH" '$value | @uri')"
+          default_tip="$(gh api \
+            "repos/$GITHUB_REPOSITORY/branches/$encoded_default_branch" \
+            --jq .commit.sha)"
+          [[ "$default_tip" =~ ^[0-9a-f]{40}$ ]]
+          trusted_comparison="$(gh api \
+            "repos/$GITHUB_REPOSITORY/compare/$TRUSTED_WORKFLOW_SHA...$default_tip")"
+          trusted_status="$(jq -r .status <<<"$trusted_comparison")"
+          [[ "$trusted_status" == "ahead" || "$trusted_status" == "identical" ]]
+          [[ "$(jq -r .merge_base_commit.sha <<<"$trusted_comparison")" == "$TRUSTED_WORKFLOW_SHA" ]]
+
+          candidate_comparison="$(gh api \
+            "repos/$GITHUB_REPOSITORY/compare/$TARGET_SHA...$default_tip")"
+          candidate_status="$(jq -r .status <<<"$candidate_comparison")"
+          [[ "$candidate_status" == "ahead" || "$candidate_status" == "identical" ]]
+          [[ "$(jq -r .merge_base_commit.sha <<<"$candidate_comparison")" == "$TARGET_SHA" ]]
+          git rev-parse --verify --end-of-options "$TARGET_SHA^{commit}" >/dev/null
+
+      - name: Create a draft prerelease, verify it, and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v$RELEASE_VERSION"
+          run_marker="<!-- wish-builder-release-owner:$GITHUB_REPOSITORY:$GITHUB_RUN_ID:$GITHUB_RUN_ATTEMPT:$TARGET_SHA -->"
+          draft_creation_attempted=0
+          owned_release_id=""
+          published=0
+
+          cleanup_owned_release() {
+            exit_status=$?
+            trap - EXIT
+            if [[ "$exit_status" -ne 0 && "$draft_creation_attempted" -eq 1 && "$published" -eq 0 ]]; then
+              set +e
+              ownership_json="$(gh release view "$tag" \
+                --repo "$GITHUB_REPOSITORY" \
+                --json databaseId,isDraft,tagName,targetCommitish,body 2>/dev/null)"
+              ownership_status=$?
+              set -e
+              release_id="$(jq -r .databaseId <<<"$ownership_json" 2>/dev/null || true)"
+              if [[ "$ownership_status" -eq 0 ]] \
+                && [[ "$release_id" =~ ^[1-9][0-9]*$ ]] \
+                && { [[ -z "$owned_release_id" ]] || [[ "$release_id" == "$owned_release_id" ]]; } \
+                && [[ "$(jq -r .tagName <<<"$ownership_json")" == "$tag" ]] \
+                && [[ "$(jq -r .targetCommitish <<<"$ownership_json")" == "$TARGET_SHA" ]] \
+                && jq -e --arg marker "$run_marker" \
+                  '((.body // "") | split("\n")[0]) == $marker' \
+                  <<<"$ownership_json" >/dev/null; then
+                if gh api --method DELETE \
+                  "repos/$GITHUB_REPOSITORY/releases/$release_id" >/dev/null; then
+                  echo "Removed the release created by this failed workflow run." >&2
+                else
+                  echo "Automatic release cleanup failed; manually remove or yank release $release_id before retrying." >&2
+                fi
+              else
+                echo "No run-owned release was safe to remove; leaving remote state unchanged." >&2
+              fi
+            fi
+            exit "$exit_status"
+          }
+          trap cleanup_owned_release EXIT
+
+          # Refuse before any tag mutation, then check again after tag handling
+          # to close the race with another release workflow.
+          existing_release_ids="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$tag\") | .id")"
+          if [[ -n "$existing_release_ids" ]]; then
+            echo "A release for $tag already exists; refusing to replace it." >&2
+            exit 1
+          fi
+
+          set +e
+          remote_tag_lines="$(git ls-remote --exit-code --tags origin \
+            "refs/tags/$tag" "refs/tags/$tag^{}" 2>tag-lookup.err)"
+          tag_lookup_status=$?
+          set -e
+          case "$tag_lookup_status" in
+            0)
+              echo "Tag $tag already exists; accepting it only after exact peeled-SHA verification."
+              ;;
+            2)
+              git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                tag --annotate "$tag" "$TARGET_SHA" \
+                --message "Wish Builder $RELEASE_VERSION"
+              local_tag_object="$(git rev-parse "refs/tags/$tag")"
+              git push origin "refs/tags/$tag:refs/tags/$tag"
+              remote_tag_lines="$(git ls-remote --exit-code --tags origin \
+                "refs/tags/$tag" "refs/tags/$tag^{}")"
+              ;;
+            *)
+              cat tag-lookup.err >&2
+              echo "Could not determine whether $tag exists because the remote lookup failed (exit $tag_lookup_status)." >&2
+              exit "$tag_lookup_status"
+              ;;
+          esac
+
+          direct_ref="refs/tags/$tag"
+          peeled_ref="refs/tags/$tag^{}"
+          direct_count="$(awk -v ref="$direct_ref" '$2 == ref { count++ } END { print count + 0 }' <<<"$remote_tag_lines")"
+          peeled_count="$(awk -v ref="$peeled_ref" '$2 == ref { count++ } END { print count + 0 }' <<<"$remote_tag_lines")"
+          direct_sha="$(awk -v ref="$direct_ref" '$2 == ref { print $1 }' <<<"$remote_tag_lines")"
+          peeled_sha="$(awk -v ref="$peeled_ref" '$2 == ref { print $1 }' <<<"$remote_tag_lines")"
+          [[ "$direct_count" -eq 1 ]]
+          [[ "$peeled_count" -eq 1 ]]
+          [[ "$peeled_sha" == "$TARGET_SHA" ]]
+          if [[ -n "${local_tag_object:-}" ]]; then
+            [[ "$direct_sha" == "$local_tag_object" ]]
+          fi
+
+          existing_release_ids="$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$tag\") | .id")"
+          if [[ -n "$existing_release_ids" ]]; then
+            echo "A release for $tag already exists; refusing to replace it." >&2
+            exit 1
+          fi
+
+          # Create a draft prerelease before uploading the verified assets.
+          draft_creation_attempted=1
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$TARGET_SHA" \
+            --title "Wish Builder $RELEASE_VERSION" \
+            --notes "$run_marker" \
+            --generate-notes \
+            --prerelease \
+            --latest=false \
+            --verify-tag \
+            --draft
+
+          ownership_json="$(gh release view "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json databaseId,isDraft,tagName,targetCommitish,body)"
+          owned_release_id="$(jq -r .databaseId <<<"$ownership_json")"
+          [[ "$owned_release_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$(jq -r .isDraft <<<"$ownership_json")" == "true" ]]
+          [[ "$(jq -r .tagName <<<"$ownership_json")" == "$tag" ]]
+          [[ "$(jq -r .targetCommitish <<<"$ownership_json")" == "$TARGET_SHA" ]]
+          jq -e --arg marker "$run_marker" \
+            '((.body // "") | split("\n")[0]) == $marker' \
+            <<<"$ownership_json" >/dev/null
+
+          gh release upload "$tag" release-assets/* \
+            --repo "$GITHUB_REPOSITORY"
+
+          draft_json="$(gh release view "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease,targetCommitish)"
+          [[ "$(jq -r .isDraft <<<"$draft_json")" == "true" ]]
+          [[ "$(jq -r .isPrerelease <<<"$draft_json")" == "true" ]]
+          [[ "$(jq -r .targetCommitish <<<"$draft_json")" == "$TARGET_SHA" ]]
+
+          # Download the draft and verify every published byte.
+          mkdir downloaded-release
+          gh release download "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir downloaded-release
+          cmp --silent release-assets/SHA256SUMS downloaded-release/SHA256SUMS
+          (cd downloaded-release && sha256sum --check SHA256SUMS)
+          (cd release-assets && LC_ALL=C sha256sum -- * | LC_ALL=C sort) \
+            > expected-release-assets.sha256
+          (cd downloaded-release && LC_ALL=C sha256sum -- * | LC_ALL=C sort) \
+            > downloaded-release-assets.sha256
+          diff -u expected-release-assets.sha256 downloaded-release-assets.sha256
+
+          prepublish_tag_lines="$(git ls-remote --exit-code --tags origin \
+            "refs/tags/$tag" "refs/tags/$tag^{}")"
+          prepublish_direct_count="$(awk -v ref="$direct_ref" '$2 == ref { count++ } END { print count + 0 }' <<<"$prepublish_tag_lines")"
+          prepublish_peeled_count="$(awk -v ref="$peeled_ref" '$2 == ref { count++ } END { print count + 0 }' <<<"$prepublish_tag_lines")"
+          prepublish_peeled_sha="$(awk -v ref="$peeled_ref" '$2 == ref { print $1 }' <<<"$prepublish_tag_lines")"
+          [[ "$prepublish_direct_count" -eq 1 ]]
+          [[ "$prepublish_peeled_count" -eq 1 ]]
+          [[ "$prepublish_peeled_sha" == "$TARGET_SHA" ]]
+
+          # Publish the verified prerelease.
+          gh release edit "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --prerelease \
+            --latest=false
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = "false"
+          test "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)" = "true"
+
+          final_tag_lines="$(git ls-remote --exit-code --tags origin \
+            "refs/tags/$tag" "refs/tags/$tag^{}")"
+          final_peeled_sha="$(awk -v ref="$peeled_ref" '$2 == ref { print $1 }' <<<"$final_tag_lines")"
+          [[ "$final_peeled_sha" == "$TARGET_SHA" ]]
+          published=1

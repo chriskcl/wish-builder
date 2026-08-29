@@ -1,14 +1,24 @@
-usage: wishctl [-h] {validate,ready,drift,trace,hash} ...
+usage: wishctl [-h]
+               {validate,ready,drift,trace,hash,import-trellis,snapshot-trellis,run,decide,resume} ...
 
 Validate and inspect wish-builder execution manifests.
 
 positional arguments:
-  {validate,ready,drift,trace,hash}
+  {validate,ready,drift,trace,hash,import-trellis,snapshot-trellis,run,decide,resume}
     validate            validate a manifest
     ready               print dispatchable task IDs
     drift               check changed files against ownership
     trace               render requirement trace Markdown
     hash                print a gate artifact SHA-256
+    import-trellis      compile a Wish Builder-derived graph snapshot from
+                        official Trellis task records into manifest v2
+    snapshot-trellis    derive a Wish Builder graph snapshot from official Trellis
+                        tasks
+    run                 run one qualified frozen execution manifest in the
+                        foreground
+    decide              commit one direct-CLI Gate decision to the Journal
+    resume              resume one unknown dispatch from a direct-CLI recovery
+                        proof
 
 options:
   -h, --help            show this help message and exit

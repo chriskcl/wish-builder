@@ -2,16 +2,15 @@
 
 .gitattributes text eol=lf
 .gitignore text eol=lf
-*.cs text eol=lf
-*.csproj text eol=lf
 *.json text eol=lf
 *.lock text eol=lf
 *.md text eol=lf
-*.props text eol=lf
+*.mjs text eol=lf
 *.py text eol=lf
 *.toml text eol=lf
 *.txt text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+LICENSE text eol=lf
 
 *.zip binary

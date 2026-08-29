@@ -1,0 +1,166 @@
+{
+  "families": [
+    {
+      "asserted_outcome": "Stable bounded diagnostics prevent run admission.",
+      "codepath": "Input/contract decode",
+      "failure_trigger": "Hostile raw JSON bytes and structural limit violations.",
+      "id": "input-contract-decode",
+      "test_ids": ["tests.contracts.test_decoder.StrictDecoderTests.test_curated_hostile_raw_byte_corpus_is_rejected"]
+    },
+    {
+      "asserted_outcome": "The Gate remains pending and no approval is appended.",
+      "codepath": "Gate decision",
+      "failure_trigger": "Wrong hash, sequence, nonce, actor, workspace, or replay.",
+      "id": "gate-decision",
+      "test_ids": ["tests.kernel.test_gates.GateDecisionTests.test_full_decision_mismatch_matrix_fails_closed"]
+    },
+    {
+      "asserted_outcome": "Identity drift blocks admission without modifying user files.",
+      "codepath": "Control root/workspace",
+      "failure_trigger": "Move or replace an identity-bearing worktree directory.",
+      "id": "control-root-workspace",
+      "test_ids": ["tests.adapters.test_git_identity.GitIdentityTests.test_moved_and_replaced_worktree_keeps_original_user_files_untouched"]
+    },
+    {
+      "asserted_outcome": "Persistence closes and later effects remain denied.",
+      "codepath": "Journal admission",
+      "failure_trigger": "Inject flush and fsync failures around an append.",
+      "id": "journal-admission",
+      "test_ids": ["tests.adapters.test_storage_faults.StorageFaultTests.test_flush_or_fsync_failure_closes_service_and_exact_retry_redurabilizes"]
+    },
+    {
+      "asserted_outcome": "Recovery blocks at the last verified journal position.",
+      "codepath": "Journal replay",
+      "failure_trigger": "Break a hash chain or leave an incomplete non-final segment.",
+      "id": "journal-replay",
+      "test_ids": ["tests.services.test_replay.StreamingReplayTests.test_incomplete_nonfinal_segment_and_hash_break_both_block"]
+    },
+    {
+      "asserted_outcome": "Only the final incomplete frame is quarantined as uncommitted.",
+      "codepath": "Torn final frame",
+      "failure_trigger": "Remove the delimiter from the final journal frame.",
+      "id": "torn-final-frame",
+      "test_ids": ["tests.services.test_replay.StreamingReplayTests.test_only_final_frame_without_delimiter_is_quarantined"]
+    },
+    {
+      "asserted_outcome": "Corrupt derived state is discarded and rebuilt from authority.",
+      "codepath": "Checkpoint/index",
+      "failure_trigger": "Corrupt the checkpoint GraphIndex.",
+      "id": "checkpoint-index",
+      "test_ids": ["tests.services.test_replay.StreamingReplayTests.test_corrupt_checkpoint_graph_is_discarded_preserved_and_rebuilt"]
+    },
+    {
+      "asserted_outcome": "A reused process identity or workspace mismatch cannot retain authority.",
+      "codepath": "Lease/epoch",
+      "failure_trigger": "Reuse a PID identity or change the bound workspace.",
+      "id": "lease-epoch",
+      "test_ids": ["tests.services.test_recovery.CoordinatorLeaseRecoveryTests.test_pid_reuse_and_workspace_mismatch_cannot_renew_or_release"]
+    },
+    {
+      "asserted_outcome": "Invalid sequences are rejected with a stable invariant reason.",
+      "codepath": "Graph/state kernel",
+      "failure_trigger": "Submit duplicate, conflicting, stale, gapped, or wrong-epoch transitions.",
+      "id": "graph-state-kernel",
+      "test_ids": ["tests.regressions.test_saved_sequences.SavedSequenceTests.test_minimized_illegal_sequences_keep_their_exact_reason"]
+    },
+    {
+      "asserted_outcome": "Launch failure is typed and no successful process result is admitted.",
+      "codepath": "Process launch",
+      "failure_trigger": "Fail stdio setup or executable launch.",
+      "id": "process-launch",
+      "test_ids": ["tests.processes.test_runner.ProcessRunnerTests.test_stdio_and_launch_failures_are_named"]
+    },
+    {
+      "asserted_outcome": "Unknown termination proof blocks the attempt.",
+      "codepath": "Process containment",
+      "failure_trigger": "Fail process-tree kill proof.",
+      "id": "process-containment",
+      "test_ids": ["tests.processes.test_runner.ProcessRunnerTests.test_kill_proof_failure_is_blocked_even_when_cleanup_succeeds"]
+    },
+    {
+      "asserted_outcome": "The result is rejected and the target worktree stays untouched.",
+      "codepath": "Attempt worktree",
+      "failure_trigger": "Return dirty, unowned, protected, wrong-parent, or link-mode changes.",
+      "id": "attempt-worktree",
+      "test_ids": ["tests.services.test_attempts.AttemptBoundaryTests.test_result_rejects_dirty_unowned_protected_wrong_parent_and_link_mode"]
+    },
+    {
+      "asserted_outcome": "Promotion follows graph order and a crash does not cause a second update.",
+      "codepath": "Promotion/merge order",
+      "failure_trigger": "Reverse completion order or crash after the target ref update.",
+      "id": "promotion-merge-order",
+      "test_ids": ["tests.services.test_attempts.AttemptBoundaryTests.test_promotion_uses_graph_order_and_produces_linear_owned_tree", "tests.services.test_attempts.AttemptBoundaryTests.test_crash_after_target_update_reconciles_without_second_promotion"]
+    },
+    {
+      "asserted_outcome": "Reconciliation observes one exact effect without blind redispatch.",
+      "codepath": "Fake effect",
+      "failure_trigger": "Crash after the effect and before its durable receipt.",
+      "id": "fake-effect",
+      "test_ids": ["tests.adapters.test_fake_receipts.FakeReceiptRecoveryTests.test_crash_after_effect_before_receipt_reconciles_applied_once"]
+    },
+    {
+      "asserted_outcome": "Bounded output is rejected and cannot become success evidence.",
+      "codepath": "Result/evidence limits",
+      "failure_trigger": "Flood the independent result channel.",
+      "id": "result-evidence-limits",
+      "test_ids": ["tests.processes.test_runner.ProcessRunnerTests.test_result_flood_has_an_independent_cap_and_is_not_admitted"]
+    },
+    {
+      "asserted_outcome": "Clock rollback stops lease admission without appending.",
+      "codepath": "Timing",
+      "failure_trigger": "Move the authority clock backwards after restart.",
+      "id": "timing",
+      "test_ids": ["tests.services.test_journal_leases.JournalLeaseTests.test_clock_rollback_after_restart_blocks_without_appending"]
+    },
+    {
+      "asserted_outcome": "Stale and duplicate results cannot regress state or append events.",
+      "codepath": "Stale/duplicate result",
+      "failure_trigger": "Return a wrong-epoch result and replay a completed result.",
+      "id": "stale-duplicate-result",
+      "test_ids": ["tests.processes.test_coordinator.ForegroundCoordinatorTests.test_stale_and_duplicate_worker_results_never_append"]
+    },
+    {
+      "asserted_outcome": "Unsafe cleanup remains quarantined and pressure blocks new dispatch.",
+      "codepath": "Cleanup/quarantine",
+      "failure_trigger": "Change attempt identity, make termination unknown, or exhaust the cleanup budget.",
+      "id": "cleanup-quarantine",
+      "test_ids": ["tests.services.test_attempts.AttemptBoundaryTests.test_cleanup_quarantines_changed_identity_unknown_outcome_and_disk_pressure"]
+    },
+    {
+      "asserted_outcome": "Restart replays and reconciles without inventing or duplicating an effect.",
+      "codepath": "Coordinator crash/restart",
+      "failure_trigger": "Crash after a dispatch effect but before its receipt.",
+      "id": "coordinator-crash-restart",
+      "test_ids": ["tests.e2e.test_m1_workflow.ActiveM1WorkflowE2ETests.test_restart_reconciles_applied_dispatch_without_duplicate_effect"]
+    },
+    {
+      "asserted_outcome": "Task and edge envelopes fail closed before unbounded graph work.",
+      "codepath": "Resource envelope",
+      "failure_trigger": "Exceed the maximum task or graph-edge count.",
+      "id": "resource-envelope",
+      "test_ids": ["tests.kernel.test_state.DagTests.test_dag_defensive_boundaries_are_typed"]
+    },
+    {
+      "asserted_outcome": "Trace export returns a named input fault instead of completion evidence.",
+      "codepath": "Trace/export",
+      "failure_trigger": "Raise while consuming the journal stream.",
+      "id": "trace-export",
+      "test_ids": ["tests.presentation.test_trace.TraceProjectionTests.test_journal_stream_read_failure_is_a_named_input_fault"]
+    },
+    {
+      "asserted_outcome": "A rebuilt ZIP must be byte-identical to the committed Skill artifact.",
+      "codepath": "Package/Skill parity",
+      "failure_trigger": "Introduce generated runtime or ZIP byte drift.",
+      "id": "package-skill-parity",
+      "test_ids": ["tests.packaging.test_skill_runtime.SkillRuntimePackagingTests.test_committed_zip_matches_a_temporary_rebuild"]
+    },
+    {
+      "asserted_outcome": "Saved seeds remain reproducible and every registered safety mutant is killed.",
+      "codepath": "Reference model/CI gates",
+      "failure_trigger": "Change seeded semantics or let a safety mutation survive.",
+      "id": "reference-model-ci-gates",
+      "test_ids": ["tests.regressions.test_saved_sequences.SavedSequenceTests.test_saved_state_seed_matches_replay_reference_and_rebuilt_index", "tests.packaging.test_ci_mutation_gate.MutationGateTests.test_default_registry_is_fixed_unique_and_safety_only"]
+    }
+  ],
+  "schema_version": 1
+}
