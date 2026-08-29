@@ -195,7 +195,7 @@ unzip wish-builder-skill.zip -d ~/.codex/skills
 目前 ZIP 的 SHA-256：
 
 ```text
-ad81a808e6436125d5fedee4ff7d26b750cccd17eca21864942b4a2aa16a2e52
+974cd75b5fb2e5c454f1d642e7d40c6288718728b695cb28a5897586dbcf8b48
 ```
 
 GitHub repository 目前仍是 private，所以還不能作為其他人的安裝來源。公開後，可以透過 Codex Skill installer 安裝 repository 內的 `wish-builder/` 目錄。

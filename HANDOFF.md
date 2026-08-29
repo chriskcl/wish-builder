@@ -19,8 +19,8 @@ Wish Builder 的本機 M1 功能、M1-13 CI gate 與 release verifier 已落地�
 | Python package | `wish-builder 0.1.0.dev0`, Python `>=3.11` |
 | License | `GPL-3.0-only` |
 | Skill ZIP | `wish-builder-skill.zip` |
-| Skill ZIP SHA-256 | `ad81a808e6436125d5fedee4ff7d26b750cccd17eca21864942b4a2aa16a2e52` |
-| Skill ZIP 大小 | `525,556` bytes |
+| Skill ZIP SHA-256 | `974cd75b5fb2e5c454f1d642e7d40c6288718728b695cb28a5897586dbcf8b48` |
+| Skill ZIP 大小 | `525,690` bytes |
 
 `changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。所有 tracked 成果已提交並推送。
 
@@ -109,7 +109,7 @@ Gate B：人批准由 task records 投影出的 material graph 與 Wish Builder 
   Standalone Skill source/runtime graph parity: passed
   Runtime manifest graph hash: matched
   Deterministic Skill ZIP rebuild and clean extraction: passed
-  Skill ZIP SHA-256: ad81a808e6436125d5fedee4ff7d26b750cccd17eca21864942b4a2aa16a2e52
+  Skill ZIP SHA-256: 974cd75b5fb2e5c454f1d642e7d40c6288718728b695cb28a5897586dbcf8b48
 
 2026-08-25 historical local baseline (pre-current changes):
   Python 3.11: 1,447 run; 1,444 passed; 3 skipped; summary JSON SHA-256 05b631efabf942cefc2188366b89de895a5b7db127712131f02ec0b169d4952b
