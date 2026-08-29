@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -35,6 +36,45 @@ from scripts.local_evidence_packet import (
 _FORBIDDEN_CI_FIELDS = frozenset(
     {"ci_run_attempt", "ci_run_id", "job_results", "needs", "workflow"}
 )
+
+
+def _require_clean_candidate(repository_root: Path, revision: str) -> None:
+    """Require release inputs to come from the exact clean candidate checkout."""
+    root = repository_root.resolve(strict=True)
+    if repository_root.is_symlink() or not root.is_dir():
+        raise ReleasePromotionError("candidate repository must be a regular directory")
+
+    def run_git(*arguments: str) -> bytes:
+        try:
+            completed = subprocess.run(
+                ("git", "-C", str(root), *arguments),
+                check=False,
+                capture_output=True,
+                shell=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ReleasePromotionError(
+                "candidate repository cannot be inspected"
+            ) from exc
+        if completed.returncode != 0:
+            raise ReleasePromotionError("candidate repository cannot be inspected")
+        return completed.stdout
+
+    try:
+        head = run_git("rev-parse", "--verify", "HEAD^{commit}").decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise ReleasePromotionError("candidate repository HEAD is invalid") from exc
+    if head != revision:
+        raise ReleasePromotionError("candidate revision is not the checked-out HEAD")
+    if run_git(
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+    ):
+        raise ReleasePromotionError("candidate repository is not clean")
 
 
 def _validate_local_manifest(
@@ -90,6 +130,7 @@ def prepare_local_release(
     release_version = _require_version(version)
     if tag != f"v{release_version}":
         raise ReleasePromotionError("release tag must equal v plus the project version")
+    _require_clean_candidate(repository_root, candidate)
     versions = _project_versions(repository_root)
     if set(versions.values()) != {release_version}:
         raise ReleasePromotionError(

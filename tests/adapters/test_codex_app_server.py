@@ -12,6 +12,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from wish_builder import __version__
 from wish_builder.adapters.providers import (
     CodexAppServerChannel,
     CodexAppServerClient,
@@ -327,6 +328,7 @@ class CodexAppServerClientTests(unittest.TestCase):
             initialize = fixture.wire()[0]
             self.assertNotIn("jsonrpc", initialize)
             self.assertEqual("wish_builder", initialize["params"]["clientInfo"]["name"])
+            self.assertEqual(__version__, initialize["params"]["clientInfo"]["version"])
 
     def test_strict_lf_and_frame_limit_fail_closed(self) -> None:
         for scenario, code in (

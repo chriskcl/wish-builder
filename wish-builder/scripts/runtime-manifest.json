@@ -10,10 +10,10 @@
     },
     {
       "destination": "scripts/wish_builder/__init__.py",
-      "runtime_sha256": "3bf4cd43517065703cc0a96faed801c1493f135f9e73b81072754a11e23a0bc1",
+      "runtime_sha256": "6e248deeb311d0ba9c923bee247db44d9178af92d223d7e514cb80455d1ed4ea",
       "runtime_size": 65,
       "source": "wish_builder/__init__.py",
-      "source_sha256": "3bf4cd43517065703cc0a96faed801c1493f135f9e73b81072754a11e23a0bc1",
+      "source_sha256": "6e248deeb311d0ba9c923bee247db44d9178af92d223d7e514cb80455d1ed4ea",
       "source_size": 65
     },
     {
@@ -98,11 +98,11 @@
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/codex_app_server.py",
-      "runtime_sha256": "af2dc04e42045d53183c4cdbaf5a4e01aa939df58ea870db4e9c44caef8f7ba4",
-      "runtime_size": 66445,
+      "runtime_sha256": "83b07dd71f16ff43dc45b04bdca7a853a10b9b6b24ca60a5473a4e269ec5b540",
+      "runtime_size": 66481,
       "source": "wish_builder/adapters/providers/codex_app_server.py",
-      "source_sha256": "af2dc04e42045d53183c4cdbaf5a4e01aa939df58ea870db4e9c44caef8f7ba4",
-      "source_size": 66445
+      "source_sha256": "83b07dd71f16ff43dc45b04bdca7a853a10b9b6b24ca60a5473a4e269ec5b540",
+      "source_size": 66481
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/jsonl_rpc.py",

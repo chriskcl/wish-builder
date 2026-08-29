@@ -4,6 +4,8 @@ This file records user-visible changes to Wish Builder.
 
 ## Unreleased
 
+## 0.1.0.dev1 - 2026-08-30
+
 - Replaced the local `0.7.0-dev.2` test fixture (later withdrawn from Wish Builder and never an
   official Trellis release) with exact official
   `@mindfoldhq/trellis@0.6.15` and `@mindfoldhq/trellis-core@0.6.15` integration pins.
@@ -27,6 +29,8 @@ This file records user-visible changes to Wish Builder.
 - Added an optional local evidence manifest and release verifier for teams that want a stricter,
   revision-bound release packet; backend dispatch qualification remains separate and every
   backend/OS cell stays disabled.
+- Made local release promotion reject a dirty checkout or a candidate revision that is not the
+  checked-out commit, so release bytes cannot be attributed to another source revision.
 - Kept the existing CI-backed release verifier as an optional path with a hash-locked build
   toolchain, deterministic rebuild and byte comparison, plus protected-environment review.
 

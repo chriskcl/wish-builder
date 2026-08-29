@@ -8,7 +8,7 @@ Wish Builder 是一套給 Codex 使用的 Skill，適合那些不能只靠一句
 
 它不會另外建立第二套任務拆分器或任務資料庫。可編輯的任務圖屬於 Trellis；批准後的執行快照，以及約束 Agent 的規則，屬於 Wish Builder。
 
-> **目前狀態：** 開發預覽版（`0.1.0.dev0`）。本機控制流程、不可變執行快照檢查、遇到不確定情況就停止的准入規則、Journal 與恢復邊界、Git adapter，以及 Wish Builder 對官方 Trellis `0.6.15` 的匯入／投影 bridge 都已有實作。包含 Git 變更途中當機情況的完整本機生命週期，已使用受控 subprocess worker 通過端到端測試。
+> **目前狀態：** 開發預覽版（`0.1.0.dev1`）。本機控制流程、不可變執行快照檢查、遇到不確定情況就停止的准入規則、Journal 與恢復邊界、Git adapter，以及 Wish Builder 對官方 Trellis `0.6.15` 的匯入／投影 bridge 都已有實作。包含 Git 變更途中當機情況的完整本機生命週期，已使用受控 subprocess worker 通過端到端測試。
 >
 > 真實派工仍然關閉，因為 Pi、Oh My Pi 和 Codex 的六個 backend／OS cell，都還沒有完整的真實資格記錄。目前唯一留下的持久真實證據，是 Windows 上 Pi 的啟動和 handshake 檢查，而且沒有送出 model turn；Windows 上的 Oh My Pi live probe 需要已設定的 model 和 provider credential，但本輪沒有要求或使用 credential，因此該 cell 只能記為 credential-blocked。Codex 和其餘 cell 只有 deterministic fixture 或不完整的資格記錄。active cancellation、當機重啟後不重送的 reconcile、cleanup、平行重疊和平台證據仍不完整，因此所有 cell 都維持 `enabledForDispatch=false`。官方 Trellis `0.6.15` 也沒有跨程序 compare-and-swap（CAS），所以投影採單一寫入者並在衝突時停止。Agent 派工和 Trellis 投影是分開的：worker 只寫隔離 Git worktree 和 Journal，之後由單一 writer 把結果投影回 Trellis。GitHub repository 仍是 private，也尚未發布 release；程式碼採 GPL-3.0-only 授權。
 
@@ -195,7 +195,7 @@ unzip wish-builder-skill.zip -d ~/.codex/skills
 目前 ZIP 的 SHA-256：
 
 ```text
-974cd75b5fb2e5c454f1d642e7d40c6288718728b695cb28a5897586dbcf8b48
+cfe78dad83087ec5492e2192fb1d7e5e71cfa6c83a7a2755df4bdf62b5d9fc53
 ```
 
 GitHub repository 目前仍是 private，所以還不能作為其他人的安裝來源。公開後，可以透過 Codex Skill installer 安裝 repository 內的 `wish-builder/` 目錄。
@@ -298,7 +298,8 @@ python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/impo
 
 | 檢查 | 結果 |
 | --- | --- |
-| 本地 repository 矩陣 | Windows／Linux × Python 3.11／3.12／3.13；每格執行 1,498 項，0 failure、0 error；Windows 允許略過 9 項，Linux 允許略過 13 項 |
+| 較早的本地非效能矩陣 | Windows／Linux × Python 3.11／3.12／3.13；每格執行 1,498 項，0 failure、0 error；Windows 允許略過 9 項，Linux 允許略過 13 項 |
+| 最新本地完整測試 | Windows／Python 3.13；執行 1,514 項（含 16 項效能測試），0 failure、0 error，3 項平台條件式略過 |
 | Evidence、release 和 live adapter 集中測試 | 63 項通過 |
 | 官方 Trellis `0.6.15` 整合 | Windows 與 Linux 各通過 22 項 Node 和 7 項 Python 測試 |
 | Skill／runtime parity | 12 項通過 |
@@ -327,7 +328,7 @@ uv run --locked --python 3.13 python scripts\ci_local_release.py `
   --safety-base-ref <base-ref> --distribution-root <distribution-root> `
   --manifest <manifest.json> --manifest-digest <manifest.sha256> `
   --output-dir <release-assets> --revision <commit-sha> `
-  --version 0.1.0.dev0 --tag v0.1.0.dev0
+  --version 0.1.0.dev1 --tag v0.1.0.dev1
 ```
 
 ## 開放真實派工前

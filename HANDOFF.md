@@ -16,11 +16,11 @@ Wish Builder 的本機 M1 功能、M1-13 驗證與 release verifier 已落地：
 | M1 candidate revision | 本文件所在 commit；接手時執行 `git rev-parse HEAD` 取得，不在 commit 內自我引用 SHA |
 | 工作樹 | tracked files 已提交；接手時仍應以 `git status --short` 核對本機 evidence files |
 | Remote | `origin = https://github.com/chriskcl/wish-builder.git`；repository 是 private；PR #1 已開啟，尚未建立 release |
-| Python package | `wish-builder 0.1.0.dev0`, Python `>=3.11` |
+| Python package | `wish-builder 0.1.0.dev1`, Python `>=3.11` |
 | License | `GPL-3.0-only` |
 | Skill ZIP | `wish-builder-skill.zip` |
-| Skill ZIP SHA-256 | `474e8fb2e15ce9485ac21e8eeedaff6d4976ec4862cc4df3789be0a5933faed3` |
-| Skill ZIP 大小 | `525,820` bytes |
+| Skill ZIP SHA-256 | `cfe78dad83087ec5492e2192fb1d7e5e71cfa6c83a7a2755df4bdf62b5d9fc53` |
+| Skill ZIP 大小 | `525,824` bytes |
 
 `changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。tracked 成果只提交到本機分支；是否已推送一律以 `git status --branch` 為準。
 
@@ -94,7 +94,7 @@ Gate B：人批准由 task records 投影出的 material graph 與 Wish Builder 
 目前 M1 判定為「本地測試通過」。以下歷史段落保留較細的本機測量資料供比較；本機 evidence JSON 不加入 repository。
 
 ```text
-2026-08-30 local candidate matrix (revision 9793ff1c86089c59115f4406a015c3abec8d6bce):
+2026-08-30 local non-performance candidate matrix (revision 9793ff1c86089c59115f4406a015c3abec8d6bce):
   Windows/Linux x Python 3.11/3.12/3.13: 1,498 tests per cell; status passed; 0 failures; 0 errors
   Allowed skips: Windows 9 per cell; Linux 13 per cell
 

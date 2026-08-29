@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, Protocol, runtime_checkable
 
+from wish_builder import __version__
 from wish_builder.contracts import canonical_json_bytes
 from wish_builder.contracts.manifest_v2 import WorkerProvider
 from wish_builder.contracts.runtime import EffectStatus
@@ -260,7 +261,7 @@ class CodexAppServerClient:
                 "clientInfo": {
                     "name": "wish_builder",
                     "title": "Wish Builder",
-                    "version": "0.1.0.dev0",
+                    "version": __version__,
                 }
             },
         )

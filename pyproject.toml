@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wish-builder"
-version = "0.1.0.dev0"
+version = "0.1.0.dev1"
 description = "Human-governed autonomous software delivery from a product wish"
 readme = "README.md"
 license = "GPL-3.0-only"

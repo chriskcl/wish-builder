@@ -18,7 +18,7 @@ from scripts.ci_distribution_evidence import (
     canonical_json_bytes,
 )
 from scripts.ci_evidence_packet import SCHEMA_VERSION as EVIDENCE_PACKET_SCHEMA_VERSION
-from scripts.ci_local_release import prepare_local_release
+from scripts.ci_local_release import _require_clean_candidate, prepare_local_release
 from scripts.ci_release import (
     EVIDENCE_PACKET_SCHEMA_VERSION as RELEASE_ACCEPTED_PACKET_SCHEMA_VERSION,
     ReleasePromotionError,
@@ -57,6 +57,48 @@ def _sdist_bytes(members: dict[str, bytes]) -> bytes:
             info.size = len(content)
             archive.addfile(info, io.BytesIO(content))
     return output.getvalue()
+
+
+class LocalCandidateBindingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.repository = Path(self.temporary.name) / "repository"
+        self.repository.mkdir()
+        self._git("init", "--quiet")
+        self._git("config", "user.name", "Wish Builder Tests")
+        self._git("config", "user.email", "wish-builder-tests@invalid.example")
+        (self.repository / "source.txt").write_text("committed\n", encoding="utf-8")
+        self._git("add", "source.txt")
+        self._git("commit", "--quiet", "-m", "fixture")
+        self.revision = self._git("rev-parse", "HEAD").strip()
+
+    def _git(self, *arguments: str) -> str:
+        return subprocess.run(
+            ("git", "-C", str(self.repository), *arguments),
+            check=True,
+            capture_output=True,
+            shell=False,
+            text=True,
+            timeout=30,
+        ).stdout
+
+    def test_clean_candidate_must_match_checked_out_head(self) -> None:
+        _require_clean_candidate(self.repository, self.revision)
+        with self.assertRaisesRegex(
+            ReleasePromotionError, "is not the checked-out HEAD"
+        ):
+            _require_clean_candidate(self.repository, "b" * 40)
+
+    def test_tracked_or_untracked_changes_are_rejected(self) -> None:
+        (self.repository / "source.txt").write_text("dirty\n", encoding="utf-8")
+        with self.assertRaisesRegex(ReleasePromotionError, "is not clean"):
+            _require_clean_candidate(self.repository, self.revision)
+
+        self._git("restore", "source.txt")
+        (self.repository / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+        with self.assertRaisesRegex(ReleasePromotionError, "is not clean"):
+            _require_clean_candidate(self.repository, self.revision)
 
 
 class ReleasePromotionTests(unittest.TestCase):
@@ -219,7 +261,7 @@ class ReleasePromotionTests(unittest.TestCase):
         with patch(
             "scripts.ci_local_release.build_local_evidence_manifest",
             return_value=manifest,
-        ):
+        ), patch("scripts.ci_local_release._require_clean_candidate"):
             return prepare_local_release(**arguments)  # type: ignore[arg-type]
 
     def _reseal_distribution_claims_without_validation(self) -> None:
@@ -301,7 +343,7 @@ class ReleasePromotionTests(unittest.TestCase):
         with patch(
             "scripts.ci_local_release.build_local_evidence_manifest",
             return_value=manifest,
-        ):
+        ), patch("scripts.ci_local_release._require_clean_candidate"):
             with self.assertRaisesRegex(
                 ReleasePromotionError, "contains CI provenance"
             ):
@@ -326,10 +368,34 @@ class ReleasePromotionTests(unittest.TestCase):
         with patch(
             "scripts.ci_local_release.build_local_evidence_manifest",
             return_value=rebuilt,
-        ):
+        ), patch("scripts.ci_local_release._require_clean_candidate"):
             with self.assertRaisesRegex(
                 ReleasePromotionError, "cannot be reconstructed"
             ):
+                prepare_local_release(
+                    repository_root=self.repository,
+                    evidence_root=self.root,
+                    safety_base_ref="b" * 40,
+                    distribution_root=self.distribution,
+                    manifest_path=self.local_manifest,
+                    manifest_digest_path=self.local_manifest_digest,
+                    output_dir=self.root / "local-release-assets",
+                    revision=REVISION,
+                    version=VERSION,
+                    tag=f"v{VERSION}",
+                )
+        self.assertFalse((self.root / "local-release-assets").exists())
+
+    def test_local_release_rejects_a_dirty_candidate_before_promotion(self) -> None:
+        manifest = self._write_local_manifest()
+        with patch(
+            "scripts.ci_local_release.build_local_evidence_manifest",
+            return_value=manifest,
+        ), patch(
+            "scripts.ci_local_release._require_clean_candidate",
+            side_effect=ReleasePromotionError("candidate repository is not clean"),
+        ):
+            with self.assertRaisesRegex(ReleasePromotionError, "is not clean"):
                 prepare_local_release(
                     repository_root=self.repository,
                     evidence_root=self.root,

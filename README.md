@@ -8,7 +8,7 @@ Wish Builder is a Codex Skill for work that needs more than a one-shot code prom
 
 It does not contain a second task planner or task database. Trellis owns the working task graph. Wish Builder owns the approved execution snapshot and the rules that keep agents inside it.
 
-> **Status:** development preview (`0.1.0.dev0`). The local control plane, immutable execution snapshot checks, fail-closed admission, Journal and recovery boundaries, Git adapter, and Wish Builder import/projection bridge for official Trellis `0.6.15` are implemented. The assembled lifecycle, including crashes around Git changes, is tested end to end with controlled subprocess workers.
+> **Status:** development preview (`0.1.0.dev1`). The local control plane, immutable execution snapshot checks, fail-closed admission, Journal and recovery boundaries, Git adapter, and Wish Builder import/projection bridge for official Trellis `0.6.15` are implemented. The assembled lifecycle, including crashes around Git changes, is tested end to end with controlled subprocess workers.
 >
 > Real dispatch remains closed because none of the six Pi, Oh My Pi, or Codex backend/OS cells has a complete live qualification record. The only persistent live evidence currently recorded is a Windows Pi startup and handshake check; it sent no model turn. The Windows Oh My Pi cell is blocked because its live probe requires a configured model and provider credential; no credential was requested or used. Codex and the remaining cells have deterministic fixtures or incomplete qualification records. Active cancellation, crash/restart reconciliation without redelivery, cleanup, parallel overlap, and platform evidence are still incomplete, so every cell remains `enabledForDispatch=false`. Official Trellis `0.6.15` also lacks cross-process compare-and-swap (CAS), so projection stays single-writer and fail-closed. Worker dispatch and Trellis projection are separate: workers write only isolated Git worktrees and the Journal, while one writer later projects results to Trellis. The GitHub repository remains private and no release has been published. The code is licensed under GPL-3.0-only.
 
@@ -195,7 +195,7 @@ The installed file should appear at:
 Current ZIP SHA-256:
 
 ```text
-974cd75b5fb2e5c454f1d642e7d40c6288718728b695cb28a5897586dbcf8b48
+cfe78dad83087ec5492e2192fb1d7e5e71cfa6c83a7a2755df4bdf62b5d9fc53
 ```
 
 The GitHub repository is currently private, so it is not an installation source for other users yet. Once it is made public, Codex's Skill installer can install the repository's `wish-builder/` directory.
@@ -298,7 +298,8 @@ The full operating rules live in [`wish-builder/SKILL.md`](wish-builder/SKILL.md
 
 | Check | Result |
 | --- | --- |
-| Local repository matrix | Windows and Linux on Python 3.11/3.12/3.13; 1,498 run per cell, 0 failures or errors; 9 allowed skips on Windows and 13 on Linux |
+| Earlier local non-performance matrix | Windows and Linux on Python 3.11/3.12/3.13; 1,498 run per cell, 0 failures or errors; 9 allowed skips on Windows and 13 on Linux |
+| Fresh full local suite | Windows on Python 3.13; 1,514 run including 16 performance tests, 0 failures or errors, 3 platform-specific skips |
 | Focused evidence, release, and live-adapter tests | 63 passed |
 | Official Trellis `0.6.15` integration | Windows and Linux each passed 22 Node and 7 Python tests |
 | Skill/runtime parity | 12 passed |
@@ -327,7 +328,7 @@ uv run --locked --python 3.13 python scripts\ci_local_release.py `
   --safety-base-ref <base-ref> --distribution-root <distribution-root> `
   --manifest <manifest.json> --manifest-digest <manifest.sha256> `
   --output-dir <release-assets> --revision <commit-sha> `
-  --version 0.1.0.dev0 --tag v0.1.0.dev0
+  --version 0.1.0.dev1 --tag v0.1.0.dev1
 ```
 
 ## Before enabling live dispatch
