@@ -206,6 +206,12 @@ _OPTIONAL_SKIP_REASON_PATTERNS = {
             "test_untracked_symlink_hashes_the_link_not_its_target",
             re.compile(r"symlink creation is unavailable: [^\r\n\x00]+\Z"),
         ),
+        (
+            "tests.services.test_backend_qualification_builder."
+            "BackendQualificationBuilderTests."
+            "test_missing_files_and_symlinks_fail_closed",
+            re.compile(r"symlink creation is unavailable: [^\r\n\x00]+\Z"),
+        ),
     },
 }
 

@@ -718,6 +718,33 @@ class EvidencePacketTests(unittest.TestCase):
             self.build()
         self.assertEqual("test_cell_skip_not_allowed", raised.exception.code)
 
+    def test_missing_backend_qualification_symlink_is_an_allowed_skip(self) -> None:
+        summary_path = self.root / "python-windows-latest-3.13" / "ci-summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        skipped_test = {
+            "reason": (
+                "symlink creation is unavailable: [WinError 1314] "
+                "the client lacks the required privilege"
+            ),
+            "test_id": (
+                "tests.services.test_backend_qualification_builder."
+                "BackendQualificationBuilderTests."
+                "test_missing_files_and_symlinks_fail_closed"
+            ),
+        }
+        self.assertIn(skipped_test["test_id"], self.matrix_test_ids)
+        summary["skipped"] += 1
+        summary["skipped_tests"].append(skipped_test)
+        self._write_json(summary_path, summary)
+
+        packet = self.build()
+        cell = next(
+            item
+            for item in packet["python_matrix"]
+            if item["cell_id"] == "windows-latest-py3.13"
+        )
+        self.assertIn(skipped_test, cell["skipped_tests"])
+
     def test_missing_unpublished_trellis_runtime_is_an_allowed_skip(self) -> None:
         summary_path = self.root / "python-ubuntu-latest-3.13" / "ci-summary.json"
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
