@@ -279,7 +279,8 @@ green mainline.
 Before merge, require:
 
 - all dependency PRs merged;
-- CI and declared regression commands green;
+- revision-bound verification and declared regression commands green, using local or CI evidence
+  exactly as Gate B requires and never relabeling one as the other;
 - Trellis Check and Finish evidence;
 - changed paths inside ownership;
 - acceptance criteria demonstrated;
@@ -295,7 +296,7 @@ traced release-toggle Issue/PR when activating a feature is separate from implem
 | Layer | Owner | Required Evidence |
 | --- | --- | --- |
 | Leaf | worker | unit/module/contract tests and regression commands |
-| PR | coordinator/reviewer | diff review, CI, ownership and acceptance |
+| PR | coordinator/reviewer | diff review, required verification, ownership and acceptance |
 | Wave | coordinator | dependency integration and migration checks |
 | Product | QA worker | end-to-end user journeys and failure paths |
 | UI | design reviewer | responsive, visual, accessibility and interaction checks |

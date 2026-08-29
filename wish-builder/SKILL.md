@@ -252,8 +252,10 @@ Only after a future qualification record enables one cell may the coordinator en
 6. Require the worker to run `wishctl.py drift` on its changed files before completion.
 7. Review the diff, run the task checks, run gstack `review` when available, and verify Issue,
    PR, requirement, test, and rollback links.
-8. Squash-merge only after dependencies are merged, required CI is green, ownership is clean,
-   and the approved policy allows it. Keep incomplete behavior behind feature flags.
+8. Squash-merge only after dependencies are merged, the revision-bound verification required by
+   Gate B is green, ownership is clean, and the approved policy allows it. Verification may be
+   local or CI-backed as the project policy states; never mislabel local evidence as CI. Keep
+   incomplete behavior behind feature flags.
 9. Append every dispatch, PR, merge, verification, failure, and escalation to the Journal and
    rebuild the runtime projection. Never use runtime progress to rewrite the immutable manifest.
 
@@ -331,4 +333,4 @@ task database or board.
 
 Report the delivered outcome first, then Gate evidence, merged PRs, requirement coverage,
 tests, deferred work, known risks, and deployment state. Never claim completion while the
-manifest, traceability matrix, CI, or Trellis archive disagrees.
+manifest, traceability matrix, required verification evidence, or Trellis archive disagrees.

@@ -11,12 +11,14 @@ import unittest
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from scripts.ci_distribution_evidence import (
     build_distribution_evidence,
     canonical_json_bytes,
 )
 from scripts.ci_evidence_packet import SCHEMA_VERSION as EVIDENCE_PACKET_SCHEMA_VERSION
+from scripts.ci_local_release import prepare_local_release
 from scripts.ci_release import (
     EVIDENCE_PACKET_SCHEMA_VERSION as RELEASE_ACCEPTED_PACKET_SCHEMA_VERSION,
     ReleasePromotionError,
@@ -179,6 +181,47 @@ class ReleasePromotionTests(unittest.TestCase):
         arguments.update(overrides)
         return prepare_release(**arguments)  # type: ignore[arg-type]
 
+    def _write_local_manifest(self, **extra: object) -> dict[str, object]:
+        manifest = json.loads(self.packet.read_text(encoding="ascii"))
+        manifest.pop("packet_digest")
+        manifest.pop("workflow")
+        manifest.update(
+            {
+                "provenance_kind": "local",
+                "schema_version": 1,
+                "status": "passed",
+                **extra,
+            }
+        )
+        manifest["evidence_digest"] = _sha256(canonical_json_bytes(manifest))
+        raw = canonical_json_bytes(manifest)
+        self.local_manifest = self.root / "local-m1-evidence-manifest.json"
+        self.local_manifest_digest = self.root / "local-m1-evidence-manifest.sha256"
+        self.local_manifest.write_bytes(raw)
+        self.local_manifest_digest.write_text(_sha256(raw) + "\n", encoding="ascii")
+        return manifest
+
+    def _prepare_local(self, **overrides: object) -> dict[str, object]:
+        manifest = self._write_local_manifest()
+        arguments: dict[str, object] = {
+            "repository_root": self.repository,
+            "evidence_root": self.root,
+            "safety_base_ref": "b" * 40,
+            "distribution_root": self.distribution,
+            "manifest_path": self.local_manifest,
+            "manifest_digest_path": self.local_manifest_digest,
+            "output_dir": self.root / "local-release-assets",
+            "revision": REVISION,
+            "version": VERSION,
+            "tag": f"v{VERSION}",
+        }
+        arguments.update(overrides)
+        with patch(
+            "scripts.ci_local_release.build_local_evidence_manifest",
+            return_value=manifest,
+        ):
+            return prepare_local_release(**arguments)  # type: ignore[arg-type]
+
     def _reseal_distribution_claims_without_validation(self) -> None:
         evidence_path = self.distribution / "distribution-evidence.json"
         evidence = json.loads(evidence_path.read_text(encoding="ascii"))
@@ -241,6 +284,65 @@ class ReleasePromotionTests(unittest.TestCase):
             EVIDENCE_PACKET_SCHEMA_VERSION,
             json.loads(self.packet.read_text(encoding="ascii"))["schema_version"],
         )
+
+    def test_local_release_uses_local_provenance_without_ci_identity(self) -> None:
+        manifest = self._prepare_local()
+        output = self.root / "local-release-assets"
+
+        self.assertEqual("local", manifest["provenance_kind"])
+        self.assertNotIn("ci_run_id", manifest)
+        self.assertNotIn("ci_run_attempt", manifest)
+        self.assertTrue((output / "local-m1-evidence-manifest.json").is_file())
+        self.assertTrue((output / "local-m1-evidence-manifest.sha256").is_file())
+        self.assertFalse((output / "active-m1-evidence-packet.json").exists())
+
+    def test_local_release_rejects_ci_provenance(self) -> None:
+        manifest = self._write_local_manifest(workflow={"run_id": 1})
+        with patch(
+            "scripts.ci_local_release.build_local_evidence_manifest",
+            return_value=manifest,
+        ):
+            with self.assertRaisesRegex(
+                ReleasePromotionError, "contains CI provenance"
+            ):
+                prepare_local_release(
+                    repository_root=self.repository,
+                    evidence_root=self.root,
+                    safety_base_ref="b" * 40,
+                    distribution_root=self.distribution,
+                    manifest_path=self.local_manifest,
+                    manifest_digest_path=self.local_manifest_digest,
+                    output_dir=self.root / "local-release-assets",
+                    revision=REVISION,
+                    version=VERSION,
+                    tag=f"v{VERSION}",
+                )
+        self.assertFalse((self.root / "local-release-assets").exists())
+
+    def test_local_release_rejects_unreconstructable_evidence(self) -> None:
+        manifest = self._write_local_manifest()
+        rebuilt = dict(manifest)
+        rebuilt["status"] = "failed"
+        with patch(
+            "scripts.ci_local_release.build_local_evidence_manifest",
+            return_value=rebuilt,
+        ):
+            with self.assertRaisesRegex(
+                ReleasePromotionError, "cannot be reconstructed"
+            ):
+                prepare_local_release(
+                    repository_root=self.repository,
+                    evidence_root=self.root,
+                    safety_base_ref="b" * 40,
+                    distribution_root=self.distribution,
+                    manifest_path=self.local_manifest,
+                    manifest_digest_path=self.local_manifest_digest,
+                    output_dir=self.root / "local-release-assets",
+                    revision=REVISION,
+                    version=VERSION,
+                    tag=f"v{VERSION}",
+                )
+        self.assertFalse((self.root / "local-release-assets").exists())
 
     def test_rejects_artifact_tampering_and_does_not_create_output(self) -> None:
         wheel = next(self.distribution.glob("*.whl"))
@@ -433,6 +535,23 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertIn("--packet-digest", completed.stdout)
+
+    def test_local_release_script_has_no_ci_identity_arguments(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, "scripts/ci_local_release.py", "--help"],
+            cwd=REPOSITORY_ROOT,
+            capture_output=True,
+            check=False,
+            shell=False,
+            text=True,
+            timeout=30,
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("--evidence-root", completed.stdout)
+        self.assertIn("--safety-base-ref", completed.stdout)
+        self.assertNotIn("--ci-run-id", completed.stdout)
+        self.assertNotIn("--ci-run-attempt", completed.stdout)
 
     def test_workflow_rebuilds_trusted_source_before_promoting_ci_bytes(self) -> None:
         workflow = (

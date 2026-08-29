@@ -1903,22 +1903,15 @@ def _validate_needs(value: object) -> dict[str, str]:
     return normalized
 
 
-def build_evidence_packet(
+def validate_evidence_artifacts(
     evidence_root: Path,
     *,
     candidate_revision: str,
-    needs: object,
-    workflow_run_id: str,
-    workflow_run_attempt: str,
     safety_base_ref: str,
 ) -> dict[str, object]:
-    """Validate current-workflow artifacts and return a normalized packet."""
+    """Validate revision-bound M1 artifacts independent of their provenance."""
     root = _regular_root(evidence_root)
     candidate = _require_revision(candidate_revision, label="candidate revision")
-    if type(workflow_run_id) is not str or not workflow_run_id.isdigit():
-        raise EvidencePacketError("workflow_identity_invalid", "workflow run id is invalid")
-    if type(workflow_run_attempt) is not str or not workflow_run_attempt.isdigit():
-        raise EvidencePacketError("workflow_identity_invalid", "workflow attempt is invalid")
     if (
         type(safety_base_ref) is not str
         or not safety_base_ref.strip()
@@ -1928,7 +1921,6 @@ def build_evidence_packet(
             "safety_base_invalid", "trusted safety comparison base is invalid"
         )
 
-    job_results = _validate_needs(needs)
     python_matrix = _validate_python_matrix(root, candidate)
     trellis_matrix = _validate_trellis_matrix(root, candidate)
     raw_inventories: dict[str, object] = {}
@@ -2028,7 +2020,7 @@ def build_evidence_packet(
     )
     performance, performance_inventories = _validate_performance_matrix(root, candidate)
     raw_inventories["performance"] = performance_inventories
-    packet: dict[str, object] = {
+    return {
         "candidate_revision": candidate,
         "distribution": distribution,
         "distribution_matrix": distribution_matrix,
@@ -2038,17 +2030,43 @@ def build_evidence_packet(
             "performance": performance,
             "safety": safety,
         },
-        "job_results": job_results,
         "python_matrix": python_matrix,
         "raw_evidence": raw_inventories,
-        "schema_version": SCHEMA_VERSION,
-        "status": "passed",
         "trellis_matrix": trellis_matrix,
-        "workflow": {
-            "run_attempt": int(workflow_run_attempt),
-            "run_id": int(workflow_run_id),
-        },
     }
+
+
+def build_evidence_packet(
+    evidence_root: Path,
+    *,
+    candidate_revision: str,
+    needs: object,
+    workflow_run_id: str,
+    workflow_run_attempt: str,
+    safety_base_ref: str,
+) -> dict[str, object]:
+    """Validate current-workflow artifacts and return a normalized CI packet."""
+    if type(workflow_run_id) is not str or not workflow_run_id.isdigit():
+        raise EvidencePacketError("workflow_identity_invalid", "workflow run id is invalid")
+    if type(workflow_run_attempt) is not str or not workflow_run_attempt.isdigit():
+        raise EvidencePacketError("workflow_identity_invalid", "workflow attempt is invalid")
+    job_results = _validate_needs(needs)
+    packet = validate_evidence_artifacts(
+        evidence_root,
+        candidate_revision=candidate_revision,
+        safety_base_ref=safety_base_ref,
+    )
+    packet.update(
+        {
+            "job_results": job_results,
+            "schema_version": SCHEMA_VERSION,
+            "status": "passed",
+            "workflow": {
+                "run_attempt": int(workflow_run_attempt),
+                "run_id": int(workflow_run_id),
+            },
+        }
+    )
     packet["packet_digest"] = "sha256:" + hashlib.sha256(
         canonical_json_bytes(packet)
     ).hexdigest()

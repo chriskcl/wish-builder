@@ -1,10 +1,10 @@
 # Wish Builder Project Handoff
 
-交接時間：2026-08-29（Asia/Macau）
+交接時間：2026-08-30（Asia/Macau）
 
 ## 一句話現況
 
-Wish Builder 的本機 M1 功能、M1-13 CI gate 與 release verifier 已落地：Trellis 建立和維護可編輯任務圖；Wish Builder 匯入、驗證並鎖定人已批准的 material graph，再負責准入、派工監督、結果驗證、Journal 和崩潰恢復。唯一支援的 Trellis 基線是官方 `0.6.15`；`0.7.0-dev.2` 是已撤回的本機測試 fixture，從未是官方 Trellis release。完整非效能 suite、coverage、mutation 與 changed-safety 證據已綁定候選 commit 通過，本分支也已推送到 `origin/release/m1`；GitHub repository 與 distribution matrices 仍待在同一候選 revision 上跑完。現有持久 backend 證據只有 Windows Pi 的啟動／handshake，沒有送出 model turn；Windows Oh My Pi 仍受阻於未設定的 model/provider credential，本輪沒有要求或使用 credential；Codex 與其他 cell 仍是 fixture 或待跑 CI。正式派工仍未開放。Release publication 另受 GitHub 治理阻擋：repository 尚未建立 `release` environment，而目前 private repository 方案無法啟用所要求的 protected-branch 規則。
+Wish Builder 的本機 M1 功能、M1-13 verification gate 與 release verifier 已落地：Trellis 建立和維護可編輯任務圖；Wish Builder 匯入、驗證並鎖定人已批准的 material graph，再負責准入、派工監督、結果驗證、Journal 和崩潰恢復。唯一支援的 Trellis 基線是官方 `0.6.15`；`0.7.0-dev.2` 是已撤回的本機測試 fixture，從未是官方 Trellis release。M1 發行改以綁定單一 commit 的完整 Windows／Linux 本機證據為門檻；GitHub Actions 是可選路徑，最近的 hosted runs 因 billing／spending limit 在 runner 執行前失敗，不能描述成測試失敗或通過。現有持久 backend 證據只有 Windows Pi 的啟動／handshake，沒有送出 model turn；Windows Oh My Pi 仍受阻於未設定的 model/provider credential，本輪沒有要求或使用 credential；Codex 與其他 cell 仍是 fixture 或未完成 qualification。正式派工仍未開放。
 
 ## Repository 狀態
 
@@ -15,7 +15,7 @@ Wish Builder 的本機 M1 功能、M1-13 CI gate 與 release verifier 已落地�
 | M1 candidate 的 base HEAD | `698f8710aef9601eb29445f18c085e6427c36c7a` (`feat: add strict M1 contracts and validation`) |
 | M1 candidate revision | 本文件所在 commit；接手時執行 `git rev-parse HEAD` 取得，不在 commit 內自我引用 SHA |
 | 工作樹 | tracked files 已提交；接手時仍應以 `git status --short` 核對本機 evidence files |
-| Remote | `origin = https://github.com/chriskcl/wish-builder.git`；`release/m1` 已推送，repository 仍是 private，尚未建立 Pull Request 或 release |
+| Remote | `origin = https://github.com/chriskcl/wish-builder.git`；repository 是 private；PR #1 已開啟，尚未建立 release |
 | Python package | `wish-builder 0.1.0.dev0`, Python `>=3.11` |
 | License | `GPL-3.0-only` |
 | Skill ZIP | `wish-builder-skill.zip` |
@@ -74,8 +74,8 @@ Gate B：人批准由 task records 投影出的 material graph 與 Wish Builder 
 - 真實 subprocess E2E：Wave 0、兩個時間區間重疊的 Wave 1、Wave 2；完成順序可相反，但 promotion 仍按 canonical order。
 - 一般專案 `unittest` 驗收指令已透過 `ProcessAcceptancePort` 在 materialized promotion candidate 內跑完整 lifecycle；只有候選內容通過後 target branch 才會前進。
 - 13 個 production crash boundary 的直接證據：5 個 fake-effect subprocess E2E，以及 8 個 Git create／stage／promotion／remove integration；全部直接命中 failpoint，restart 後不重複 mutation，也不誤改 target、ref 或 sibling worktree。
-- M1-13 三層 coverage floor、16 項 targeted safety mutation、coverage＋mutation 聯合證據、Windows／Linux performance evidence，以及一次建置、六格共用同一 artifact 的 distribution clean-install CI jobs。
-- Release verifier 只從 trusted workflow SHA 重建 wheel、sdist、兩份 Skill ZIP 與 distribution evidence，再逐 byte 比對 CI artifacts；build toolchain 由完整 wheel hashes 鎖定並使用 `--no-isolation`。Release environment 必須有 required reviewer、禁止 self-review，且只允許 protected branches。
+- M1-13 三層 coverage floor、16 項 targeted safety mutation、coverage＋mutation 聯合證據、Windows／Linux performance evidence，以及一次建置、六格共用同一 artifact 的 distribution clean-install matrix。
+- 本機 release verifier 會從原始證據重建 canonical manifest，再驗證 wheel、sdist、兩份 Skill ZIP 與 distribution evidence；manifest 使用 `provenance_kind: local`，不接受 workflow ID、job results 或其他 CI 身分欄位。原有 CI verifier 保留為可選路徑。
 
 ## 尚未完成或未開放
 
@@ -85,13 +85,13 @@ Gate B：人批准由 task records 投影出的 material graph 與 Wish Builder 
 - 不含 AI PRD-to-task decomposer、任務 CRUD、另一套 task DB／看板或第二個 scheduler。
 - M1 只保留 Python 控制層與 Trellis／backend 整合；其他工具鏈不在目前範圍。
 - 不含真實 GitHub adapter、provider 憑證、sandbox、background supervisor／broker、cockpit 和正式部署。
-- M1-13 的 CI 規則與本機 gate 已完成；候選 commit 的完整非效能 suite 為 `1479` tests 全綠（`3` skipped），changed-safety evidence 也已綁定候選 HEAD 通過。關閉 M1-13 前仍需由同一個最終候選 SHA 通過第一次 GitHub repository 與 distribution Windows／Linux、Python 3.11／3.12／3.13 matrices。
-- GitHub `release` environment 目前不存在；release verifier 會 fail closed。建立 environment 後仍需至少一位 required reviewer、`prevent_self_review=true` 與 protected-branch deployment policy。當前 private repository 方案無法提供所需 protected branches，因此 publication 需先決定升級方案或調整 repository visibility，不能繞過 gate。
+- M1-13 的本機驗證規則已完成；關閉 M1-13 只需要同一個 committed revision 通過 repository、distribution clean-install、official Trellis、coverage、mutation、safety 與 performance 的完整 Windows／Linux 證據，並由 local manifest 重建驗證。GitHub Actions 不再是 preview release gate。
+- GitHub `release` environment 只約束可選的 workflow publication 路徑。本機產生的 checksummed release assets 可另外由人工審核後發布；不得用本機證據偽稱 CI 已通過。
 - 已採 GPL-3.0-only 並加入第三方 notices；remote 已設定，但 repository 仍是 private，也沒有公開 release。
 
 ## 驗證基線
 
-以下首段是已提交候選版本的本機證據。三個 evidence JSON 保留在本機，不加入 repository；遠端 CI 證據仍待產生。
+以下歷史段落保留先前候選的測量資料供比較。正式發行判斷只看隨候選產生、綁定單一 revision 的 `local-m1-evidence-manifest.json` 與其原始 evidence tree；本機 evidence JSON 不加入 repository。
 
 ```text
 2026-08-29 committed-candidate refresh (Python 3.12.13):
@@ -154,7 +154,7 @@ Skill runtime sync check: passed
 Deterministic ZIP check: passed
 Codex Skill validator: passed
 Release content gate: passed; release archives reject bundled `.tgz` files and unpinned Trellis install specs
-Distribution clean-install CI matrix: 6 cells implemented; remote execution pending
+Distribution clean-install matrix: 6 cells implemented; local fixed-revision evidence is authoritative for M1
 Graph adapter qualification digest: sha256:211fc5fc7c72bc68447ed9c632c37223018c1afef3f77f7e9d5bdf297db6da1e
 Trellis compatibility digest: sha256:fd3601e3507f8e2befe914e94afff04c07dedfb55d30417d3b35370bbfacf235
 Backend qualification digest: sha256:69117a88996d30378c41101fd2f9dae5f37d21fa3a3a2bdd25f72ceebb08b46a
@@ -164,7 +164,7 @@ Candidate-revision safety packet: not generated for the dirty worktree; M1-13 re
 ```
 
 三個 skip 分別是兩個需要 Windows symlink 權限的測試與一個 POSIX-only 路徑。最新版 Ruff 對整個 repository 仍會列出既有檔案的格式／風格建議；CI 沒有全域 Ruff gate，本輪只檢查新增範圍，不應為收尾重排整個 repository。
-受控 performance evidence 已記錄完整平台與 storage identity，但目前沒有同 identity baseline，因此只證明 absolute gate，不能聲稱相對退化檢查已通過。本機 candidate-bound changed-safety 與安全封包已通過；關閉 M1-13 前，仍需由最終候選 SHA 完成遠端 repository 與 distribution matrices。
+受控 performance evidence 會記錄完整平台與 storage identity；沒有同 identity baseline 時，只能證明 absolute gate，不能聲稱相對退化檢查已通過。關閉 M1-13 前，最終候選 SHA 必須重建完整的本機 Windows／Linux repository、distribution、Trellis 與品質證據矩陣。
 
 ## 主要文件
 
@@ -179,7 +179,7 @@ Candidate-revision safety packet: not generated for the dirty worktree; M1-13 re
 
 1. 先讀本文件、README、Skill 與正式計畫，不要從舊的 D44-D50 問題恢復；使用者已明確放棄那些過細決策。
 2. package source、Skill 或 README 如有變動，重跑完整 Python suite、standalone Skill tests、runtime／ZIP parity、官方 Skill validator，並重建 wheel／sdist 後執行 clean-install matrix。
-3. 如要關閉 M1-13，先確認目前最終候選 SHA 的本機 safety evidence provenance，再完成第一次 GitHub repository 與 distribution Windows／Linux、Python 3.11／3.12／3.13 matrices；若候選內容再變動，必須從新 SHA 重建相同證據。
+3. 如要關閉 M1-13，從同一個最終候選 SHA 重建本機 repository 與 distribution Windows／Linux、Python 3.11／3.12／3.13 matrices、兩個 Trellis cells，以及 coverage、mutation、safety 和 performance；若候選內容再變動，全部證據都必須從新 SHA 重建。
 4. 如要開放 Pi、Oh My Pi 或 Codex backend，先補齊對應 OS cell 的 active cancellation、當機重啟 reconcile、cleanup、平行重疊與平台矩陣證據；把證據根連到獨立可信的 attestation 或原始 event log，最後經人工審核才可更新 trust pin 與對應 `enabledForDispatch`。這不依賴 Trellis projection CAS。未來若要加入 `trellis + trellis`，不使用這些 Agent backend／OS cell；需另加 manifest schema，並驗證派工前准入、fencing、stop/reject 與並行寫入所有權。
 5. 本輪候選與文件更新已獲授權；之後的新 commit、push、公開 repository、release 或 provider 憑證操作仍要另行取得使用者授權。
 

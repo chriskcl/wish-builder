@@ -10,7 +10,7 @@ It does not contain a second task planner or task database. Trellis owns the wor
 
 > **Status:** development preview (`0.1.0.dev0`). The local control plane, immutable execution snapshot checks, fail-closed admission, Journal and recovery boundaries, Git adapter, and Wish Builder import/projection bridge for official Trellis `0.6.15` are implemented. The assembled lifecycle, including crashes around Git changes, is tested end to end with controlled subprocess workers.
 >
-> Real dispatch remains closed because none of the six Pi, Oh My Pi, or Codex backend/OS cells has a complete live qualification record. The only persistent live evidence currently recorded is a Windows Pi startup and handshake check; it sent no model turn. The Windows Oh My Pi cell is blocked because its live probe requires a configured model and provider credential; no credential was requested or used. Codex and the remaining cells are represented by deterministic fixtures or required CI cells. Active cancellation, crash/restart reconciliation without redelivery, cleanup, parallel overlap, and platform evidence are still incomplete, so every cell remains `enabledForDispatch=false`. Official Trellis `0.6.15` also lacks cross-process compare-and-swap (CAS), so projection stays single-writer and fail-closed. Worker dispatch and Trellis projection are separate: workers write only isolated Git worktrees and the Journal, while one writer later projects results to Trellis. The GitHub repository remains private and no release has been published. The code is licensed under GPL-3.0-only.
+> Real dispatch remains closed because none of the six Pi, Oh My Pi, or Codex backend/OS cells has a complete live qualification record. The only persistent live evidence currently recorded is a Windows Pi startup and handshake check; it sent no model turn. The Windows Oh My Pi cell is blocked because its live probe requires a configured model and provider credential; no credential was requested or used. Codex and the remaining cells have deterministic fixtures or incomplete qualification records. Active cancellation, crash/restart reconciliation without redelivery, cleanup, parallel overlap, and platform evidence are still incomplete, so every cell remains `enabledForDispatch=false`. Official Trellis `0.6.15` also lacks cross-process compare-and-swap (CAS), so projection stays single-writer and fail-closed. Worker dispatch and Trellis projection are separate: workers write only isolated Git worktrees and the Journal, while one writer later projects results to Trellis. The GitHub repository remains private and no release has been published. The code is licensed under GPL-3.0-only.
 
 ## Why it exists
 
@@ -113,9 +113,9 @@ Backend qualification is intentionally conservative:
 
 | Backend | Windows evidence | Linux evidence | Production dispatch |
 | --- | --- | --- | --- |
-| Codex | Deterministic fixture; CI cell required | Deterministic fixture; CI cell required | Disabled |
-| Pi | Startup and handshake only; no model turn | Deterministic fixture; CI cell required | Disabled |
-| Oh My Pi | Live turn blocked: configured model and provider credential are required; CI evidence required | Deterministic fixture; CI cell required | Disabled |
+| Codex | Deterministic fixture; full live qualification required | Deterministic fixture; full live qualification required | Disabled |
+| Pi | Startup and handshake only; no model turn | Deterministic fixture; full live qualification required | Disabled |
+| Oh My Pi | Live turn blocked: configured model and provider credential are required | Deterministic fixture; full live qualification required | Disabled |
 
 No backend/OS cell has completed the required qualification evidence for active cancellation, crash/restart reconciliation without redelivery, cleanup, parallel overlap, and its target platform. All six provider/OS entries therefore remain `enabledForDispatch=false`. Trellis compatibility and backend qualification remain separate records: the former binds the frozen graph and projection adapter, while the latter records Agent-cell evidence. Active `wish_builder` dispatch requires an enabled backend cell bound to the approved Trellis compatibility digest; it does not require Trellis projection CAS because workers never write Trellis. The future Trellis-owned scheduler does not use an Agent backend/OS cell, but it needs a later manifest schema plus qualified pre-launch admission, fencing, stop/reject behavior, and concurrent-write ownership. Claude Code and macOS are deferred until the first three backends and the Windows/Linux matrix are stable.
 
@@ -294,26 +294,21 @@ The full operating rules live in [`wish-builder/SKILL.md`](wish-builder/SKILL.md
 
 ## Verification status
 
-Latest local Windows checks: the full non-performance and official Trellis checks were rerun on 2026-08-27; the remaining measurements below are from 2026-08-25.
+The M1 release gate is a complete, replayable local evidence set bound to one committed revision. The revision itself is recorded in `local-m1-evidence-manifest.json` instead of being copied into this README.
 
 | Check | Result |
 | --- | --- |
-| Repository tests, excluding performance | 1,447 run on Python 3.13; 1,444 passed, 3 platform-specific skips |
-| Python compatibility | Python 3.11 and 3.12 each ran the same 1,447 tests: 1,444 passed and 3 platform-specific tests were skipped |
-| Performance tests | 16 passed |
-| Packaging tests | 220 passed |
-| Official Trellis `0.6.15` Node bridge tests | 22 passed |
-| Standalone Skill tests | 13 passed |
-| Wish Builder graph, projection, recovery, acceptance, and E2E checks against official Trellis `0.6.15` | 29 passed (22 Node, 7 Python) |
+| Repository matrix | Windows and Linux on Python 3.11/3.12/3.13; 1,498 tests per cell, no failures or errors |
+| Distribution clean installs | Wheel and source archive passed in all six OS/Python cells |
+| Official Trellis `0.6.15` | Windows and Linux each passed 22 Node and 7 Python integration tests |
 | Branch coverage | contracts/kernel 95.395242%; services 91.638225%; adapters/processes/CLI 88.033012%; all gates passed |
 | Safety mutations | 16 of 16 killed; score 100% |
 | Controlled performance | 100k-event cold replay p95 10.521 s; checkpoint-tail p95 6 ms; graph batch p99 1.118 s; peak RSS 49,668,096 bytes |
 | Codex Skill structure validation, runtime parity, and deterministic ZIP | Passed |
-| Wheel and source-distribution clean-install matrix | Implemented for Windows/Linux and Python 3.11/3.12/3.13; a revision-bound CI run is still required |
 
-The local test set defines branch-coverage floors, 16 mutation cases, and 17 designated safety source files, and exercises crash recovery and bounded performance. The official `0.6.15` run covers graph import, authoritative projection, recovery, and the subprocess E2E workflow, including an ordinary `unittest` command inside the promotion candidate. These are checks of the current dirty worktree, not revision-bound release evidence. They verify the controlled local lifecycle, not live backend dispatch or a production deployment.
+M1 releases use replayable local evidence bound to one committed revision. `scripts/local_evidence_packet.py` validates all six repository cells, all six clean-install cells, both Trellis cells, coverage, mutation, safety, performance, and deterministic distribution evidence. It writes a canonical manifest with `provenance_kind: local`. `scripts/ci_local_release.py` reconstructs that manifest from the raw evidence before it creates checksummed release assets. It rejects GitHub workflow IDs, job results, or other CI provenance.
 
-The current dirty candidate, including the M1-13 and distribution workflows, has not run remotely because no candidate revision has been pushed. CI defines six distribution clean-install cells that all consume one canonical wheel and source archive; the final evidence packet rejects missing, duplicate, or mismatched cells. Those remote cells still need to run against one pinned candidate revision.
+GitHub Actions is optional for this preview and is not an M1 release gate. The most recent hosted run did not receive a runner because of the repository account's billing or spending limit; it must not be described as passed. This changes only the release evidence source. It does not qualify a backend or enable real agent dispatch.
 
 Run the main local suites with:
 
@@ -323,13 +318,27 @@ Run the main local suites with:
 .\.venv\Scripts\python.exe wish-builder\scripts\test_wishctl.py
 ```
 
-## Before the first release
+After collecting the raw matrix evidence for one committed revision, build and verify the local release packet with:
+
+```powershell
+uv run --locked --python 3.13 python scripts\local_evidence_packet.py `
+  --evidence-root <evidence-root> --candidate-revision <commit-sha> `
+  --safety-base-ref <base-ref> --output <manifest.json> `
+  --digest-output <manifest.sha256>
+
+uv run --locked --python 3.13 python scripts\ci_local_release.py `
+  --repository-root . --evidence-root <evidence-root> `
+  --safety-base-ref <base-ref> --distribution-root <distribution-root> `
+  --manifest <manifest.json> --manifest-digest <manifest.sha256> `
+  --output-dir <release-assets> --revision <commit-sha> `
+  --version 0.1.0.dev0 --tag v0.1.0.dev0
+```
+
+## Before enabling live dispatch
 
 - Qualify the assembled lifecycle against live project backends, including cancellation and recovery around Git changes.
 - Complete the cancellation, crash/restart reconciliation, cleanup, parallel-overlap, and platform evidence before enabling any backend cell.
-- Run the full repository and distribution Windows/Linux, Python 3.11/3.12/3.13 matrices on the published repository.
 - Add the real Issue, Pull Request, and hosting adapters needed by the chosen workflow.
-- Publish the GPL-3.0-only repository and release archive with the license and third-party notices included.
 - Complete one public example from a short product wish through reviewed, merged changes.
 
 ## Contributing

@@ -306,6 +306,95 @@ def _copy_asset(source: Path, destination: Path) -> dict[str, object]:
     }
 
 
+def assemble_release_assets(
+    *,
+    repository_root: Path,
+    sources: Mapping[str, Path],
+    evidence_path: Path,
+    evidence_digest_path: Path,
+    evidence_asset_name: str,
+    evidence_digest_asset_name: str,
+    output_dir: Path,
+    candidate_revision: str,
+    release_version: str,
+    tag: str,
+    provenance_fields: Mapping[str, object],
+) -> dict[str, object]:
+    """Copy validated bytes into one atomic, checksummed release directory."""
+    license_path = _validated_gpl3_license(repository_root / "LICENSE")
+    notices_path = _regular_file(
+        repository_root / "THIRD_PARTY_NOTICES.md",
+        label="third-party notices",
+    )
+    if (
+        evidence_asset_name != Path(evidence_asset_name).name
+        or evidence_digest_asset_name != Path(evidence_digest_asset_name).name
+    ):
+        raise ReleasePromotionError("release evidence asset names must be basenames")
+
+    output_parent = output_dir.resolve(strict=False).parent
+    output_parent.mkdir(parents=True, exist_ok=True)
+    if output_dir.exists():
+        raise ReleasePromotionError("release output directory already exists")
+    temporary = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_parent))
+    try:
+        assets = [
+            _copy_asset(sources["wheel"], temporary / sources["wheel"].name),
+            _copy_asset(sources["sdist"], temporary / sources["sdist"].name),
+            _copy_asset(
+                sources["skill_zip"],
+                temporary / f"wish-builder-skill-{release_version}.zip",
+            ),
+            _copy_asset(
+                sources["distribution_evidence"],
+                temporary / "distribution-evidence.json",
+            ),
+            _copy_asset(evidence_path, temporary / evidence_asset_name),
+            _copy_asset(
+                evidence_digest_path,
+                temporary / evidence_digest_asset_name,
+            ),
+            _copy_asset(license_path, temporary / "LICENSE"),
+            _copy_asset(
+                notices_path,
+                temporary / "THIRD_PARTY_NOTICES.md",
+            ),
+        ]
+        manifest: dict[str, object] = {
+            "artifact_count": len(assets),
+            "artifacts": sorted(assets, key=lambda item: str(item["name"])),
+            "candidate_revision": candidate_revision,
+            "license_expression": LICENSE_EXPRESSION,
+            "prerelease": True,
+            "schema_version": RELEASE_MANIFEST_SCHEMA_VERSION,
+            "status": "passed",
+            "tag": tag,
+            "version": release_version,
+        }
+        for key, value in provenance_fields.items():
+            if key in manifest:
+                raise ReleasePromotionError(f"release provenance field is reserved: {key}")
+            manifest[key] = value
+        manifest["manifest_digest"] = _sha256_bytes(canonical_json_bytes(manifest))
+        manifest_path = temporary / "release-manifest.json"
+        manifest_path.write_bytes(canonical_json_bytes(manifest))
+
+        checksum_paths = sorted(
+            [path for path in temporary.iterdir() if path.is_file()],
+            key=lambda path: path.name,
+        )
+        checksums = "".join(
+            f"{_sha256_file(path).removeprefix('sha256:')}  {path.name}\n"
+            for path in checksum_paths
+        )
+        (temporary / "SHA256SUMS").write_text(checksums, encoding="ascii", newline="\n")
+        os.replace(temporary, output_dir)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return manifest
+
+
 def prepare_release(
     *,
     repository_root: Path,
@@ -346,71 +435,22 @@ def prepare_release(
         revision=candidate,
         release_version=release_version,
     )
-    license_path = _validated_gpl3_license(repository_root / "LICENSE")
-    notices_path = _regular_file(
-        repository_root / "THIRD_PARTY_NOTICES.md",
-        label="third-party notices",
-    )
-
-    output_parent = output_dir.resolve(strict=False).parent
-    output_parent.mkdir(parents=True, exist_ok=True)
-    if output_dir.exists():
-        raise ReleasePromotionError("release output directory already exists")
-    temporary = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.", dir=output_parent))
-    try:
-        assets = [
-            _copy_asset(sources["wheel"], temporary / sources["wheel"].name),
-            _copy_asset(sources["sdist"], temporary / sources["sdist"].name),
-            _copy_asset(
-                sources["skill_zip"],
-                temporary / f"wish-builder-skill-{release_version}.zip",
-            ),
-            _copy_asset(
-                sources["distribution_evidence"],
-                temporary / "distribution-evidence.json",
-            ),
-            _copy_asset(packet_path, temporary / "active-m1-evidence-packet.json"),
-            _copy_asset(
-                packet_digest_path,
-                temporary / "active-m1-evidence-packet.sha256",
-            ),
-            _copy_asset(license_path, temporary / "LICENSE"),
-            _copy_asset(
-                notices_path,
-                temporary / "THIRD_PARTY_NOTICES.md",
-            ),
-        ]
-        manifest: dict[str, object] = {
-            "artifact_count": len(assets),
-            "artifacts": sorted(assets, key=lambda item: str(item["name"])),
-            "candidate_revision": candidate,
+    return assemble_release_assets(
+        repository_root=repository_root,
+        sources=sources,
+        evidence_path=packet_path,
+        evidence_digest_path=packet_digest_path,
+        evidence_asset_name="active-m1-evidence-packet.json",
+        evidence_digest_asset_name="active-m1-evidence-packet.sha256",
+        output_dir=output_dir,
+        candidate_revision=candidate,
+        release_version=release_version,
+        tag=tag,
+        provenance_fields={
             "ci_run_attempt": selected_run_attempt,
             "ci_run_id": selected_run_id,
-            "license_expression": LICENSE_EXPRESSION,
-            "prerelease": True,
-            "schema_version": RELEASE_MANIFEST_SCHEMA_VERSION,
-            "status": "passed",
-            "tag": tag,
-            "version": release_version,
-        }
-        manifest["manifest_digest"] = _sha256_bytes(canonical_json_bytes(manifest))
-        manifest_path = temporary / "release-manifest.json"
-        manifest_path.write_bytes(canonical_json_bytes(manifest))
-
-        checksum_paths = sorted(
-            [path for path in temporary.iterdir() if path.is_file()],
-            key=lambda path: path.name,
-        )
-        checksums = "".join(
-            f"{_sha256_file(path).removeprefix('sha256:')}  {path.name}\n"
-            for path in checksum_paths
-        )
-        (temporary / "SHA256SUMS").write_text(checksums, encoding="ascii", newline="\n")
-        os.replace(temporary, output_dir)
-    except BaseException:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
-    return manifest
+        },
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

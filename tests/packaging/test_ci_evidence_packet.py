@@ -44,6 +44,10 @@ from scripts.ci_trellis_integration import (
     build_summary as build_trellis_summary,
     discover_python_test_ids,
 )
+from scripts.local_evidence_packet import (
+    SCHEMA_VERSION as LOCAL_EVIDENCE_SCHEMA_VERSION,
+    build_local_evidence_manifest,
+)
 from tests.performance.evidence import build_evidence, digest, evaluate_gate
 
 
@@ -525,6 +529,13 @@ class EvidencePacketTests(unittest.TestCase):
             workflow_run_attempt="2",
         )
 
+    def build_local(self) -> dict[str, object]:
+        return build_local_evidence_manifest(
+            self.root,
+            candidate_revision=self.candidate,
+            safety_base_ref=self.base,
+        )
+
     def _reseal_distribution_claims(self) -> None:
         dist = self.root / "distribution"
         evidence_path = dist / "distribution-evidence.json"
@@ -591,6 +602,23 @@ class EvidencePacketTests(unittest.TestCase):
         self.assertEqual(
             "sha256:" + hashlib.sha256(canonical_json_bytes(digest_input)).hexdigest(),
             packet_digest,
+        )
+
+    def test_builds_local_manifest_without_ci_provenance(self) -> None:
+        manifest = self.build_local()
+
+        digest_input = dict(manifest)
+        evidence_digest = digest_input.pop("evidence_digest")
+        self.assertEqual(LOCAL_EVIDENCE_SCHEMA_VERSION, manifest["schema_version"])
+        self.assertEqual("local", manifest["provenance_kind"])
+        self.assertEqual("passed", manifest["status"])
+        self.assertEqual(self.candidate, manifest["candidate_revision"])
+        self.assertNotIn("workflow", manifest)
+        self.assertNotIn("job_results", manifest)
+        self.assertNotIn("ci_run_id", manifest)
+        self.assertEqual(
+            "sha256:" + hashlib.sha256(canonical_json_bytes(digest_input)).hexdigest(),
+            evidence_digest,
         )
 
     def test_build_reuses_the_single_trusted_git_collection(self) -> None:

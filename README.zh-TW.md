@@ -10,7 +10,7 @@ Wish Builder 是一套給 Codex 使用的 Skill，適合那些不能只靠一句
 
 > **目前狀態：** 開發預覽版（`0.1.0.dev0`）。本機控制流程、不可變執行快照檢查、遇到不確定情況就停止的准入規則、Journal 與恢復邊界、Git adapter，以及 Wish Builder 對官方 Trellis `0.6.15` 的匯入／投影 bridge 都已有實作。包含 Git 變更途中當機情況的完整本機生命週期，已使用受控 subprocess worker 通過端到端測試。
 >
-> 真實派工仍然關閉，因為 Pi、Oh My Pi 和 Codex 的六個 backend／OS cell，都還沒有完整的真實資格記錄。目前唯一留下的持久真實證據，是 Windows 上 Pi 的啟動和 handshake 檢查，而且沒有送出 model turn；Windows 上的 Oh My Pi live probe 需要已設定的 model 和 provider credential，但本輪沒有要求或使用 credential，因此該 cell 只能記為 credential-blocked。Codex 和其餘 cell 只有 deterministic fixture 或待跑 CI cell。active cancellation、當機重啟後不重送的 reconcile、cleanup、平行重疊和平台證據仍不完整，因此所有 cell 都維持 `enabledForDispatch=false`。官方 Trellis `0.6.15` 也沒有跨程序 compare-and-swap（CAS），所以投影採單一寫入者並在衝突時停止。Agent 派工和 Trellis 投影是分開的：worker 只寫隔離 Git worktree 和 Journal，之後由單一 writer 把結果投影回 Trellis。GitHub repository 仍是 private，也尚未發布 release；程式碼採 GPL-3.0-only 授權。
+> 真實派工仍然關閉，因為 Pi、Oh My Pi 和 Codex 的六個 backend／OS cell，都還沒有完整的真實資格記錄。目前唯一留下的持久真實證據，是 Windows 上 Pi 的啟動和 handshake 檢查，而且沒有送出 model turn；Windows 上的 Oh My Pi live probe 需要已設定的 model 和 provider credential，但本輪沒有要求或使用 credential，因此該 cell 只能記為 credential-blocked。Codex 和其餘 cell 只有 deterministic fixture 或不完整的資格記錄。active cancellation、當機重啟後不重送的 reconcile、cleanup、平行重疊和平台證據仍不完整，因此所有 cell 都維持 `enabledForDispatch=false`。官方 Trellis `0.6.15` 也沒有跨程序 compare-and-swap（CAS），所以投影採單一寫入者並在衝突時停止。Agent 派工和 Trellis 投影是分開的：worker 只寫隔離 Git worktree 和 Journal，之後由單一 writer 把結果投影回 Trellis。GitHub repository 仍是 private，也尚未發布 release；程式碼採 GPL-3.0-only 授權。
 
 ## 為什麼需要它
 
@@ -113,9 +113,9 @@ M1 目前的 Python 控制層只接受 `scheduler_mode=wish_builder`。每次執
 
 | Backend | Windows 證據 | Linux 證據 | 正式派工 |
 | --- | --- | --- | --- |
-| Codex | deterministic fixture；仍需 CI cell | deterministic fixture；仍需 CI cell | 關閉 |
-| Pi | 只有啟動和 handshake，沒有 model turn | deterministic fixture；仍需 CI cell | 關閉 |
-| Oh My Pi | live turn 受阻：需要已設定的 model 和 provider credential；仍需 CI 證據 | deterministic fixture；仍需 CI cell | 關閉 |
+| Codex | deterministic fixture；仍需完整真實資格驗證 | deterministic fixture；仍需完整真實資格驗證 | 關閉 |
+| Pi | 只有啟動和 handshake，沒有 model turn | deterministic fixture；仍需完整真實資格驗證 | 關閉 |
+| Oh My Pi | live turn 受阻：需要已設定的 model 和 provider credential | deterministic fixture；仍需完整真實資格驗證 | 關閉 |
 
 目前沒有任何 backend／OS cell 完成 active cancellation、當機重啟後不重送的 reconcile、cleanup、平行重疊和目標平台所需的完整資格證據，因此六個 provider／OS 組合仍是 `enabledForDispatch=false`。Trellis 相容性和 backend 資格是兩份獨立記錄：前者綁定凍結任務圖和 projection adapter，後者記錄 Agent cell 證據。active `wish_builder` 派工必須有已開放、且綁定批准 Trellis compatibility digest 的 backend cell；因 worker 不寫 Trellis，所以不把 projection CAS 當成派工條件。未來由 Trellis 排程的模式不使用 Agent backend／OS cell，但要有新版 manifest schema、派工前准入、fencing、stop/reject 和並行寫入所有權資格。Claude Code 和 macOS 已延後，等前三個 backend 與 Windows／Linux 矩陣穩定後再處理。
 
@@ -294,26 +294,21 @@ python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/impo
 
 ## 驗證狀態
 
-最新本機 Windows 檢查：完整非效能與官方 Trellis 檢查已在 2026-08-27 重跑；其餘數據來自 2026-08-25。
+M1 的發行門檻是一套完整、可以重跑，而且綁定單一 commit 的本機證據。實際 revision 記在 `local-m1-evidence-manifest.json`，不另外抄進 README，避免文件與證據不一致。
 
 | 檢查 | 結果 |
 | --- | --- |
-| Repository 非效能測試 | Python 3.13 執行 1,447 項；1,444 項通過，3 項平台條件式略過 |
-| Python 相容性 | Python 3.11 與 3.12 各執行同一組 1,447 項測試：1,444 項通過，3 項平台條件式略過 |
-| 效能測試 | 16 項通過 |
-| 打包測試 | 220 項通過 |
-| 官方 Trellis `0.6.15` Node bridge 測試 | 22 項通過 |
-| 獨立 Skill 測試 | 13 項通過 |
-| Wish Builder 對官方 Trellis `0.6.15` 執行的 graph、projection、recovery、acceptance 與 E2E 檢查 | 29 項通過（Node 22、Python 7） |
+| Repository 矩陣 | Windows／Linux × Python 3.11／3.12／3.13；每格 1,498 項，沒有 failure 或 error |
+| 發行檔 clean install | Wheel 與 source archive 在六個 OS／Python cell 全部通過 |
+| 官方 Trellis `0.6.15` | Windows 與 Linux 各通過 22 項 Node 和 7 項 Python 整合測試 |
 | Branch coverage | contracts/kernel 95.395242%；services 91.638225%；adapters/processes/CLI 88.033012%；全部通過門檻 |
 | Safety mutation | 16 項全部攔下；分數 100% |
 | Controlled performance | 10 萬事件冷重播 p95 10.521 秒；checkpoint tail p95 6 ms；graph batch p99 1.118 秒；記憶體峰值 49,668,096 bytes |
 | Codex Skill 結構驗證、runtime parity 與確定性 ZIP | 通過 |
-| Wheel 與 source distribution clean-install 矩陣 | 已涵蓋 Windows／Linux 與 Python 3.11/3.12/3.13；仍須在固定 revision 上跑遠端 CI |
 
-本機測試已定義 branch coverage 門檻、16 個 mutation case 和 17 個指定的安全來源檔案，也會驗證當機恢復與受限效能。官方 `0.6.15` 測試涵蓋 graph import、權威 projection、recovery 與 subprocess E2E 流程，也會在 promotion candidate 裡執行一般 `unittest` 指令。這些是目前 dirty worktree 的本機結果，不是與候選 revision 綁定的發布證據；它們能證明受控的本機生命週期，不代表真實 backend 派工或正式部署已經通過驗證。
+M1 發行以綁定單一 commit、可以重跑的本機證據為準。`scripts/local_evidence_packet.py` 會驗證六個 repository cell、六個 clean-install cell、兩個 Trellis cell，以及 coverage、mutation、safety、performance 和確定性發行檔，最後寫出帶有 `provenance_kind: local` 的 canonical manifest。`scripts/ci_local_release.py` 會從原始證據重建同一份 manifest，完全相符才會建立含 checksum 的發行檔；若出現 GitHub workflow ID、job result 或其他 CI provenance，會直接拒絕。
 
-現在這個 dirty candidate，包括 M1-13 和 distribution workflows，尚未在遠端執行，因為還沒有 push candidate revision。CI 已定義六個 distribution clean-install cell，全部使用同一份 canonical wheel 與 source archive；最終證據包會拒絕缺格、重複或 artifact digest 不一致的結果。這六格仍要在同一個固定 candidate revision 上遠端跑過。
+這個預覽版不再把 GitHub Actions 當成 M1 發行門檻。最近一次 hosted run 因 repository 帳戶的付款或 spending limit 問題，在取得 runner 之前就停止；不能把它描述成通過。這項調整只改變發行證據來源，不會替任何 backend 完成資格驗證，也不會開放真實 Agent 派工。
 
 本機主要測試指令：
 
@@ -323,13 +318,27 @@ python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/impo
 .\.venv\Scripts\python.exe wish-builder\scripts\test_wishctl.py
 ```
 
-## 第一次發布前
+完成某個 commit 的本機原始矩陣證據後，可用以下指令建立並再次驗證發行資料：
+
+```powershell
+uv run --locked --python 3.13 python scripts\local_evidence_packet.py `
+  --evidence-root <evidence-root> --candidate-revision <commit-sha> `
+  --safety-base-ref <base-ref> --output <manifest.json> `
+  --digest-output <manifest.sha256>
+
+uv run --locked --python 3.13 python scripts\ci_local_release.py `
+  --repository-root . --evidence-root <evidence-root> `
+  --safety-base-ref <base-ref> --distribution-root <distribution-root> `
+  --manifest <manifest.json> --manifest-digest <manifest.sha256> `
+  --output-dir <release-assets> --revision <commit-sha> `
+  --version 0.1.0.dev0 --tag v0.1.0.dev0
+```
+
+## 開放真實派工前
 
 - 使用真實專案 backend 驗證已組裝的生命週期，包括 Git 變更前後的取消與恢復。
 - 補齊取消、當機重啟 reconcile、cleanup、平行重疊與平台證據，再逐一開放 backend cell。
-- 在公開 repository 跑完 repository 與 distribution 的 Windows／Linux、Python 3.11／3.12／3.13 matrices。
 - 補上所選流程需要的真實 Issue、Pull Request 和託管平台 adapter。
-- 以 GPL-3.0-only 發布 repository 和 release 壓縮檔，並包含授權與第三方 notices。
 - 完成一個公開案例，從一句產品願望走到通過審閱並合併的改動。
 
 ## 參與開發

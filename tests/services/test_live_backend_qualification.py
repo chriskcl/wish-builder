@@ -47,7 +47,7 @@ def argument(name):
     except (ValueError, IndexError):
         return None
 
-log_path = Path(os.environ["FAKE_LIVE_LOG"])
+log_root = Path(os.environ["FAKE_LIVE_LOG"])
 barrier = Path(os.environ["FAKE_LIVE_BARRIER"])
 pid_root = Path(os.environ["FAKE_LIVE_PIDS"])
 pid_root.mkdir(parents=True, exist_ok=True)
@@ -118,8 +118,11 @@ for raw in sys.stdin.buffer:
     elif kind == "prompt":
         packet = json.loads(command["message"])
         dispatch_id = packet["execution"]["dispatch_id"]
-        with log_path.open("a", encoding="utf-8", newline="\n") as stream:
-            stream.write(json.dumps({"dispatchId": dispatch_id, "pid": os.getpid(), "at": time.monotonic_ns(), "argv": sys.argv[1:]}, separators=(",", ":")) + "\n")
+        recorded_at = time.monotonic_ns()
+        log_root.mkdir(parents=True, exist_ok=True)
+        log_path = log_root / (str(os.getpid()) + "-" + str(recorded_at) + ".json")
+        with log_path.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps({"dispatchId": dispatch_id, "pid": os.getpid(), "at": recorded_at, "argv": sys.argv[1:]}, separators=(",", ":")) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
         append_message({"role": "user", "content": [{"type": "text", "text": command["message"]}]})
@@ -208,7 +211,7 @@ class LiveBackendQualificationTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        self.log = self.root / "provider-prompts.jsonl"
+        self.log = self.root / "provider-prompts"
         self.barrier = self.root / "overlap-barrier"
         self.pids = self.root / "provider-pids"
         os.environ["FAKE_LIVE_LOG"] = str(self.log)
@@ -258,7 +261,10 @@ class LiveBackendQualificationTests(unittest.TestCase):
         candidate = verify_backend_qualification_candidate(output)
         self.assertEqual(2, candidate.artifact.observed_max_concurrent_turns)
 
-        prompts = [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+        prompts = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in sorted(self.log.glob("*.json"))
+        ]
         self.assertEqual(6, len(prompts), "a handshake-only probe must not qualify")
         current_platform = Platform.WINDOWS if os.name == "nt" else Platform.LINUX
         profile_args = load_bundled_compatibility().platform(
