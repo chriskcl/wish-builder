@@ -688,7 +688,7 @@ class AttemptBackendChannelRouterTests(unittest.TestCase):
     ) -> None:
         cell = load_bundled_compatibility().platform(
             Provider.CODEX,
-            Platform.WINDOWS,
+            Platform.LINUX,
         )
         self.assertFalse(cell.qualification.enabled_for_dispatch)
         factory = WishBuilderBackendAttemptChannelFactory(
@@ -697,7 +697,7 @@ class AttemptBackendChannelRouterTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             BackendDispatchUnavailable,
-            "codex/windows: enabledForDispatch=false",
+            "codex/linux: enabledForDispatch=false",
         ):
             factory(self.attempts[0])
 

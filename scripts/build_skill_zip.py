@@ -55,6 +55,19 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _filesystem_path(path: Path) -> Path:
+    """Return a Windows extended-length path for internal filesystem access."""
+
+    if os.name != "nt":
+        return path
+    value = os.path.abspath(os.fspath(path))
+    if value.startswith("\\\\?\\"):
+        return Path(value)
+    if value.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + value[2:])
+    return Path("\\\\?\\" + value)
+
+
 def authoritative_runtime_files(
     repository_root: Path = REPOSITORY_ROOT,
 ) -> list[Path]:
@@ -65,16 +78,18 @@ def authoritative_runtime_files(
             "authoritative runtime root is missing or is a symlink: wish_builder"
         )
     files: list[Path] = []
-    for path in package_root.rglob("*"):
+    search_root = _filesystem_path(package_root)
+    for discovered in search_root.rglob("*"):
+        path = package_root / discovered.relative_to(search_root)
         if _is_ignored_runtime_path(path):
             continue
         _reject_tgz(path, repository_root, context="authoritative runtime")
-        if path.is_symlink():
+        if discovered.is_symlink():
             raise RuntimeDriftError(
                 f"authoritative runtime source must not be a symlink: "
                 f"{path.relative_to(repository_root).as_posix()}"
             )
-        if path.is_file():
+        if discovered.is_file():
             files.append(path)
     return sorted(files, key=lambda path: path.relative_to(repository_root).as_posix())
 
@@ -151,14 +166,16 @@ def runtime_manifest_bytes(
 
 def _generated_runtime_files(skill_root: Path) -> set[Path]:
     generated_root = skill_root / "scripts" / "wish_builder"
-    if not generated_root.exists():
+    search_root = _filesystem_path(generated_root)
+    if not search_root.exists():
         return set()
     files: set[Path] = set()
-    for path in generated_root.rglob("*"):
-        if _is_ignored_runtime_path(path):
+    for path in search_root.rglob("*"):
+        relative = path.relative_to(search_root)
+        if _is_ignored_runtime_path(relative):
             continue
         if path.is_symlink() or path.is_file():
-            files.add(path.relative_to(skill_root))
+            files.add(Path("scripts") / "wish_builder" / relative)
     return files
 
 
@@ -168,11 +185,11 @@ def _assert_no_symlink_ancestors(path: Path, root: Path) -> None:
     except ValueError as exc:
         raise RuntimeDriftError(f"generated path escapes the Skill root: {path}") from exc
     current = root
-    if current.is_symlink():
+    if _filesystem_path(current).is_symlink():
         raise RuntimeDriftError(f"generated path has a symlink ancestor: {current}")
     for part in relative.parts[:-1]:
         current /= part
-        if current.is_symlink():
+        if _filesystem_path(current).is_symlink():
             raise RuntimeDriftError(f"generated path has a symlink ancestor: {current}")
 
 
@@ -208,25 +225,26 @@ def runtime_drift(
         expected_map.items(), key=lambda item: item[0].as_posix()
     ):
         destination = skill_root / relative_destination
-        if not destination.exists():
+        filesystem_destination = _filesystem_path(destination)
+        if not filesystem_destination.exists():
             if relative_destination not in expected_generated:
                 diagnostics.append(
                     f"missing generated runtime file: {relative_destination.as_posix()}"
                 )
             continue
-        if destination.is_symlink():
+        if filesystem_destination.is_symlink():
             diagnostics.append(
                 f"generated runtime file must not be a symlink: "
                 f"{relative_destination.as_posix()}"
             )
             continue
-        if not destination.is_file():
+        if not filesystem_destination.is_file():
             diagnostics.append(
                 f"generated runtime path is not a file: "
                 f"{relative_destination.as_posix()}"
             )
             continue
-        if destination.read_bytes() != source.read_bytes():
+        if filesystem_destination.read_bytes() != _filesystem_path(source).read_bytes():
             diagnostics.append(
                 f"stale generated runtime file: {relative_destination.as_posix()} "
                 f"(source: {source.relative_to(repository_root).as_posix()})"
@@ -274,24 +292,28 @@ def sync_runtime(
         reverse=True,
     ):
         path = skill_root / relative_path
-        if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path)
+        filesystem_path = _filesystem_path(path)
+        if filesystem_path.is_dir() and not filesystem_path.is_symlink():
+            shutil.rmtree(filesystem_path)
         else:
-            path.unlink()
+            filesystem_path.unlink()
 
     for relative_destination, source in sorted(
         expected_map.items(), key=lambda item: item[0].as_posix()
     ):
         destination = skill_root / relative_destination
         _assert_no_symlink_ancestors(destination, skill_root)
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        filesystem_destination = _filesystem_path(destination)
+        filesystem_destination.parent.mkdir(parents=True, exist_ok=True)
         _assert_no_symlink_ancestors(destination, skill_root)
-        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+        if filesystem_destination.is_symlink() or (
+            filesystem_destination.exists() and not filesystem_destination.is_file()
+        ):
             raise RuntimeDriftError(
                 f"refusing to replace non-file generated path: "
                 f"{relative_destination.as_posix()}"
             )
-        destination.write_bytes(source.read_bytes())
+        filesystem_destination.write_bytes(_filesystem_path(source).read_bytes())
 
     manifest_path = skill_root / "scripts" / "runtime-manifest.json"
     _assert_no_symlink_ancestors(manifest_path, skill_root)
@@ -305,24 +327,26 @@ def sync_runtime(
     assert_runtime_current(repository_root)
 
     # Generated package imports can leave caches; they are never source artifacts.
-    for cache in generated_root.rglob("__pycache__"):
+    for cache in _filesystem_path(generated_root).rglob("__pycache__"):
         if cache.is_dir() and not cache.is_symlink():
             shutil.rmtree(cache)
 
 
 def distributable_files(skill_root: Path = SKILL_ROOT) -> list[Path]:
     files: list[Path] = []
-    for path in skill_root.rglob("*"):
+    search_root = _filesystem_path(skill_root)
+    for discovered in search_root.rglob("*"):
+        path = skill_root / discovered.relative_to(search_root)
         if _is_ignored_runtime_path(path):
             continue
         _reject_tgz(path, skill_root, context="Skill distribution")
-        if path.is_file():
+        if discovered.is_file():
             files.append(path)
     return sorted(files, key=lambda path: path.as_posix())
 
 
 def archive_bytes(path: Path) -> bytes:
-    data = path.read_bytes()
+    data = _filesystem_path(path).read_bytes()
     if (
         path.suffix.lower() not in TEXT_SUFFIXES
         and path.name not in TEXT_FILENAMES
@@ -334,7 +358,7 @@ def archive_bytes(path: Path) -> bytes:
 
 def _reject_distributable_symlinks(paths: Iterable[Path], skill_root: Path) -> None:
     for path in paths:
-        if path.is_symlink():
+        if _filesystem_path(path).is_symlink():
             raise RuntimeDriftError(
                 "Skill archives cannot contain symlinks: "
                 f"{path.relative_to(skill_root).as_posix()}"

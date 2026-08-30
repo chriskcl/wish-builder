@@ -4,23 +4,30 @@
 
 ## 一句話現況
 
-Wish Builder 的本機 M1 功能、M1-13 驗證與 release verifier 已落地：Trellis 建立和維護可編輯任務圖；Wish Builder 匯入、驗證並鎖定人已批准的 material graph，再負責准入、派工監督、結果驗證、Journal 和崩潰恢復。唯一支援的 Trellis 基線是官方 `0.6.15`；`0.7.0-dev.2` 是已撤回的本機測試 fixture，從未是官方 Trellis release。**本地測試已通過，依使用者決定足以完成 M1。** GitHub Actions 因預算用完而不執行，不聲稱 CI 通過或失敗。現有持久 backend 證據只有 Windows Pi 的啟動／handshake，沒有送出 model turn；Windows Oh My Pi 仍受阻於未設定的 model/provider credential，本輪沒有要求或使用 credential；Codex 與其他 cell 仍是 fixture 或未完成 qualification。正式派工仍未開放。
+Wish Builder 的本機 M1 功能、M1-13 驗證與 release verifier 已落地：Trellis 建立和維護
+可編輯任務圖；Wish Builder 匯入、驗證並鎖定人已批准的 material graph，再負責准入、
+派工監督、結果驗證、Journal 和崩潰恢復。唯一支援的 Trellis 基線是官方 `0.6.15`；
+`0.7.0-dev.2` 是已撤回的本機測試 fixture，從未是官方 Trellis release。**本地測試已通過，
+依使用者決定足以完成 M1。** GitHub Actions 因預算用完而不執行，不聲稱 CI 通過或失敗。
+`Codex / Windows` 已依完整 live evidence、獨立核對與人工批准完成本地正式發布，可在並行度
+1 或 2 派工；其 detached provider provenance 不是 OpenAI 簽署的 attestation。其餘五個
+backend／OS cell 仍關閉。
 
 ## Repository 狀態
 
 | 項目 | 值 |
 | --- | --- |
 | Repository | `C:\Users\chonk\Documents\Codex\2026-08-15\new-chat\outputs` |
-| Branch | `release/m1` |
+| Branch | `release/codex-windows-qualification`（由 `main` 建立） |
 | M1 candidate 的 base HEAD | `698f8710aef9601eb29445f18c085e6427c36c7a` (`feat: add strict M1 contracts and validation`) |
 | M1 candidate revision | 本文件所在 commit；接手時執行 `git rev-parse HEAD` 取得，不在 commit 內自我引用 SHA |
-| 工作樹 | tracked files 已提交；接手時仍應以 `git status --short` 核對本機 evidence files |
-| Remote | `origin = https://github.com/chriskcl/wish-builder.git`；repository 是 private；PR #1 已開啟，尚未建立 release |
+| 工作樹 | Codex／Windows qualification 發布、測試與文件變更尚未提交；以 `git status --short` 核對 |
+| Remote | `origin = https://github.com/chriskcl/wish-builder.git`；repository 已公開，`v0.1.0.dev1` prerelease 已發布 |
 | Python package | `wish-builder 0.1.0.dev1`, Python `>=3.11` |
 | License | `GPL-3.0-only` |
 | Skill ZIP | `wish-builder-skill.zip` |
-| Skill ZIP SHA-256 | `cfe78dad83087ec5492e2192fb1d7e5e71cfa6c83a7a2755df4bdf62b5d9fc53` |
-| Skill ZIP 大小 | `525,824` bytes |
+| Skill ZIP SHA-256 | `22a074b2244bc50fd2b7acba99c48defdbeb124d0b295b9e393317a2e6751f0b` |
+| Skill ZIP 大小 | `556,352` bytes |
 
 `changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。tracked 成果只提交到本機分支；是否已推送一律以 `git status --branch` 為準。
 
@@ -76,24 +83,42 @@ Gate B：人批准由 task records 投影出的 material graph 與 Wish Builder 
 - 13 個 production crash boundary 的直接證據：5 個 fake-effect subprocess E2E，以及 8 個 Git create／stage／promotion／remove integration；全部直接命中 failpoint，restart 後不重複 mutation，也不誤改 target、ref 或 sibling worktree。
 - M1-13 三層 coverage floor、16 項 targeted safety mutation、coverage＋mutation 聯合證據、Windows／Linux performance evidence，以及一次建置、六格共用同一 artifact 的 distribution clean-install matrix。
 - 本機 release verifier 會從原始證據重建 canonical manifest，再驗證 wheel、sdist、兩份 Skill ZIP 與 distribution evidence；manifest 使用 `provenance_kind: local`，不接受 workflow ID、job results 或其他 CI 身分欄位。原有 CI verifier 保留為可選路徑。
+- `Codex / Windows` 在官方 `@openai/codex@0.149.0` 上完成 full turn、active
+  cancellation、crash/reconcile without redelivery、cleanup 與兩個 disjoint sibling
+  overlap；獨立核對通過後，由 fail-closed publisher 保存 evidence、publication receipt、
+  bundled record 和 compiled trust pin。最大並行度為 2。
 
 ## 尚未完成或未開放
 
-- 六個 Pi、Oh My Pi、Codex 平台 cell 都仍是 `artifact: null`、`enabledForDispatch: false`。Windows Pi 只有啟動／handshake 證據，沒有 model turn；Windows Oh My Pi 的 live turn 需要已設定的 model 和 provider credential，本輪沒有要求或使用 credential，因此只能記為 `blocked_credentials`；本機 probe 不能代替完整資格。開放前必須補齊真實 model turn、active cancellation、當機重啟後不重送的 reconcile、cleanup、平行重疊和平台證據，且證據要有獨立可信的 CI/provider attestation 或可核對的原始 event log。Content digest 只證明內容未變，不能單獨證明真的跑過。
-- 官方 Trellis `0.6.15` 沒有可靠的跨程序 CAS，因此 projection 維持單一 writer，寫前後核對 digest，衝突或結果不明時 fail closed。backend worker 只寫隔離 Git worktree 和 Journal，不寫 Trellis；Agent 派工和 Trellis projection 是兩條獨立准入線。backend cell 只因自身 live 資格未完成而維持 `enabledForDispatch=false`，不再等待 projection CAS。
+- Pi／Windows、Pi／Linux、Oh My Pi／Windows、Oh My Pi／Linux 和 Codex／Linux 五個 cell
+  仍是 `enabledForDispatch: false`。Windows Pi 只有啟動／handshake 證據，沒有 model turn；
+  Windows Oh My Pi 的 live turn 需要已設定的 model 和 provider credential，本輪沒有要求或
+  使用 credential，因此只能記為 `blocked_credentials`。開放任一 cell 前，必須補齊完整
+  live evidence、保存可核對的原始 event log，經獨立核對和人工批准，再透過 publisher 更新
+  trust pin；不可手改資格 JSON。
+- 官方 Trellis `0.6.15` 沒有可靠的跨程序 CAS，因此 projection 維持單一 writer，寫前後
+  核對 digest，衝突或結果不明時 fail closed。backend worker 只寫隔離 Git worktree 和
+  Journal，不寫 Trellis；Agent 派工和 Trellis projection 是兩條獨立准入線。
+  `Codex / Windows` 的派工資格不依賴 projection CAS。
 - Claude Code 和 macOS 明確延後，不屬於 v1。
 - 不含 AI PRD-to-task decomposer、任務 CRUD、另一套 task DB／看板或第二個 scheduler。
 - M1 只保留 Python 控制層與 Trellis／backend 整合；其他工具鏈不在目前範圍。
 - 不含真實 GitHub adapter、provider 憑證、sandbox、background supervisor／broker、cockpit 和正式部署。
 - M1-13 已依「本地測試通過」規則完成。GitHub Actions 因預算用完而不執行，也沒有 CI 結果可宣稱。
 - `local_evidence_packet.py` 和本機 release verifier 保留為可選的嚴格發行工具，不再是 M1 完成門檻。
-- 已採 GPL-3.0-only 並加入第三方 notices；remote 已設定，但 repository 仍是 private，也沒有公開 release。
+- 已採 GPL-3.0-only 並加入第三方 notices；repository 已公開，`v0.1.0.dev1` prerelease 已發布。
 
 ## 驗證基線
 
 目前 M1 判定為「本地測試通過」。以下歷史段落保留較細的本機測量資料供比較；本機 evidence JSON 不加入 repository。
 
 ```text
+2026-08-30 Codex/Windows local qualification publication (source revision fd3296ed1f8d85e9a1347eb1e2dcdf611ec62720):
+  Independent evidence audit: PASS; 52 passed; 1 Windows symlink-permission skip
+  Post-publication qualification/admission focus: 68 passed; 1 Windows symlink-permission skip; 59 subtests passed
+  Fresh full local suite: 1,527 run including 16 performance tests; OK; 3 platform-specific skips
+  Installed standalone Skill: 13 run; OK
+
 2026-08-30 local non-performance candidate matrix (revision 9793ff1c86089c59115f4406a015c3abec8d6bce):
   Windows/Linux x Python 3.11/3.12/3.13: 1,498 tests per cell; status passed; 0 failures; 0 errors
   Allowed skips: Windows 9 per cell; Linux 13 per cell
@@ -156,14 +181,20 @@ Windows clean-install of the same wheel and sdist:
 
 Skill runtime sync check: passed
 Deterministic ZIP check: passed
+Current Skill ZIP SHA-256: 22a074b2244bc50fd2b7acba99c48defdbeb124d0b295b9e393317a2e6751f0b; 556,352 bytes
 Codex Skill validator: passed
 Release content gate: passed; release archives reject bundled `.tgz` files and unpinned Trellis install specs
 Distribution clean-install matrix: 6 cells implemented; local fixed-revision evidence is authoritative for M1
 Graph adapter qualification digest: sha256:211fc5fc7c72bc68447ed9c632c37223018c1afef3f77f7e9d5bdf297db6da1e
 Trellis compatibility digest: sha256:fd3601e3507f8e2befe914e94afff04c07dedfb55d30417d3b35370bbfacf235
-Backend qualification digest: sha256:69117a88996d30378c41101fd2f9dae5f37d21fa3a3a2bdd25f72ceebb08b46a
+Backend qualification digest: sha256:9f6606ef8a872b1eadfc1c34451c99c5cd6bc5b49d704c30d3b56d7fb8a171fc
 Trellis compatibility JSON SHA-256: 489a9d356cc394ba597aa2420cce8ac37f7e4902da5304896058a86f56027a92
-Backend qualification JSON SHA-256: 4eb266ccd3a72f7c6caa4df7860d0e9beed4b1c2529ac896ab80a893b3906a35
+Backend qualification JSON SHA-256: b7744f9e9a4189518e934eb84cc7bccc7a6f88bea2bfe9eb58b1e5dab677b1c4
+Codex/Windows candidate artifact: sha256:8d6cf3545a978ea1221df250818ab54e86ab521d698ed1e4c1c6076119dc58a6
+Codex/Windows evidence inventory: sha256:8a645308959b79e9d95fdacc79fbaa4a31bb5598ea564f43325cedebd6a6887d
+Codex/Windows event log: sha256:a96c043cfe94a3ccfef9381c35c4ae547ffcee3f88f4ab683a600f17a06d151c
+Codex/Windows publication receipt: sha256:d59bfd97595e2f1f9cddf7e1fc2999ec8b4c9a963c3e0834388e492e75c27d8e
+Qualification source revision: fd3296ed1f8d85e9a1347eb1e2dcdf611ec62720
 Candidate-revision safety packet: optional under the current M1 policy
 ```
 
@@ -184,7 +215,11 @@ Candidate-revision safety packet: optional under the current M1 policy
 1. 先讀本文件、README、Skill 與正式計畫，不要從舊的 D44-D50 問題恢復；使用者已明確放棄那些過細決策。
 2. package source 或 Skill 如有變動，重跑相關本地測試、standalone Skill tests 與 runtime parity；只有發行檔內容改變時才需要重建 wheel、sdist 和 Skill ZIP。純文件改動執行格式與連結檢查即可。
 3. M1-13 已關閉。GitHub Actions 因預算不執行；除非日後另有預算和明確需求，不要把 hosted CI 加回完成門檻。完整 local evidence packet 只在需要可重建發行資料時執行。
-4. 如要開放 Pi、Oh My Pi 或 Codex backend，先補齊對應 OS cell 的 active cancellation、當機重啟 reconcile、cleanup、平行重疊與平台矩陣證據；把證據根連到獨立可信的 attestation 或原始 event log，最後經人工審核才可更新 trust pin 與對應 `enabledForDispatch`。這不依賴 Trellis projection CAS。未來若要加入 `trellis + trellis`，不使用這些 Agent backend／OS cell；需另加 manifest schema，並驗證派工前准入、fencing、stop/reject 與並行寫入所有權。
+4. `Codex / Windows` 已開放並行度 1-2；不要提高到 3。若要開放其餘五個 cell，先補齊
+   對應 OS 的完整資格證據，保存原始 event log，經獨立核對與人工批准後使用 publisher
+   發布，不可手改資格 JSON。這不依賴 Trellis projection CAS。未來若要加入
+   `trellis + trellis`，不使用這些 Agent backend／OS cell；需另加 manifest schema，並驗證
+   派工前准入、fencing、stop/reject 與並行寫入所有權。
 5. 本輪候選與文件更新已獲授權；之後的新 commit、push、公開 repository、release 或 provider 憑證操作仍要另行取得使用者授權。
 
 ## 不可破壞的回歸規則

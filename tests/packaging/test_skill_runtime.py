@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,7 @@ from pathlib import Path
 from scripts.build_skill_zip import (
     REPOSITORY_ROOT,
     RuntimeDriftError,
+    _filesystem_path,
     archive_bytes,
     assert_runtime_current,
     build,
@@ -109,7 +111,10 @@ class SkillRuntimePackagingTests(unittest.TestCase):
         for destination, source in expected.items():
             source_bytes = source.read_bytes()
             canonical_source_bytes = archive_bytes(source)
-            self.assertEqual(source_bytes, (skill_root / destination).read_bytes())
+            self.assertEqual(
+                source_bytes,
+                _filesystem_path(skill_root / destination).read_bytes(),
+            )
             self.assertEqual(
                 source.relative_to(REPOSITORY_ROOT).as_posix(),
                 entries[destination]["source"],
@@ -148,6 +153,44 @@ class SkillRuntimePackagingTests(unittest.TestCase):
                 build(crlf_zip, crlf_root),
             )
             self.assertEqual(lf_zip.read_bytes(), crlf_zip.read_bytes())
+
+    def test_sync_and_build_support_long_runtime_paths(self) -> None:
+        root = Path(tempfile.mkdtemp())
+        try:
+            self._fixture_repository(root)
+            relative = Path("compatibility")
+            source = root / "wish_builder" / relative / "evidence.json"
+            while len(str(source)) < 240:
+                relative /= "segment1234"
+                source = root / "wish_builder" / relative / "evidence.json"
+            destination = (
+                root
+                / "wish-builder"
+                / "scripts"
+                / "wish_builder"
+                / relative
+                / "evidence.json"
+            )
+            self.assertLess(len(str(source)), 260)
+            self.assertGreater(len(str(destination)), 260)
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b'{"evidence":true}\n')
+
+            sync_runtime(root)
+            output = root / "long-path.zip"
+            build(output, root)
+
+            with zipfile.ZipFile(output) as archive:
+                member = (
+                    Path("wish-builder")
+                    / "scripts"
+                    / "wish_builder"
+                    / relative
+                    / "evidence.json"
+                ).as_posix()
+                self.assertEqual(b'{"evidence":true}\n', archive.read(member))
+        finally:
+            shutil.rmtree(_filesystem_path(root), ignore_errors=True)
 
     def test_documented_manifest_v2_example_matches_the_closed_decoder(self) -> None:
         contracts = (
@@ -280,9 +323,9 @@ class SkillRuntimePackagingTests(unittest.TestCase):
             archive_path = root / "skill.zip"
             build(archive_path)
             with zipfile.ZipFile(archive_path) as archive:
-                archive.extractall(root / "extracted")
+                archive.extractall(root)
 
-            skill_root = root / "extracted" / "wish-builder"
+            skill_root = root / "wish-builder"
             scripts_root = (skill_root / "scripts").resolve()
             manifest = json.loads(
                 (scripts_root / "runtime-manifest.json").read_text(encoding="utf-8")

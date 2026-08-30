@@ -12,6 +12,7 @@ from tests.processes.test_coordinator import CoordinatorHarness, sibling_manifes
 from tests.services.test_execution_admission import WORKSPACE_HASH, admitted_events
 from wish_builder.compatibility import load_bundled_compatibility
 from wish_builder.contracts.compatibility import Platform, Provider
+from wish_builder.contracts.manifest_v2 import WorkerProvider
 from wish_builder.contracts.runtime import (
     ActorType,
     ExecutionIdentity,
@@ -487,8 +488,7 @@ def _admitted_backend(manifest):
     del manifest
     bundle = load_bundled_compatibility()
     cell = bundle.platform(Provider.CODEX, Platform.WINDOWS)
-    # A test-only admitted result exercises composition without claiming that
-    # the bundled, disabled production cell is qualified.
+    # A test-only admitted result isolates composition from the qualification gate.
     return BackendAdmissionResult(True, BackendAdmissionReason.NONE, cell)
 
 
@@ -510,9 +510,10 @@ class ForegroundRunServiceTests(unittest.TestCase):
 
     def test_disabled_backend_is_typed_and_reaches_no_component_or_fake_port(self):
         bundle = load_bundled_compatibility()
-        cell = bundle.platform(Provider.CODEX, Platform.WINDOWS)
+        cell = bundle.platform(Provider.PI, Platform.WINDOWS)
         manifest = dataclasses.replace(
             self.harness.manifest,
+            provider=WorkerProvider.PI,
             capability_digest=cell.capabilities.capability_digest,
             launch_profile_digest=cell.launch_profile_digest,
             policy_digest=bundle.policy_digest,

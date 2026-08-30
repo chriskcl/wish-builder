@@ -97,7 +97,7 @@ class BackendAdmissionTests(unittest.TestCase):
         assert decoded.value is not None
         return decoded.value
 
-    def test_every_bundled_cell_is_explicitly_closed_for_dispatch(self) -> None:
+    def test_only_published_codex_windows_cell_is_admitted(self) -> None:
         for provider in WorkerProvider:
             for platform in Platform:
                 with self.subTest(provider=provider, platform=platform):
@@ -106,11 +106,38 @@ class BackendAdmissionTests(unittest.TestCase):
                         bundle=self.bundle,
                         platform=platform,
                     )
-                    self.assertFalse(result.admitted)
+                    expected = (
+                        provider is WorkerProvider.CODEX
+                        and platform is Platform.WINDOWS
+                    )
+                    self.assertEqual(expected, result.admitted)
                     self.assertEqual(
-                        BackendAdmissionReason.DISPATCH_NOT_QUALIFIED,
+                        (
+                            BackendAdmissionReason.NONE
+                            if expected
+                            else BackendAdmissionReason.DISPATCH_NOT_QUALIFIED
+                        ),
                         result.reason,
                     )
+
+    def test_bundled_codex_windows_concurrency_limit_is_enforced(self) -> None:
+        for max_concurrency, admitted, reason in (
+            (1, True, BackendAdmissionReason.NONE),
+            (2, True, BackendAdmissionReason.NONE),
+            (3, False, BackendAdmissionReason.CONCURRENCY_NOT_QUALIFIED),
+        ):
+            with self.subTest(max_concurrency=max_concurrency):
+                result = admit_backend(
+                    self.manifest(
+                        WorkerProvider.CODEX,
+                        Platform.WINDOWS,
+                        max_concurrency=max_concurrency,
+                    ),
+                    bundle=self.bundle,
+                    platform=Platform.WINDOWS,
+                )
+                self.assertEqual(admitted, result.admitted)
+                self.assertEqual(reason, result.reason)
 
     def test_final_boundary_revalidates_exact_nested_types(self) -> None:
         self.assertIsNone(backend_admission_module._revalidate_artifact(object()))

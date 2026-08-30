@@ -6,7 +6,7 @@ import zipfile
 from pathlib import Path
 
 import wish_builder
-from scripts.build_skill_zip import archive_bytes
+from scripts.build_skill_zip import archive_bytes, distributable_files
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -41,8 +41,7 @@ class RepositoryBaselineTests(unittest.TestCase):
     def test_skill_zip_exactly_matches_distributable_files(self) -> None:
         expected = {
             path.relative_to(REPOSITORY_ROOT).as_posix(): archive_bytes(path)
-            for path in SKILL_ROOT.rglob("*")
-            if path.is_file() and "__pycache__" not in path.parts
+            for path in distributable_files(SKILL_ROOT)
         }
         with zipfile.ZipFile(
             REPOSITORY_ROOT / "wish-builder-skill.zip"

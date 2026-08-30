@@ -16,7 +16,8 @@ architecture decisions; let agents own execution after approval.
 2. Keep scheduler ownership and worker implementation as separate axes. Active M1 manifest v2
    accepts only `wish_builder + pi|oh_my_pi|codex` and rejects every other
    `scheduler_mode + worker_backend` pair. A separate backend/OS qualification record must enable
-   the exact cell before launch; the bundled record currently disables every dispatch cell. A
+   the exact cell before launch; the bundled record currently enables only locally published
+   `Codex / Windows`, at concurrency one or two. A
    future `trellis + trellis` mode may let Trellis dispatch sibling tasks while the coordinator
    validates and supervises, but active M1 cannot represent or execute that mode. Never run both
    dispatchers for the same tasks. In that future mode, `GraphIndex` remains a safety-validation
@@ -98,7 +99,10 @@ remains single-writer with stable reads, pre/post-write digest checks, and fail-
 handling. Backend workers operate only in isolated Git worktrees and never write Trellis. Their
 dispatch admission is independent of projection CAS: keep a backend/OS cell
 `enabledForDispatch=false` until that exact cell has complete, independently verified live
-evidence and a human publishes it. Keep projection single-writer while official Trellis lacks CAS.
+evidence and a human publishes it. The bundled record currently enables only locally published
+`Codex / Windows`, with a maximum concurrency of two. Its detached provider provenance was
+human-accepted and is not an OpenAI-signed attestation. Keep projection single-writer while
+official Trellis lacks CAS.
 The future `trellis + trellis` mode remains outside manifest v2 until its pre-launch admission,
 fencing, stop/reject contract, and concurrent-write ownership are qualified.
 
@@ -227,10 +231,12 @@ catches Trellis up afterward. A projection delay or conflict is repairable from 
 must not roll back or redeliver admitted worker work. Reject `scheduler_mode=trellis` as unsupported
 in active manifest v2. Its future path requires a separately qualified pre-launch proposal,
 admission, identity, fencing, stop/reject contract, and concurrent-write ownership; it does not use
-a Pi, Oh My Pi, or Codex backend/OS cell. The bundled backend record currently disables every
-active M1 cell because the required live evidence is incomplete, so the current M1 stops here.
-Only after a future qualification record enables one cell may the coordinator enforce the Gate B
-`scheduler_mode + worker_backend` pair and run exactly one sibling-task scheduler:
+a Pi, Oh My Pi, or Codex backend/OS cell. The bundled backend record currently enables only the
+locally published `Codex / Windows` cell at concurrency one or two. Concurrency above two stops
+with `concurrency_not_qualified`; the other five cells stop with `dispatch_not_qualified`. This is a local formal publication based on
+human-accepted detached provider provenance, not official OpenAI certification. After admission,
+the coordinator enforces the Gate B `scheduler_mode + worker_backend` pair and runs exactly one
+sibling-task scheduler:
 
 1. Derive a fresh stable snapshot from the current Trellis task records and revalidate its canonical
    graph digest against the frozen manifest before every admission decision. Stop and invalidate

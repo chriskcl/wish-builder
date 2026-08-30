@@ -102,14 +102,16 @@ qualified.
 `wish_builder/compatibility/backend-qualification-0.6.15.json` is the separate immutable record
 for the closed Codex, Pi, and Oh My Pi provider set, Windows and Linux launch profiles, SDK pins,
 capabilities, qualification evidence, the single-scheduler policy, and their digests. Trellis
-compatibility may pass while every backend cell remains disabled.
+compatibility and backend-cell admission remain independent decisions.
 
 `enabledForDispatch=true` is valid only with `status=passed`, `live=true`, and
 `evidenceScope=full_turn_and_cancellation`. Startup/handshake, deterministic fixture,
 credential-blocked, and CI-pending evidence may document capability progress but cannot authorize
-worker dispatch. The bundled M1 record has every dispatch cell disabled, so import and projection
-success must not be treated as dispatch admission. A future backend cell requires the full
-dispatch evidence above. For `scheduler_mode=wish_builder`, final admission binds that exact cell
+worker dispatch. The bundled M1 record enables only locally published `Codex / Windows`, with a
+maximum concurrency of two. That publication preserves human-accepted detached provider
+provenance and explicitly does not claim an OpenAI-signed attestation. Import and projection
+success must not be treated as dispatch admission. Every additional backend cell requires the
+full dispatch evidence above. For `scheduler_mode=wish_builder`, final admission binds that exact cell
 to the approved manifest, frozen Trellis compatibility digest, Journal lease, and fencing identity.
 It does not inspect projection CAS or concurrent-writer capability. A future
 `scheduler_mode=trellis` does not use an Agent backend/OS cell; before a later schema can admit it,
@@ -429,8 +431,8 @@ Reject an unsupported or incomplete Wish Builder snapshot version or Trellis tas
 instead of guessing. Active manifest v2 rejects every scheduler/worker pair except
 `wish_builder + pi|oh_my_pi|codex`, as defined in `tool-bridges.md`. Future `trellis + trellis`
 requires a later schema and is not executable in M1. Schema validation is not dispatch
-authorization: backend qualification is checked separately, and every bundled M1 dispatch cell is
-currently disabled.
+authorization: backend qualification is checked separately. The bundled M1 record enables only
+locally published `Codex / Windows`, at concurrency one or two.
 
 Gate B approves the material graph projected from a stable Trellis task-record read,
 `trellis_parent_task_id`, the Wish Builder-derived `trellis_revision` provenance,
