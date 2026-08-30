@@ -19,9 +19,9 @@ backend／OS cell 仍關閉。
 | --- | --- |
 | Repository | `C:\Users\chonk\Documents\Codex\2026-08-15\new-chat\outputs` |
 | Branch | `release/codex-windows-qualification`（由 `main` 建立） |
-| M1 candidate 的 base HEAD | `698f8710aef9601eb29445f18c085e6427c36c7a` (`feat: add strict M1 contracts and validation`) |
+| Current branch base HEAD | `fd3296ed1f8d85e9a1347eb1e2dcdf611ec62720` (`docs: simplify Trellis README guidance [skip ci]`) |
 | M1 candidate revision | 本文件所在 commit；接手時執行 `git rev-parse HEAD` 取得，不在 commit 內自我引用 SHA |
-| 工作樹 | Codex／Windows qualification 發布、測試與文件變更尚未提交；以 `git status --short` 核對 |
+| 工作樹 | 本輪候選已提交並推送；審核時工作樹乾淨，HEAD 與 `origin/release/codex-windows-qualification` 一致 |
 | Remote | `origin = https://github.com/chriskcl/wish-builder.git`；repository 已公開，`v0.1.0.dev1` prerelease 已發布 |
 | Python package | `wish-builder 0.1.0.dev1`, Python `>=3.11` |
 | License | `GPL-3.0-only` |
@@ -29,7 +29,7 @@ backend／OS cell 仍關閉。
 | Skill ZIP SHA-256 | `22a074b2244bc50fd2b7acba99c48defdbeb124d0b295b9e393317a2e6751f0b` |
 | Skill ZIP 大小 | `556,352` bytes |
 
-`changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。tracked 成果只提交到本機分支；是否已推送一律以 `git status --branch` 為準。
+`changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。本輪 tracked 候選已推送到 `origin/release/codex-windows-qualification`，尚未建立 PR；後續仍以 `git status --branch` 和 remote ref 核對。
 
 ## 責任邊界
 

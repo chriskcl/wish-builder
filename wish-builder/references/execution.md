@@ -237,9 +237,10 @@ or release work. Wish Builder validates monotonic dependency waves, requires eac
 transitively depend on every task in its immediately preceding wave when that wave is non-empty,
 requires total dependency order within Waves 0 and 2, and requires disjoint writable sets for
 parallel Wave 1 tasks. `TaskDag.compile` consumes the validated values. Use the lower of the
-approved concurrency limit and the selected worker backend's available capacity. Default to three
-workers. Serial fallback is `scheduler_mode=wish_builder` with an allowed worker backend and
-concurrency one, not a third mode.
+approved concurrency limit and the selected worker backend's available capacity. Active manifest
+v2 requires that limit explicitly; with the current bundled record, `Codex / Windows` may use one
+or two workers, never three. Serial fallback is `scheduler_mode=wish_builder` with an allowed
+worker backend and concurrency one, not a third mode.
 
 The scheduler boundary is part of Gate B evidence and is not inferred from the worker backend:
 
