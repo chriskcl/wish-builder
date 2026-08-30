@@ -39,8 +39,9 @@ execution manifest is immutable.
 ## Compatibility And Qualification Gates
 
 Run separately recorded checks. Trellis compatibility pins the official packages and qualifies
-graph import plus single-writer projection. Backend qualification records provider and platform
-evidence and controls `wish_builder + pi|oh_my_pi|codex` dispatch. The Trellis scheduler path has
+graph import plus single-writer projection. The stable backend baseline records provider policy,
+capabilities, and launch profiles. The exact backend version registry controls
+`wish_builder + pi|oh_my_pi|codex` dispatch. The Trellis scheduler path has
 its own future pre-launch admission and fencing qualification. Backend workers never write
 Trellis, so the two active evidence records remain independent. Active `wish_builder` dispatch
 requires a qualified backend cell bound to the pinned Trellis compatibility digest, but it does
@@ -68,41 +69,46 @@ dispatch.
 
 ### Backend Qualification Gate
 
-Before any launch, separately load
-`wish_builder/compatibility/backend-qualification-0.6.15.json` and require all of the following:
+Before any launch, load the stable baseline
+`wish_builder/compatibility/backend-qualification-0.6.15.json` and the exact version authority
+`wish_builder/compatibility/backend-version-registry.json`. Require all of the following:
 
-1. Its canonical bytes and digest match Wish Builder's compiled qualification pin.
-2. `policyDigest`, every `launchProfileDigest`, and every `capabilityDigest` recompute exactly, and
-   the provider, platform, task-packet limit, scheduler policy, and package pins agree across their
-   parent records.
-3. The selected provider/platform cell exists in the closed v1 matrix: Codex, Pi, or Oh My Pi on
-   Windows or Linux. Unknown providers, platforms, fields, statuses, and evidence scopes fail
-   closed.
-4. `qualification.enabledForDispatch` is true with `status=passed`, `live=true`, and
-   `evidenceScope=full_turn_and_cancellation`. Startup, handshake, deterministic fixture,
-   credential-blocked, and CI-pending evidence cannot authorize dispatch.
-5. Every qualification digest resolves against canonical content-addressed evidence. Derive any
-   parallel overlap and path-disjointness claim from those records rather than trusting claim
-   booleans.
-6. For `scheduler_mode=wish_builder`, the selected backend/OS cell matches the approved manifest,
-   Trellis compatibility digest, launch profile, capability, policy, and requested concurrency.
-   Do not use projection CAS or concurrent-projection capability as worker-dispatch conditions.
+1. Each file's canonical bytes and digest match its own compiled trust pin.
+2. The baseline's `policyDigest`, `launchProfileDigest`, and `capabilityDigest` values recompute,
+   and the selected provider/platform cell matches the approved manifest and Trellis compatibility
+   digest. Baseline `enabledForDispatch` values are historical evidence, not version admission.
+3. Probe the installed package without launching it. Require an exact semantic version, an exact
+   dependency pin, a matching package-lock version and npm SHA-512 integrity, the expected package
+   name and executable entrypoint, and no symlink escape.
+4. Resolve one exact `(provider, platform, backendVersion)` registry record. Its protocol profile,
+   stable launch-profile digest, npm integrity, OS, and requested concurrency must match the probe
+   and manifest.
+5. Require `status=qualified`. Unknown, candidate, quarantined, malformed, or drifted records fail
+   closed. Never guess a nearby version, use a floating tag, or silently downgrade.
+6. Require the qualified record's evidence digest, publication receipt digest, and independent
+   review reference. Derive parallel overlap and path-disjointness from the content-addressed raw
+   evidence rather than trusting claim booleans.
+7. Do not use projection CAS or concurrent-projection capability as worker-dispatch conditions.
    The worker writes only its isolated Git worktree and Wish Builder records canonical progress in
    the Journal; one separate projection writer catches Trellis up afterward.
 
-The bundled M1 qualification record admits only the locally published `Codex / Windows` cell at
-concurrency one or two. Stop with `concurrency_not_qualified` for concurrency above two and
-`dispatch_not_qualified` for any other backend/OS cell. The published provenance is a human-accepted local detached provider reference,
-not an OpenAI-signed attestation. Any additional cell must pass the full dispatch evidence checks
-above before it can be enabled. Active manifest v2 rejects `trellis + trellis`. A later schema may add
-that path only after its pre-launch proposal, admission, identity, fencing, stop/reject, and
-concurrent-write ownership contracts are qualified; it does not depend on these Agent backend/OS
-cells. Treat credentials as provider-owned; a `blocked_credentials` result is not permission to
-request, copy, or inspect credentials.
+The bundled registry admits only `Codex 0.149.0 / Windows` at concurrency one or two. Stop with
+`concurrency_not_qualified` above two and `dispatch_not_qualified` for any other bundled version.
+The published provenance is a human-accepted local detached provider reference, not an
+OpenAI-signed attestation. Any additional version must pass the fixed local qualification harness,
+independent evidence review, and fail-closed publication before it can become `qualified`. Active
+manifest v2 rejects `trellis + trellis`. A later schema may add that path only after its pre-launch
+proposal, admission, identity, fencing, stop/reject, and concurrent-write ownership contracts are
+qualified; it does not depend on these Agent backend/OS records. Treat credentials as
+provider-owned; a `blocked_credentials` result is not permission to request, copy, or inspect
+credentials.
 
-Any package, policy, profile, capability, SDK pin, compatibility record, or qualification record
-change requires a newly generated canonical record and an intentional Wish Builder trust-pin
-update. Never patch either bundled JSON file by hand.
+Use `wishctl.py backend-probe` for read-only detection. Use
+`scripts/manage_backend_versions.py candidate|qualify|quarantine` with the current registry digest
+for updates. The registry enforces no more than two qualified versions per backend/OS cell. A
+package, policy, protocol profile, capability, compatibility record, or qualification record
+change requires regenerated canonical data and an intentional trust-pin update. Never patch a
+bundled JSON file by hand.
 
 ## Import Consistency
 
@@ -185,9 +191,9 @@ reviewed kernel-hardening change.
 ## Scheduler And Admission Loop
 
 Gate B records one schema-valid `scheduler_mode + worker_backend` pair for the whole run. A run may
-enter the loop below only after the separate backend qualification gate passes. The bundled M1
-record admits only locally published `Codex / Windows` at concurrency one or two; the other five
-cells stop with `dispatch_not_qualified`, while concurrency above two stops with
+enter the loop below only after the separate backend qualification gate passes. The bundled
+registry admits only `Codex 0.149.0 / Windows` at concurrency one or two; every other bundled
+version stops with `dispatch_not_qualified`, while concurrency above two stops with
 `concurrency_not_qualified`, before this loop and may still
 perform qualified import/projection work. For an admitted cell, repeat until no unfinished task
 remains:
@@ -238,8 +244,8 @@ transitively depend on every task in its immediately preceding wave when that wa
 requires total dependency order within Waves 0 and 2, and requires disjoint writable sets for
 parallel Wave 1 tasks. `TaskDag.compile` consumes the validated values. Use the lower of the
 approved concurrency limit and the selected worker backend's available capacity. Active manifest
-v2 requires that limit explicitly; with the current bundled record, `Codex / Windows` may use one
-or two workers, never three. Serial fallback is `scheduler_mode=wish_builder` with an allowed
+v2 requires that limit explicitly; with the current bundled registry, `Codex 0.149.0 / Windows`
+may use one or two workers, never three. Serial fallback is `scheduler_mode=wish_builder` with an allowed
 worker backend and concurrency one, not a third mode.
 
 The scheduler boundary is part of Gate B evidence and is not inferred from the worker backend:
@@ -250,7 +256,7 @@ The scheduler boundary is part of Gate B evidence and is not inferred from the w
   admits, rejects, supervises,
   reconciles, and recovers. Wish Builder must not select tasks from `wishctl.py ready`, create
   sibling worker dispatches, or treat `GraphIndex` as a dispatcher in this mode.
-- Once the backend/OS cell and requested concurrency are qualified, `scheduler_mode=wish_builder`
+- Once the exact backend/OS/version record and requested concurrency are qualified, `scheduler_mode=wish_builder`
   admits only `worker_backend=pi`, `oh_my_pi`, or `codex`. Wish Builder selects ready tasks from the
   frozen manifest and launches the approved backend; Trellis records task context, lifecycle,
   checks, and history, but must not schedule sibling tasks.

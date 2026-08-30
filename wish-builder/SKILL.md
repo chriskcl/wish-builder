@@ -15,9 +15,10 @@ architecture decisions; let agents own execution after approval.
    snapshot, admission, fencing, Journal, and recovery.
 2. Keep scheduler ownership and worker implementation as separate axes. Active M1 manifest v2
    accepts only `wish_builder + pi|oh_my_pi|codex` and rejects every other
-   `scheduler_mode + worker_backend` pair. A separate backend/OS qualification record must enable
-   the exact cell before launch; the bundled record currently enables only locally published
-   `Codex / Windows`, at concurrency one or two. A
+   `scheduler_mode + worker_backend` pair. The stable backend baseline defines policy,
+   capabilities and launch profiles; a separate pinned version registry must qualify the exact
+   backend/OS/version before launch. The registry currently qualifies only locally published
+   `Codex 0.149.0 / Windows`, at concurrency one or two. A
    future `trellis + trellis` mode may let Trellis dispatch sibling tasks while the coordinator
    validates and supervises, but active M1 cannot represent or execute that mode. Never run both
    dispatchers for the same tasks. In that future mode, `GraphIndex` remains a safety-validation
@@ -97,10 +98,11 @@ projection writeback capability, backend/OS dispatch qualification, and schedule
 admission as separate concerns. Trellis `0.6.15` lacks reliable cross-process CAS, so projection
 remains single-writer with stable reads, pre/post-write digest checks, and fail-closed conflict
 handling. Backend workers operate only in isolated Git worktrees and never write Trellis. Their
-dispatch admission is independent of projection CAS: keep a backend/OS cell
-`enabledForDispatch=false` until that exact cell has complete, independently verified live
-evidence and a human publishes it. The bundled record currently enables only locally published
-`Codex / Windows`, with a maximum concurrency of two. Its detached provider provenance was
+dispatch admission is independent of projection CAS: keep an exact backend/OS/version record at
+`status=candidate` until it has complete, independently verified live evidence and a human
+publishes it as `qualified`. Unknown, candidate, quarantined, or mismatched versions fail closed.
+The pinned registry currently qualifies only locally published `Codex 0.149.0 / Windows`, with a
+maximum concurrency of two. Its detached provider provenance was
 human-accepted and is not an OpenAI-signed attestation. Keep projection single-writer while
 official Trellis lacks CAS.
 The future `trellis + trellis` mode remains outside manifest v2 until its pre-launch admission,
@@ -222,8 +224,10 @@ Do not dispatch while this validation fails.
 Read `references/execution.md`. First validate the official Trellis graph/import compatibility and
 the frozen graph digest. Active M1 then validates the exact `wish_builder` backend/OS qualification
 cell.
-For `scheduler_mode=wish_builder`, stop with `dispatch_not_qualified` unless that backend/OS cell
-has `enabledForDispatch=true`. Bind the selected cell to the pinned Trellis compatibility digest,
+For `scheduler_mode=wish_builder`, probe the installed backend package before launch and stop with
+`dispatch_not_qualified` unless its exact version, npm integrity, protocol profile, OS, and launch
+profile have a `qualified` record. Bind that selected record to the stable backend baseline and
+the pinned Trellis compatibility digest,
 but do not inspect projection CAS as a worker-dispatch condition. Backend qualification and
 Trellis compatibility remain separate evidence records. Workers run in isolated Git worktrees,
 canonical progress is committed to the Journal, and one coordinator-owned projection writer
@@ -231,9 +235,10 @@ catches Trellis up afterward. A projection delay or conflict is repairable from 
 must not roll back or redeliver admitted worker work. Reject `scheduler_mode=trellis` as unsupported
 in active manifest v2. Its future path requires a separately qualified pre-launch proposal,
 admission, identity, fencing, stop/reject contract, and concurrent-write ownership; it does not use
-a Pi, Oh My Pi, or Codex backend/OS cell. The bundled backend record currently enables only the
-locally published `Codex / Windows` cell at concurrency one or two. Concurrency above two stops
-with `concurrency_not_qualified`; the other five cells stop with `dispatch_not_qualified`. This is a local formal publication based on
+a Pi, Oh My Pi, or Codex backend/OS cell. The pinned backend version registry currently qualifies
+only the locally published `Codex 0.149.0 / Windows` record at concurrency one or two. Concurrency
+above two stops with `concurrency_not_qualified`; every other bundled version stops with
+`dispatch_not_qualified`. This is a local formal publication based on
 human-accepted detached provider provenance, not official OpenAI certification. After admission,
 the coordinator enforces the Gate B `scheduler_mode + worker_backend` pair and runs exactly one
 sibling-task scheduler:
@@ -330,8 +335,9 @@ conversion, and validation tests for projection, drift, and Gate B invalidation.
 revision digest, graph digest, and task ID mapping are Wish Builder-derived contracts. Projection
 uses one writer, stable reads, pre- and post-write SHA-256 checks, and fail-closed conflict or
 unknown-outcome handling; it is not cross-process CAS. The projection record does not qualify or
-block a backend worker. Worker admission uses the separately published backend/OS qualification
-cell and binds it to the approved Trellis compatibility digest. Do not
+block a backend worker. Worker admission uses the stable adapter baseline plus the separately
+published exact-version registry. Protocol or package changes stay inside backend profiles and
+qualification data unless the stable Channel contract itself changes. Do not
 implement `decomposer.py`, an AI PRD-to-task decomposer, task CRUD, a dependency editor, or another
 task database or board.
 

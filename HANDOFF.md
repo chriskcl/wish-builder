@@ -1,6 +1,6 @@
 # Wish Builder Project Handoff
 
-交接時間：2026-08-30（Asia/Macau）
+交接時間：2026-08-31（Asia/Macau）
 
 ## 一句話現況
 
@@ -9,27 +9,27 @@ Wish Builder 的本機 M1 功能、M1-13 驗證與 release verifier 已落地：
 派工監督、結果驗證、Journal 和崩潰恢復。唯一支援的 Trellis 基線是官方 `0.6.15`；
 `0.7.0-dev.2` 是已撤回的本機測試 fixture，從未是官方 Trellis release。**本地測試已通過，
 依使用者決定足以完成 M1。** GitHub Actions 因預算用完而不執行，不聲稱 CI 通過或失敗。
-`Codex / Windows` 已依完整 live evidence、獨立核對與人工批准完成本地正式發布，可在並行度
-1 或 2 派工；其 detached provider provenance 不是 OpenAI 簽署的 attestation。其餘五個
-backend／OS cell 仍關閉。
+精確的 `Codex 0.149.0 / Windows` 已依完整 live evidence、獨立核對與人工批准完成本地正式
+發布，可在並行度 1 或 2 派工；其 detached provider provenance 不是 OpenAI 簽署的
+attestation。Pi、Oh My Pi 與 Codex/Linux 的隨附版本仍是 candidate，不能派工。
 
 ## Repository 狀態
 
 | 項目 | 值 |
 | --- | --- |
 | Repository | `C:\Users\chonk\Documents\Codex\2026-08-15\new-chat\outputs` |
-| Branch | `release/codex-windows-qualification`（由 `main` 建立） |
-| Current branch base HEAD | `fd3296ed1f8d85e9a1347eb1e2dcdf611ec62720` (`docs: simplify Trellis README guidance [skip ci]`) |
+| Source branch | `feat/backend-version-qualification`（由 `main` 建立，交付後合併回 `main`） |
+| Source branch base HEAD | `f8428815910937489a41597f7b782e5ee6b43c00` (`v0.1.0.dev1 feat: qualify Codex dispatch on Windows (#3)`) |
 | M1 candidate revision | 本文件所在 commit；接手時執行 `git rev-parse HEAD` 取得，不在 commit 內自我引用 SHA |
-| 工作樹 | 本輪候選已提交並推送；審核時工作樹乾淨，HEAD 與 `origin/release/codex-windows-qualification` 一致 |
+| 工作樹 | 本文件不宣稱即時 Git 狀態；接手時以 `git status --branch`、`git log` 和 remote ref 為準 |
 | Remote | `origin = https://github.com/chriskcl/wish-builder.git`；repository 已公開，`v0.1.0.dev1` prerelease 已發布 |
 | Python package | `wish-builder 0.1.0.dev1`, Python `>=3.11` |
 | License | `GPL-3.0-only` |
 | Skill ZIP | `wish-builder-skill.zip` |
-| Skill ZIP SHA-256 | `8a9887281f5c1b60d11fe4231e298c09284f2d0a0fd9fb3b77a8c8dadeb1ed1a` |
-| Skill ZIP 大小 | `556,382` bytes |
+| Skill ZIP SHA-256 | `d1f3496a1058c7064189efce9291553b3378da802cacd92bb7f1031e3fb4bc88` |
+| Skill ZIP 大小 | `573,368` bytes |
 
-`changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。本輪 tracked 候選已推送到 `origin/release/codex-windows-qualification`；後續以 `git status --branch`、remote ref 和 `gh pr view` 核對實際狀態。
+`changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。後續以 `git status --branch`、remote ref 和 `gh pr view` 核對實際狀態。
 
 ## 責任邊界
 
@@ -87,15 +87,27 @@ Gate B：人批准由 task records 投影出的 material graph 與 Wish Builder 
   cancellation、crash/reconcile without redelivery、cleanup 與兩個 disjoint sibling
   overlap；獨立核對通過後，由 fail-closed publisher 保存 evidence、publication receipt、
   bundled record 和 compiled trust pin。最大並行度為 2。
+- 新增獨立、digest-pinned 的 `backend-version-registry.json`。穩定的
+  `backend-qualification-0.6.15.json` 現在只負責 adapter policy、capability、launch profile
+  和歷史證據；正式派工由精確 backend／OS／version registry 決定。
+- 新增 `codex-app-server-v1`、`pi-jsonl-rpc-v1` 與 `omp-jsonl-rpc-v2` protocol profile。
+  只有協議不相容時才新增 profile，不按每個小版本複製 adapter。
+- 新增 `wishctl backend-probe`。它不啟動 provider，只讀取精確版本、package-lock integrity、
+  protocol profile、launch profile 與 OS 資格；unknown、candidate、quarantined 或 drift 都
+  fail closed。
+- 新增 `scripts/manage_backend_versions.py candidate|qualify|quarantine`。所有更新要求目前
+  registry digest，每個 backend／OS 最多保留兩個 qualified 版本；不需修改 `TaskDag`、
+  `GraphIndex`、Gate、Journal 或 recovery。
 
 ## 尚未完成或未開放
 
-- Pi／Windows、Pi／Linux、Oh My Pi／Windows、Oh My Pi／Linux 和 Codex／Linux 五個 cell
-  仍是 `enabledForDispatch: false`。Windows Pi 只有啟動／handshake 證據，沒有 model turn；
+- Pi `0.84.2`／Windows、Pi `0.84.2`／Linux、Oh My Pi `17.4.0`／Windows、Oh My Pi
+  `17.4.0`／Linux 和 Codex `0.149.0`／Linux 五個 exact-version record 仍是
+  `status=candidate`。Windows Pi 只有啟動／handshake 證據，沒有 model turn；
   Windows Oh My Pi 的 live turn 需要已設定的 model 和 provider credential，本輪沒有要求或
   使用 credential，因此只能記為 `blocked_credentials`。開放任一 cell 前，必須補齊完整
-  live evidence、保存可核對的原始 event log，經獨立核對和人工批准，再透過 publisher 更新
-  trust pin；不可手改資格 JSON。
+  live evidence、保存可核對的原始 event log，經獨立核對和人工批准，再透過 registry
+  publisher 更新 trust pin；不可手改資格 JSON。
 - 官方 Trellis `0.6.15` 沒有可靠的跨程序 CAS，因此 projection 維持單一 writer，寫前後
   核對 digest，衝突或結果不明時 fail closed。backend worker 只寫隔離 Git worktree 和
   Journal，不寫 Trellis；Agent 派工和 Trellis projection 是兩條獨立准入線。
@@ -116,7 +128,7 @@ Gate B：人批准由 task records 投影出的 material graph 與 Wish Builder 
 2026-08-30 Codex/Windows local qualification publication (source revision fd3296ed1f8d85e9a1347eb1e2dcdf611ec62720):
   Independent evidence audit: PASS; 52 passed; 1 Windows symlink-permission skip
   Post-publication qualification/admission focus: 68 passed; 1 Windows symlink-permission skip; 59 subtests passed
-  Fresh full local suite: 1,527 run including 16 performance tests; OK; 3 platform-specific skips
+  Fresh backend-version qualification branch: 1,534 non-performance tests plus 16 performance tests; OK; 3 platform-specific skips
   Installed standalone Skill: 13 run; OK
 
 2026-08-30 local non-performance candidate matrix (revision 9793ff1c86089c59115f4406a015c3abec8d6bce):
@@ -181,7 +193,7 @@ Windows clean-install of the same wheel and sdist:
 
 Skill runtime sync check: passed
 Deterministic ZIP check: passed
-Current Skill ZIP SHA-256: 8a9887281f5c1b60d11fe4231e298c09284f2d0a0fd9fb3b77a8c8dadeb1ed1a; 556,382 bytes
+Current Skill ZIP SHA-256: d1f3496a1058c7064189efce9291553b3378da802cacd92bb7f1031e3fb4bc88; 573,368 bytes
 Codex Skill validator: passed
 Release content gate: passed; release archives reject bundled `.tgz` files and unpinned Trellis install specs
 Distribution clean-install matrix: 6 cells implemented; local fixed-revision evidence is authoritative for M1
@@ -215,9 +227,11 @@ Candidate-revision safety packet: optional under the current M1 policy
 1. 先讀本文件、README、Skill 與正式計畫，不要從舊的 D44-D50 問題恢復；使用者已明確放棄那些過細決策。
 2. package source 或 Skill 如有變動，重跑相關本地測試、standalone Skill tests 與 runtime parity；只有發行檔內容改變時才需要重建 wheel、sdist 和 Skill ZIP。純文件改動執行格式與連結檢查即可。
 3. M1-13 已關閉。GitHub Actions 因預算不執行；除非日後另有預算和明確需求，不要把 hosted CI 加回完成門檻。完整 local evidence packet 只在需要可重建發行資料時執行。
-4. `Codex / Windows` 已開放並行度 1-2；不要提高到 3。若要開放其餘五個 cell，先補齊
+4. `Codex 0.149.0 / Windows` 已開放並行度 1-2；不要提高到 3。若要把其他 candidate
+   升為 qualified，先補齊
    對應 OS 的完整資格證據，保存原始 event log，經獨立核對與人工批准後使用 publisher
-   發布，不可手改資格 JSON。這不依賴 Trellis projection CAS。未來若要加入
+   透過 `scripts/manage_backend_versions.py` 發布，不可手改 registry JSON。這不依賴
+   Trellis projection CAS。未來若要加入
    `trellis + trellis`，不使用這些 Agent backend／OS cell；需另加 manifest schema，並驗證
    派工前准入、fencing、stop/reject 與並行寫入所有權。
 5. 本輪候選與文件更新已獲授權；之後的新 commit、push、公開 repository、release 或 provider 憑證操作仍要另行取得使用者授權。

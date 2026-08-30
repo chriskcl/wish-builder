@@ -12,8 +12,8 @@ source archive, or Skill ZIP. Install each tool separately under its own license
 | Oh My Pi coding agent | `@oh-my-pi/pi-coding-agent@17.4.0` | MIT | https://www.npmjs.com/package/@oh-my-pi/pi-coding-agent |
 
 The versions above are compatibility or test baselines, not bundled dependencies and not proof
-of backend dispatch qualification. The bundled qualification record controls admission: current
-source enables only the locally published `Codex / Windows` cell, at concurrency one or two; the
-other five backend/OS cells remain disabled.
+of backend dispatch qualification. The independently pinned backend version registry controls
+exact-version admission. Current source qualifies only `Codex 0.149.0 / Windows`, at concurrency
+one or two; the other listed backend/OS versions remain candidates.
 
 Wish Builder itself is licensed under GPL-3.0-only. See [LICENSE](LICENSE).
