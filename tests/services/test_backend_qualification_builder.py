@@ -918,9 +918,9 @@ class BackendQualificationBuilderTests(unittest.TestCase):
             all(item.status is QualificationStatus.PASSED for item in first.artifact.scenarios)
         )
         bundled_cell = bundle_before.platform(Provider.CODEX, Platform.WINDOWS)
-        self.assertFalse(bundle_before.published)
-        self.assertFalse(bundled_cell.qualification.enabled_for_dispatch)
-        self.assertIsNone(bundled_cell.qualification.artifact)
+        self.assertTrue(bundle_before.published)
+        self.assertTrue(bundled_cell.qualification.enabled_for_dispatch)
+        self.assertIsNotNone(bundled_cell.qualification.artifact)
         self.assertEqual(bundle_before, load_bundled_compatibility())
 
     def test_object_store_rejects_hash_size_and_orphan_mismatches(self) -> None:

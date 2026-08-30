@@ -14,6 +14,7 @@ from tests.e2e.support import serial_parallel_manifest
 from tests.test_wishctl import valid_manifest
 from wish_builder.compatibility import load_bundled_compatibility
 from wish_builder.contracts.compatibility import Platform, Provider
+from wish_builder.contracts.manifest_v2 import WorkerProvider
 from wish_builder.cli import wishctl
 from wish_builder.processes.foreground import ForegroundRunStatus
 from wish_builder.services.backend_admission import (
@@ -44,9 +45,10 @@ class WishCtlRunTests(unittest.TestCase):
         self.assertIn(platform, {Platform.WINDOWS, Platform.LINUX})
         assert platform is not None
         bundle = load_bundled_compatibility()
-        cell = bundle.platform(Provider.CODEX, platform)
+        cell = bundle.platform(Provider.PI, platform)
         manifest = dataclasses.replace(
             serial_parallel_manifest(),
+            provider=WorkerProvider.PI,
             capability_digest=cell.capabilities.capability_digest,
             launch_profile_digest=cell.launch_profile_digest,
             policy_digest=bundle.policy_digest,

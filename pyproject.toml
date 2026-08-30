@@ -38,6 +38,10 @@ wish_builder = [
   "bridges/trellis_core/*.json",
   "bridges/trellis_core/*.mjs",
   "compatibility/*.json",
+  "compatibility/q/*/*.json",
+  "compatibility/q/*/evidence/*.json",
+  "compatibility/q/*/evidence/*.jsonl",
+  "compatibility/q/*/derived/sha256/*.json",
 ]
 
 [tool.coverage.run]

@@ -4,6 +4,13 @@ This file records user-visible changes to Wish Builder.
 
 ## Unreleased
 
+- Locally published the independently reviewed Codex/Windows backend qualification with a
+  maximum of two concurrent turns; all other backend/OS cells remain disabled.
+- Made backend qualification publication rollback cleanly after partial filesystem failures and
+  reject conflicting evidence without overwriting it.
+- Stored bundled qualification evidence under a shorter content-derived key so Windows wheel and
+  sdist builds include the complete evidence set without exceeding legacy path limits.
+
 ## 0.1.0.dev1 - 2026-08-30
 
 - Replaced the local `0.7.0-dev.2` test fixture (later withdrawn from Wish Builder and never an

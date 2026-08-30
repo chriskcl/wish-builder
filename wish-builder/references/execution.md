@@ -90,9 +90,11 @@ Before any launch, separately load
    The worker writes only its isolated Git worktree and Wish Builder records canonical progress in
    the Journal; one separate projection writer catches Trellis up afterward.
 
-The bundled M1 qualification record has every dispatch cell disabled, so stop with
-`dispatch_not_qualified`. A future backend cell must pass the full dispatch evidence checks above
-before it can be enabled. Active manifest v2 rejects `trellis + trellis`. A later schema may add
+The bundled M1 qualification record admits only the locally published `Codex / Windows` cell at
+concurrency one or two. Stop with `concurrency_not_qualified` for concurrency above two and
+`dispatch_not_qualified` for any other backend/OS cell. The published provenance is a human-accepted local detached provider reference,
+not an OpenAI-signed attestation. Any additional cell must pass the full dispatch evidence checks
+above before it can be enabled. Active manifest v2 rejects `trellis + trellis`. A later schema may add
 that path only after its pre-launch proposal, admission, identity, fencing, stop/reject, and
 concurrent-write ownership contracts are qualified; it does not depend on these Agent backend/OS
 cells. Treat credentials as provider-owned; a `blocked_credentials` result is not permission to
@@ -183,10 +185,12 @@ reviewed kernel-hardening change.
 ## Scheduler And Admission Loop
 
 Gate B records one schema-valid `scheduler_mode + worker_backend` pair for the whole run. A run may
-enter the loop below only after the separate backend qualification gate passes. Every bundled M1
-dispatch cell is disabled, so the current runtime stops with `dispatch_not_qualified` before this
-loop and may still perform qualified import/projection work. Once a future cell is qualified,
-repeat until no unfinished task remains:
+enter the loop below only after the separate backend qualification gate passes. The bundled M1
+record admits only locally published `Codex / Windows` at concurrency one or two; the other five
+cells stop with `dispatch_not_qualified`, while concurrency above two stops with
+`concurrency_not_qualified`, before this loop and may still
+perform qualified import/projection work. For an admitted cell, repeat until no unfinished task
+remains:
 
 1. Acquire or renew the durable scheduler lease using the protocol above. A live conflicting lease
    or different scheduler mode blocks execution.
@@ -233,9 +237,10 @@ or release work. Wish Builder validates monotonic dependency waves, requires eac
 transitively depend on every task in its immediately preceding wave when that wave is non-empty,
 requires total dependency order within Waves 0 and 2, and requires disjoint writable sets for
 parallel Wave 1 tasks. `TaskDag.compile` consumes the validated values. Use the lower of the
-approved concurrency limit and the selected worker backend's available capacity. Default to three
-workers. Serial fallback is `scheduler_mode=wish_builder` with an allowed worker backend and
-concurrency one, not a third mode.
+approved concurrency limit and the selected worker backend's available capacity. Active manifest
+v2 requires that limit explicitly; with the current bundled record, `Codex / Windows` may use one
+or two workers, never three. Serial fallback is `scheduler_mode=wish_builder` with an allowed
+worker backend and concurrency one, not a third mode.
 
 The scheduler boundary is part of Gate B evidence and is not inferred from the worker backend:
 

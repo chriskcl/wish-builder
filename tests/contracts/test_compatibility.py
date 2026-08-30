@@ -147,7 +147,14 @@ class CompatibilityContractTests(unittest.TestCase):
                 tuple(cell.platform for cell in provider.platforms),
             )
             for cell in provider.platforms:
-                self.assertFalse(cell.qualification.enabled_for_dispatch)
+                expected_enabled = (
+                    provider.provider is Provider.CODEX
+                    and cell.platform is Platform.WINDOWS
+                )
+                self.assertEqual(
+                    expected_enabled,
+                    cell.qualification.enabled_for_dispatch,
+                )
                 capability = cell.capabilities.to_primitive()
                 self.assertEqual(2, capability["schemaVersion"])
                 self.assertNotIn("trellisVersion", capability)
@@ -158,6 +165,15 @@ class CompatibilityContractTests(unittest.TestCase):
                     {"cancel_turn", "reserve_channel", "send_task_packet"},
                     set(capability["operations"]),
                 )
+
+        self.assertTrue(bundle.published)
+        codex_windows = bundle.platform(Provider.CODEX, Platform.WINDOWS)
+        self.assertEqual(
+            EvidenceScope.FULL_TURN_AND_CANCELLATION,
+            codex_windows.qualification.evidence_scope,
+        )
+        self.assertTrue(codex_windows.qualification.live)
+        self.assertIsNotNone(codex_windows.qualification.artifact)
 
         pi_windows = bundle.platform(Provider.PI, Platform.WINDOWS)
         self.assertTrue(pi_windows.qualification.live)

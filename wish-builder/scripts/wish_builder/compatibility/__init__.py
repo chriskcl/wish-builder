@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from importlib.resources import files
 
+from wish_builder.compatibility._backend_qualification_pin import (
+    BACKEND_QUALIFICATION_DIGESTS,
+)
 from wish_builder.contracts.compatibility import (
     SUPPORTED_TRELLIS_VERSION,
     BackendQualificationBundle,
@@ -21,11 +24,7 @@ BUNDLED_TRELLIS_COMPATIBILITY_DIGESTS = {
         "sha256:fd3601e3507f8e2befe914e94afff04c07dedfb55d30417d3b35370bbfacf235"
     )
 }
-BUNDLED_BACKEND_QUALIFICATION_DIGESTS = {
-    DEFAULT_TRELLIS_VERSION: (
-        "sha256:69117a88996d30378c41101fd2f9dae5f37d21fa3a3a2bdd25f72ceebb08b46a"
-    )
-}
+BUNDLED_BACKEND_QUALIFICATION_DIGESTS = dict(BACKEND_QUALIFICATION_DIGESTS)
 
 # Compatibility-facing name retained for services that consume the backend bundle.
 BUNDLED_COMPATIBILITY_DIGESTS = BUNDLED_BACKEND_QUALIFICATION_DIGESTS

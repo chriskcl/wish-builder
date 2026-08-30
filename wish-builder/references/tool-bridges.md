@@ -210,10 +210,13 @@ The active combination and deferred design boundary are:
 | `trellis` | `trellis` | No; future schema only | No; pre-launch admission, identity, fencing, stop/reject behavior, and CAS are unqualified | Trellis |
 | `trellis` | `pi`, `oh_my_pi`, or `codex` | No | No | None; reject Gate B |
 | `wish_builder` | `trellis` | No | No | None; reject Gate B |
-| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Yes | No; every bundled backend/OS cell lacks complete live evidence, so `enabledForDispatch=false` | Wish Builder |
+| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Yes | `Codex / Windows` only, at concurrency 1-2; the other five cells remain disabled | Wish Builder |
 
-The current Python control plane implements only `scheduler_mode=wish_builder`, but no backend is
-yet qualified for live dispatch. It must return `dispatch_not_qualified` before launching a worker.
+The current Python control plane implements only `scheduler_mode=wish_builder`. Its bundled record
+admits the locally published `Codex / Windows` cell at concurrency one or two. It returns
+`concurrency_not_qualified` for concurrency above two and `dispatch_not_qualified` for any other cell before launching a worker.
+This local publication uses human-accepted detached provider provenance; it is not an
+OpenAI-signed attestation.
 The `trellis + trellis` row is a future design boundary and is not schema-valid in active M1.
 
 In a future `scheduler_mode=trellis`, Trellis schedules sibling tasks through its installed worktree or

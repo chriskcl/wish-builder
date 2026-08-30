@@ -10,7 +10,19 @@ It does not contain a second task planner or task database. Trellis owns the wor
 
 > **Status:** development preview (`0.1.0.dev1`). The local control plane, immutable execution snapshot checks, fail-closed admission, Journal and recovery boundaries, Git adapter, and Wish Builder import/projection bridge for official Trellis `0.6.15` are implemented. The assembled lifecycle, including crashes around Git changes, is tested end to end with controlled subprocess workers.
 >
-> Real dispatch remains closed because none of the six Pi, Oh My Pi, or Codex backend/OS cells has a complete live qualification record. The only persistent live evidence currently recorded is a Windows Pi startup and handshake check; it sent no model turn. The Windows Oh My Pi cell is blocked because its live probe requires a configured model and provider credential; no credential was requested or used. Codex and the remaining cells have deterministic fixtures or incomplete qualification records. Active cancellation, crash/restart reconciliation without redelivery, cleanup, parallel overlap, and platform evidence are still incomplete, so every cell remains `enabledForDispatch=false`. Official Trellis `0.6.15` also lacks cross-process compare-and-swap (CAS), so projection stays single-writer and fail-closed. Worker dispatch and Trellis projection are separate: workers write only isolated Git worktrees and the Journal, while one writer later projects results to Trellis. The repository is public, and [`v0.1.0.dev1`](https://github.com/chriskcl/wish-builder/releases/tag/v0.1.0.dev1) is available as a prerelease under GPL-3.0-only.
+> `Codex / Windows` is now locally qualified and published for real dispatch with a maximum
+> concurrency of two. The record covers a full turn, active cancellation, crash/restart
+> reconciliation without redelivery, cleanup, and two overlapping siblings with disjoint paths.
+> The evidence and package integrity were independently reviewed before the fail-closed publisher
+> updated the bundled record and compiled trust pin. This is a local formal publication based on
+> human-accepted detached provider provenance, not an OpenAI-signed attestation or official OpenAI
+> certification. The other five Pi, Oh My Pi, and Codex backend/OS cells remain
+> `enabledForDispatch=false`. Official Trellis `0.6.15` also lacks cross-process compare-and-swap
+> (CAS), so projection stays single-writer and fail-closed. Worker dispatch and Trellis projection
+> are separate: workers write only isolated Git worktrees and the Journal, while one writer later
+> projects results to Trellis. The repository is public, and
+> [`v0.1.0.dev1`](https://github.com/chriskcl/wish-builder/releases/tag/v0.1.0.dev1) is available as
+> a prerelease under GPL-3.0-only.
 
 ## Why it exists
 
@@ -74,7 +86,7 @@ The point is not to remove people from the project. It is to spend human attenti
 └────────────────────────────────────────┘
 ```
 
-This is the intended end-to-end workflow. The current preview includes the assembled local lifecycle and crash recovery path, verified with controlled subprocess workers. Trellis compatibility passes for import and single-writer projection, while the separate backend qualification record still stops every backend before real dispatch. A startup or handshake check is not a model turn; no backend/OS cell has completed the full cancellation, crash/restart reconciliation, cleanup, parallel-overlap, and platform evidence set.
+This is the intended end-to-end workflow. The current preview includes the assembled local lifecycle and crash recovery path, verified with controlled subprocess workers. Trellis compatibility passes for import and single-writer projection. The separate backend qualification record admits only the locally published `Codex / Windows` cell, at concurrency one or two; it still stops the other five cells before real dispatch.
 
 The planning stage normally uses `office-hours`, `plan-ceo-review`, and `plan-eng-review`, plus `plan-design-review` when the product has a user interface. Each review runs in its own non-interactive child session. The child temporarily follows the review's explicit recommendation so it can finish, then returns the practical result, alternatives, ease of changing later, and technical reasoning. Wish Builder records only easy, reversible engineering choices automatically. Product, architecture, cost, security, and other material choices are rewritten in plain language and collected for Gate A. A gstack recommendation is advice, not human approval. A child that tries to question the user directly or returns incomplete decision data is stopped.
 
@@ -103,9 +115,9 @@ The design defines two mutually exclusive scheduler modes:
 | `scheduler_mode` | `worker_backend` | Intended responsibility | Current M1 status |
 | --- | --- | --- | --- |
 | `trellis` | `trellis` | Trellis schedules sibling tasks; Wish Builder validates and supervises | Disabled: the Trellis scheduler path has no qualified pre-launch admission and fencing integration; `0.6.15` also has no cross-process CAS |
-| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Wish Builder schedules from the frozen graph into isolated worktrees; one separate writer later projects Journal results to Trellis | Local lifecycle and crash recovery are verified; dispatch is disabled because backend/OS evidence is incomplete |
+| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Wish Builder schedules from the frozen graph into isolated worktrees; one separate writer later projects Journal results to Trellis | `Codex / Windows` locally enabled at concurrency 1-2; the other five backend/OS cells remain disabled |
 
-For M1, only `scheduler_mode=wish_builder` is accepted by the current Python control plane. Each run chooses one backend. If that backend is unavailable, unqualified, or paired with the wrong scheduler, the run stops instead of silently switching to something else. With the bundled qualification record, `wishctl run` returns `dispatch_not_qualified` and does not dispatch an agent.
+For M1, only `scheduler_mode=wish_builder` is accepted by the current Python control plane. Each run chooses one backend. If that backend is unavailable, unqualified, paired with the wrong scheduler, or asks for more concurrency than its evidence permits, the run stops instead of silently switching to something else. With the bundled qualification record, `Codex / Windows` is admitted at concurrency one or two. Concurrency three returns `concurrency_not_qualified`; every other backend/OS cell returns `dispatch_not_qualified` before an agent is launched.
 
 When the Trellis scheduler is implemented later, `GraphIndex` will remain a validation and recovery index, not a second dispatcher.
 
@@ -113,16 +125,32 @@ Backend qualification is intentionally conservative:
 
 | Backend | Windows evidence | Linux evidence | Production dispatch |
 | --- | --- | --- | --- |
-| Codex | Deterministic fixture; full live qualification required | Deterministic fixture; full live qualification required | Disabled |
+| Codex | Full live qualification locally published; maximum two concurrent turns | Deterministic fixture; full live qualification required | Windows only |
 | Pi | Startup and handshake only; no model turn | Deterministic fixture; full live qualification required | Disabled |
 | Oh My Pi | Live turn blocked: configured model and provider credential are required | Deterministic fixture; full live qualification required | Disabled |
 
-No backend/OS cell has completed the required qualification evidence for active cancellation, crash/restart reconciliation without redelivery, cleanup, parallel overlap, and its target platform. All six provider/OS entries therefore remain `enabledForDispatch=false`. Trellis compatibility and backend qualification remain separate records: the former binds the frozen graph and projection adapter, while the latter records Agent-cell evidence. Active `wish_builder` dispatch requires an enabled backend cell bound to the approved Trellis compatibility digest; it does not require Trellis projection CAS because workers never write Trellis. The future Trellis-owned scheduler does not use an Agent backend/OS cell, but it needs a later manifest schema plus qualified pre-launch admission, fencing, stop/reject behavior, and concurrent-write ownership. Claude Code and macOS are deferred until the first three backends and the Windows/Linux matrix are stable.
+The locally published `Codex / Windows` cell completed the required full-turn,
+active-cancellation, crash/reconcile, cleanup, parallel-overlap, and platform evidence and is
+`enabledForDispatch=true` with `maxConcurrentTurns=2`. Its source revision is
+`fd3296ed1f8d85e9a1347eb1e2dcdf611ec62720`. Independent review also matched the official
+`@openai/codex@0.149.0` package and Windows native package against their npm integrity and
+installed files. The preserved provenance is a human-accepted local detached provider reference,
+not an OpenAI-signed attestation. The other five provider/OS entries remain
+`enabledForDispatch=false`.
+
+Trellis compatibility and backend qualification remain separate records: the former binds the
+frozen graph and projection adapter, while the latter records Agent-cell evidence. Active
+`wish_builder` dispatch requires an enabled backend cell bound to the approved Trellis
+compatibility digest; it does not require Trellis projection CAS because workers never write
+Trellis. The future Trellis-owned scheduler does not use an Agent backend/OS cell, but it needs a
+later manifest schema plus qualified pre-launch admission, fencing, stop/reject behavior, and
+concurrent-write ownership. Claude Code and macOS are deferred until the first three backends and
+the Windows/Linux matrix are stable.
 
 Trellis compatibility and backend qualification are separate contracts:
 
 - [`wish_builder/compatibility/trellis-0.6.15.json`](wish_builder/compatibility/trellis-0.6.15.json) qualifies the official `@mindfoldhq/trellis@0.6.15` and `@mindfoldhq/trellis-core@0.6.15` packages for the documented import and single-writer projection boundary.
-- [`wish_builder/compatibility/backend-qualification-0.6.15.json`](wish_builder/compatibility/backend-qualification-0.6.15.json) records backend/OS dispatch evidence; every cell is currently disabled.
+- [`wish_builder/compatibility/backend-qualification-0.6.15.json`](wish_builder/compatibility/backend-qualification-0.6.15.json) records backend/OS dispatch evidence; only the locally published `Codex / Windows` cell is enabled, with a concurrency limit of two.
 
 Official Trellis `0.6.15` has no reliable cross-process CAS. M1 therefore permits one projection writer at a time, accepts only stable task-record reads, checks the expected SHA-256 before writing, verifies SHA-256 and content after writing, and fails closed on conflicts or unknown outcomes. These digest checks protect projection integrity; they are not CAS and do not act as a worker-dispatch lock. Backend workers write only isolated Git worktrees and the Journal. The separate Trellis scheduler mode needs its own qualified pre-launch admission, fencing, and concurrent-write ownership.
 
@@ -140,10 +168,11 @@ The repository currently includes:
 - ordinary project acceptance commands run inside the materialized promotion candidate before the target branch advances;
 - subprocess containment, output limits, timeout handling, and fail-closed recovery;
 - Git staging, promotion, cleanup, quarantine, and trace/export services;
+- fail-closed local publication of independently reviewed backend evidence, including an immutable receipt and compiled trust pin;
 - package-to-Skill runtime synchronization and a reproducible development ZIP;
 - local tests for contracts, scheduling, recovery, Git effects, packaging, and controlled performance.
 
-These parts are real and tested. The assembled local lifecycle, including recovery from crashes around Git changes, is covered end to end with controlled subprocess workers. It sits behind the guarded `wishctl run` entry, but the bundled backend records stop the command before real dispatch. The remaining backend work is to produce complete, content-addressed qualification evidence for a real model turn, cancellation, crash/restart reconciliation, cleanup, parallel overlap, and each supported platform.
+These parts are real and tested. The assembled local lifecycle, including recovery from crashes around Git changes, is covered end to end with controlled subprocess workers. The guarded `wishctl run` entry now admits the locally published `Codex / Windows` cell at concurrency one or two. The remaining backend work is to produce and independently review the same complete, content-addressed evidence before enabling any of the other five platform cells.
 
 Real Issue, Pull Request, hosting, credential, background supervisor, and production deployment adapters are outside the current implementation.
 
@@ -192,10 +221,10 @@ The installed file should appear at:
 ~/.codex/skills/wish-builder/SKILL.md
 ```
 
-Current ZIP SHA-256:
+Repository ZIP SHA-256 (the prerelease asset has its own value in `SHA256SUMS`):
 
 ```text
-cfe78dad83087ec5492e2192fb1d7e5e71cfa6c83a7a2755df4bdf62b5d9fc53
+8a9887281f5c1b60d11fe4231e298c09284f2d0a0fd9fb3b77a8c8dadeb1ed1a
 ```
 
 The repository is public. Codex's Skill installer can also install the repository's `wish-builder/` directory directly from GitHub.
@@ -299,13 +328,14 @@ The full operating rules live in [`wish-builder/SKILL.md`](wish-builder/SKILL.md
 | Check | Result |
 | --- | --- |
 | Earlier local non-performance matrix | Windows and Linux on Python 3.11/3.12/3.13; 1,498 run per cell, 0 failures or errors; 9 allowed skips on Windows and 13 on Linux |
-| Fresh full local suite | Windows on Python 3.13; 1,517 run including 16 performance tests, 0 failures or errors, 3 platform-specific skips |
-| Focused evidence, release, and live-adapter tests | 84 passed |
+| Fresh full local suite | Windows on Python 3.13; 1,527 run including 16 performance tests, 0 failures or errors, 3 platform-specific skips |
+| Independent Codex/Windows evidence audit | 52 passed, 1 Windows symlink-permission skip; verdict `PASS` |
+| Post-publication qualification and admission tests | 68 passed, 1 Windows symlink-permission skip, 59 subtests passed |
 | Official Trellis `0.6.15` integration | Windows and Linux each passed 22 Node and 7 Python tests |
-| Skill/runtime parity | 12 passed |
+| Skill packaging and installed runtime | 15 package-content and runtime-packaging tests plus 13 installed-Skill tests passed |
 | Python compilation and whitespace checks | Passed |
 
-These are local results. GitHub Actions was not run because its budget is exhausted, so this project does not claim a CI pass or failure for the candidate. This changes only the M1 completion rule. It does not qualify a backend or enable real agent dispatch.
+These are local results. GitHub Actions was not run because its budget is exhausted, so this project does not claim a CI pass or failure for the candidate. The `Codex / Windows` qualification is also a local publication, not an official provider certification.
 
 Run the main local suites with:
 
@@ -331,10 +361,10 @@ uv run --locked --python 3.13 python scripts\ci_local_release.py `
   --version 0.1.0.dev1 --tag v0.1.0.dev1
 ```
 
-## Before enabling live dispatch
+## Remaining dispatch work
 
-- Qualify the assembled lifecycle against live project backends, including cancellation and recovery around Git changes.
-- Complete the cancellation, crash/restart reconciliation, cleanup, parallel-overlap, and platform evidence before enabling any backend cell.
+- Repeat the full live qualification and independent review before enabling Pi, Oh My Pi, Codex/Linux, or any later platform cell.
+- Keep `Codex / Windows` at a maximum concurrency of two until stronger evidence is formally published.
 - Add the real Issue, Pull Request, and hosting adapters needed by the chosen workflow.
 - Complete one public example from a short product wish through reviewed, merged changes.
 
