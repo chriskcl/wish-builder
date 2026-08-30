@@ -10,7 +10,7 @@ Wish Builder 是一套給 Codex 使用的 Skill，適合那些不能只靠一句
 
 > **目前狀態：** 開發預覽版（`0.1.0.dev1`）。本機控制流程、不可變執行快照檢查、遇到不確定情況就停止的准入規則、Journal 與恢復邊界、Git adapter，以及 Wish Builder 對官方 Trellis `0.6.15` 的匯入／投影 bridge 都已有實作。包含 Git 變更途中當機情況的完整本機生命週期，已使用受控 subprocess worker 通過端到端測試。
 >
-> 真實派工仍然關閉，因為 Pi、Oh My Pi 和 Codex 的六個 backend／OS cell，都還沒有完整的真實資格記錄。目前唯一留下的持久真實證據，是 Windows 上 Pi 的啟動和 handshake 檢查，而且沒有送出 model turn；Windows 上的 Oh My Pi live probe 需要已設定的 model 和 provider credential，但本輪沒有要求或使用 credential，因此該 cell 只能記為 credential-blocked。Codex 和其餘 cell 只有 deterministic fixture 或不完整的資格記錄。active cancellation、當機重啟後不重送的 reconcile、cleanup、平行重疊和平台證據仍不完整，因此所有 cell 都維持 `enabledForDispatch=false`。官方 Trellis `0.6.15` 也沒有跨程序 compare-and-swap（CAS），所以投影採單一寫入者並在衝突時停止。Agent 派工和 Trellis 投影是分開的：worker 只寫隔離 Git worktree 和 Journal，之後由單一 writer 把結果投影回 Trellis。GitHub repository 仍是 private，也尚未發布 release；程式碼採 GPL-3.0-only 授權。
+> 真實派工仍然關閉，因為 Pi、Oh My Pi 和 Codex 的六個 backend／OS cell，都還沒有完整的真實資格記錄。目前唯一留下的持久真實證據，是 Windows 上 Pi 的啟動和 handshake 檢查，而且沒有送出 model turn；Windows 上的 Oh My Pi live probe 需要已設定的 model 和 provider credential，但本輪沒有要求或使用 credential，因此該 cell 只能記為 credential-blocked。Codex 和其餘 cell 只有 deterministic fixture 或不完整的資格記錄。active cancellation、當機重啟後不重送的 reconcile、cleanup、平行重疊和平台證據仍不完整，因此所有 cell 都維持 `enabledForDispatch=false`。官方 Trellis `0.6.15` 也沒有跨程序 compare-and-swap（CAS），所以投影採單一寫入者並在衝突時停止。Agent 派工和 Trellis 投影是分開的：worker 只寫隔離 Git worktree 和 Journal，之後由單一 writer 把結果投影回 Trellis。Repository 已公開，並以 GPL-3.0-only 授權發布 [`v0.1.0.dev1`](https://github.com/chriskcl/wish-builder/releases/tag/v0.1.0.dev1) 預覽版。
 
 ## 為什麼需要它
 
@@ -124,7 +124,7 @@ Trellis 相容性和 backend 派工資格是兩份不同契約：
 - [`wish_builder/compatibility/trellis-0.6.15.json`](wish_builder/compatibility/trellis-0.6.15.json) 驗證官方 `@mindfoldhq/trellis@0.6.15` 與 `@mindfoldhq/trellis-core@0.6.15`，只涵蓋文件所述的匯入和單一寫入者投影邊界。
 - [`wish_builder/compatibility/backend-qualification-0.6.15.json`](wish_builder/compatibility/backend-qualification-0.6.15.json) 記錄各 backend／OS 的派工證據；目前所有 cell 都是關閉狀態。
 
-這項整合不可安裝或解析 `@latest`。`0.7.0-dev.2` 是後來從 Wish Builder 撤回的本機測試 fixture，從未是官方 Trellis release，也不受支援。官方 Trellis `0.6.15` 沒有可靠的跨程序 CAS；M1 因此同一時間只允許一個投影寫入者，只接受穩定的 task record 讀取，寫入前核對預期 SHA-256，寫入後再驗證 SHA-256 和內容，遇到衝突或結果不明就停止。這些 digest 檢查是投影完整性保護，不是 CAS，也不是 Agent 派工鎖。backend worker 只寫隔離 Git worktree 和 Journal。另一個 Trellis scheduler 模式還需要通過資格驗證的派工前准入、fencing 和並行寫入所有權。
+官方 Trellis `0.6.15` 沒有可靠的跨程序 CAS；M1 因此同一時間只允許一個投影寫入者，只接受穩定的 task record 讀取，寫入前核對預期 SHA-256，寫入後再驗證 SHA-256 和內容，遇到衝突或結果不明就停止。這些 digest 檢查是投影完整性保護，不是 CAS，也不是 Agent 派工鎖。backend worker 只寫隔離 Git worktree 和 Journal。另一個 Trellis scheduler 模式還需要通過資格驗證的派工前准入、fencing 和並行寫入所有權。
 
 ## 已實作內容
 
@@ -169,21 +169,21 @@ npm install -g @mindfoldhq/trellis@0.6.15
 
 Core bridge 可讀取解壓後的 `@mindfoldhq/trellis-core@0.6.15` package 目錄，或經過驗證的官方 npm tarball。tarball 只是本機驗證輸入，不會被打包進 Wish Builder 發行內容。不可改用 `@latest` 或其他預發布版本。
 
-### 從本機 ZIP 安裝
+### 安裝 Skill ZIP
 
-Repository 內的 [`wish-builder-skill.zip`](wish-builder-skill.zip) 已和目前 runtime 同步，可供本機評估，但它不是正式發布版本。
+從已發布的預覽版下載 [`wish-builder-skill-0.1.0.dev1.zip`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev1/wish-builder-skill-0.1.0.dev1.zip) 和 [`SHA256SUMS`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev1/SHA256SUMS)。Repository 內也保留了已同步的 [`wish-builder-skill.zip`](wish-builder-skill.zip)，方便直接從原始碼 checkout 測試。
 
 Windows PowerShell：
 
 ```powershell
-Expand-Archive .\wish-builder-skill.zip -DestinationPath "$env:USERPROFILE\.codex\skills"
+Expand-Archive .\wish-builder-skill-0.1.0.dev1.zip -DestinationPath "$env:USERPROFILE\.codex\skills"
 ```
 
 macOS 或 Linux：
 
 ```bash
 mkdir -p ~/.codex/skills
-unzip wish-builder-skill.zip -d ~/.codex/skills
+unzip wish-builder-skill-0.1.0.dev1.zip -d ~/.codex/skills
 ```
 
 安裝後應該看到：
@@ -198,7 +198,7 @@ unzip wish-builder-skill.zip -d ~/.codex/skills
 cfe78dad83087ec5492e2192fb1d7e5e71cfa6c83a7a2755df4bdf62b5d9fc53
 ```
 
-GitHub repository 目前仍是 private，所以還不能作為其他人的安裝來源。公開後，可以透過 Codex Skill installer 安裝 repository 內的 `wish-builder/` 目錄。
+Repository 已公開，也可以透過 Codex Skill installer 直接從 GitHub 安裝其中的 `wish-builder/` 目錄。
 
 ## 開始一個專案
 
@@ -299,8 +299,8 @@ python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/impo
 | 檢查 | 結果 |
 | --- | --- |
 | 較早的本地非效能矩陣 | Windows／Linux × Python 3.11／3.12／3.13；每格執行 1,498 項，0 failure、0 error；Windows 允許略過 9 項，Linux 允許略過 13 項 |
-| 最新本地完整測試 | Windows／Python 3.13；執行 1,514 項（含 16 項效能測試），0 failure、0 error，3 項平台條件式略過 |
-| Evidence、release 和 live adapter 集中測試 | 63 項通過 |
+| 最新本地完整測試 | Windows／Python 3.13；執行 1,517 項（含 16 項效能測試），0 failure、0 error，3 項平台條件式略過 |
+| Evidence、release 和 live adapter 集中測試 | 84 項通過 |
 | 官方 Trellis `0.6.15` 整合 | Windows 與 Linux 各通過 22 項 Node 和 7 項 Python 測試 |
 | Skill／runtime parity | 12 項通過 |
 | Python 編譯與空白格式檢查 | 通過 |
