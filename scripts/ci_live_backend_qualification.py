@@ -353,6 +353,7 @@ class LaunchSpec:
     sdk: SdkPin
     runtime: Path
     environment: tuple[tuple[str, str], ...]
+    model_selector: str | None
 
     @property
     def command_prefix(self) -> tuple[str, ...]:
@@ -363,8 +364,9 @@ def _launch_spec(
     sdk: SdkPin,
     runtime: Path,
     environment: tuple[tuple[str, str], ...],
+    model_selector: str | None,
 ) -> LaunchSpec:
-    return LaunchSpec(sdk, runtime, environment)
+    return LaunchSpec(sdk, runtime, environment, model_selector)
 
 
 def _make_channel(
@@ -399,6 +401,11 @@ def _make_channel(
         command_prefix=launch.command_prefix,
         sdk_name=launch.sdk.name,
         sdk_version=launch.sdk.version,
+        extra_args=(
+            ()
+            if launch.model_selector is None
+            else ("--model", launch.model_selector)
+        ),
     )
     return JsonlRpcBackendChannel(
         JsonlRpcBackendConfig(
@@ -1299,6 +1306,7 @@ def _crash_child_config(
     sdk: SdkPin,
     runtime: Path,
     environment_names: tuple[str, ...],
+    model_selector: str | None,
     capabilities: BackendCapabilities,
     attempt: Attempt,
     output: Path,
@@ -1316,6 +1324,7 @@ def _crash_child_config(
         },
         "runtime": str(runtime),
         "environmentNames": list(environment_names),
+        "modelSelector": model_selector,
         "capabilities": capabilities.to_primitive(),
         "attempt": {
             "runId": attempt.identity.run_id,
@@ -1375,6 +1384,7 @@ def _run_crash_child(path: Path) -> int:
             sdk,
             Path(config["runtime"]),
             _provider_environment(tuple(config["environmentNames"])),
+            config["modelSelector"],
         )
         attempt_raw = config["attempt"]
         identity = ExecutionIdentity(
@@ -1662,6 +1672,7 @@ class LiveRunner:
             sdk=self.sdk,
             runtime=self.launch.runtime,
             environment_names=self.environment_names,
+            model_selector=self.launch.model_selector,
             capabilities=self.capabilities,
             attempt=attempt,
             output=observation_path,
@@ -2126,6 +2137,10 @@ def build_parser() -> argparse.ArgumentParser:
             "values are never written to evidence"
         ),
     )
+    parser.add_argument(
+        "--provider-model",
+        help="bounded provider/model selector for a JSONL RPC qualification run",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=180.0)
     parser.add_argument(
@@ -2157,6 +2172,18 @@ def _environment_names(values: list[str]) -> tuple[str, ...]:
         raise LiveQualificationError("provider_environment_missing")
     return tuple(values)
 
+def _provider_model(value: str | None, provider: Provider) -> str | None:
+    if value is None:
+        return None
+    if provider is Provider.CODEX:
+        raise LiveQualificationError("provider_model_not_supported")
+    if not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+        value,
+    ):
+        raise LiveQualificationError("invalid_provider_model")
+    return value
+
 
 def _run_public(args: argparse.Namespace) -> bytes:
     provider = _provider(args.provider)
@@ -2182,6 +2209,7 @@ def _run_public(args: argparse.Namespace) -> bytes:
     sdk = _resolve_sdk(providers_root, provider, args)
     runtime = _runtime(args.runtime)
     environment_names = _environment_names(args.provider_env)
+    model_selector = _provider_model(args.provider_model, provider)
     bundle = load_bundled_compatibility()
     provider_entry = next(
         (item for item in bundle.providers if item.provider is provider), None
@@ -2202,6 +2230,7 @@ def _run_public(args: argparse.Namespace) -> bytes:
         sdk,
         runtime,
         environment,
+        model_selector,
     )
     imported_at = _utc_now()
     snapshot_bytes, manifest_bytes, manifest = _build_manifest(
