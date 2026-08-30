@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -141,6 +142,7 @@ class PythonPackageDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source"
             distribution = Path(temporary) / "dist"
+            build_backend = Path(temporary) / "build-backend"
             source.mkdir()
             distribution.mkdir()
             for name in ("pyproject.toml", "README.md", "LICENSE"):
@@ -154,9 +156,34 @@ class PythonPackageDataTests(unittest.TestCase):
             }
             self.assertTrue(evidence_files)
 
+            install = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "--disable-pip-version-check",
+                    "--require-hashes",
+                    "--only-binary=:all:",
+                    "--target",
+                    str(build_backend),
+                    "-r",
+                    str(REPOSITORY_ROOT / "requirements" / "build.txt"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                install.returncode,
+                install.stdout + install.stderr,
+            )
+
             build_script = """
 import json
 import sys
+import setuptools
 from setuptools.build_meta import build_sdist, build_wheel
 
 distribution = sys.argv[1]
@@ -166,8 +193,19 @@ wheel = build_wheel(
     {"--build-option": [f"--bdist-dir={wheel_stage}"]},
 )
 sdist = build_sdist(distribution)
-print(json.dumps({"wheel": wheel, "sdist": sdist}, sort_keys=True))
+print(
+    json.dumps(
+        {
+            "setuptools": setuptools.__version__,
+            "wheel": wheel,
+            "sdist": sdist,
+        },
+        sort_keys=True,
+    )
+)
 """
+            build_environment = os.environ.copy()
+            build_environment["PYTHONPATH"] = str(build_backend)
             completed = subprocess.run(
                 [
                     sys.executable,
@@ -177,6 +215,7 @@ print(json.dumps({"wheel": wheel, "sdist": sdist}, sort_keys=True))
                     str(Path(temporary) / "wheel-stage"),
                 ],
                 cwd=source,
+                env=build_environment,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -187,6 +226,7 @@ print(json.dumps({"wheel": wheel, "sdist": sdist}, sort_keys=True))
                 completed.stdout + completed.stderr,
             )
             build_result = json.loads(completed.stdout.splitlines()[-1])
+            self.assertEqual("83.0.0", build_result["setuptools"])
             wheel_name = build_result["wheel"]
             sdist_name = build_result["sdist"]
 

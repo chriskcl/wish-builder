@@ -224,7 +224,7 @@ The installed file should appear at:
 Repository ZIP SHA-256 (the prerelease asset has its own value in `SHA256SUMS`):
 
 ```text
-22a074b2244bc50fd2b7acba99c48defdbeb124d0b295b9e393317a2e6751f0b
+8a9887281f5c1b60d11fe4231e298c09284f2d0a0fd9fb3b77a8c8dadeb1ed1a
 ```
 
 The repository is public. Codex's Skill installer can also install the repository's `wish-builder/` directory directly from GitHub.

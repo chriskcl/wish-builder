@@ -26,8 +26,8 @@ backend／OS cell 仍關閉。
 | Python package | `wish-builder 0.1.0.dev1`, Python `>=3.11` |
 | License | `GPL-3.0-only` |
 | Skill ZIP | `wish-builder-skill.zip` |
-| Skill ZIP SHA-256 | `22a074b2244bc50fd2b7acba99c48defdbeb124d0b295b9e393317a2e6751f0b` |
-| Skill ZIP 大小 | `556,352` bytes |
+| Skill ZIP SHA-256 | `8a9887281f5c1b60d11fe4231e298c09284f2d0a0fd9fb3b77a8c8dadeb1ed1a` |
+| Skill ZIP 大小 | `556,382` bytes |
 
 `changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。本輪 tracked 候選已推送到 `origin/release/codex-windows-qualification`；後續以 `git status --branch`、remote ref 和 `gh pr view` 核對實際狀態。
 
@@ -181,7 +181,7 @@ Windows clean-install of the same wheel and sdist:
 
 Skill runtime sync check: passed
 Deterministic ZIP check: passed
-Current Skill ZIP SHA-256: 22a074b2244bc50fd2b7acba99c48defdbeb124d0b295b9e393317a2e6751f0b; 556,352 bytes
+Current Skill ZIP SHA-256: 8a9887281f5c1b60d11fe4231e298c09284f2d0a0fd9fb3b77a8c8dadeb1ed1a; 556,382 bytes
 Codex Skill validator: passed
 Release content gate: passed; release archives reject bundled `.tgz` files and unpinned Trellis install specs
 Distribution clean-install matrix: 6 cells implemented; local fixed-revision evidence is authoritative for M1
