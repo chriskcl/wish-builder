@@ -29,7 +29,7 @@ backend／OS cell 仍關閉。
 | Skill ZIP SHA-256 | `22a074b2244bc50fd2b7acba99c48defdbeb124d0b295b9e393317a2e6751f0b` |
 | Skill ZIP 大小 | `556,352` bytes |
 
-`changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。本輪 tracked 候選已推送到 `origin/release/codex-windows-qualification`，尚未建立 PR；後續仍以 `git status --branch` 和 remote ref 核對。
+`changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。本輪 tracked 候選已推送到 `origin/release/codex-windows-qualification`；後續以 `git status --branch`、remote ref 和 `gh pr view` 核對實際狀態。
 
 ## 責任邊界
 
