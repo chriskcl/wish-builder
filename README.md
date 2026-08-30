@@ -10,7 +10,7 @@ It does not contain a second task planner or task database. Trellis owns the wor
 
 > **Status:** development preview (`0.1.0.dev1`). The local control plane, immutable execution snapshot checks, fail-closed admission, Journal and recovery boundaries, Git adapter, and Wish Builder import/projection bridge for official Trellis `0.6.15` are implemented. The assembled lifecycle, including crashes around Git changes, is tested end to end with controlled subprocess workers.
 >
-> Real dispatch remains closed because none of the six Pi, Oh My Pi, or Codex backend/OS cells has a complete live qualification record. The only persistent live evidence currently recorded is a Windows Pi startup and handshake check; it sent no model turn. The Windows Oh My Pi cell is blocked because its live probe requires a configured model and provider credential; no credential was requested or used. Codex and the remaining cells have deterministic fixtures or incomplete qualification records. Active cancellation, crash/restart reconciliation without redelivery, cleanup, parallel overlap, and platform evidence are still incomplete, so every cell remains `enabledForDispatch=false`. Official Trellis `0.6.15` also lacks cross-process compare-and-swap (CAS), so projection stays single-writer and fail-closed. Worker dispatch and Trellis projection are separate: workers write only isolated Git worktrees and the Journal, while one writer later projects results to Trellis. The GitHub repository remains private and no release has been published. The code is licensed under GPL-3.0-only.
+> Real dispatch remains closed because none of the six Pi, Oh My Pi, or Codex backend/OS cells has a complete live qualification record. The only persistent live evidence currently recorded is a Windows Pi startup and handshake check; it sent no model turn. The Windows Oh My Pi cell is blocked because its live probe requires a configured model and provider credential; no credential was requested or used. Codex and the remaining cells have deterministic fixtures or incomplete qualification records. Active cancellation, crash/restart reconciliation without redelivery, cleanup, parallel overlap, and platform evidence are still incomplete, so every cell remains `enabledForDispatch=false`. Official Trellis `0.6.15` also lacks cross-process compare-and-swap (CAS), so projection stays single-writer and fail-closed. Worker dispatch and Trellis projection are separate: workers write only isolated Git worktrees and the Journal, while one writer later projects results to Trellis. The repository is public, and [`v0.1.0.dev1`](https://github.com/chriskcl/wish-builder/releases/tag/v0.1.0.dev1) is available as a prerelease under GPL-3.0-only.
 
 ## Why it exists
 
@@ -124,7 +124,7 @@ Trellis compatibility and backend qualification are separate contracts:
 - [`wish_builder/compatibility/trellis-0.6.15.json`](wish_builder/compatibility/trellis-0.6.15.json) qualifies the official `@mindfoldhq/trellis@0.6.15` and `@mindfoldhq/trellis-core@0.6.15` packages for the documented import and single-writer projection boundary.
 - [`wish_builder/compatibility/backend-qualification-0.6.15.json`](wish_builder/compatibility/backend-qualification-0.6.15.json) records backend/OS dispatch evidence; every cell is currently disabled.
 
-Never install or resolve `@latest` for this integration. `0.7.0-dev.2` was a local test fixture later withdrawn from Wish Builder; it was never an official Trellis release and is not supported. Official Trellis `0.6.15` has no reliable cross-process CAS. M1 therefore permits one projection writer at a time, accepts only stable task-record reads, checks the expected SHA-256 before writing, verifies SHA-256 and content after writing, and fails closed on conflicts or unknown outcomes. These digest checks protect projection integrity; they are not CAS and do not act as a worker-dispatch lock. Backend workers write only isolated Git worktrees and the Journal. The separate Trellis scheduler mode needs its own qualified pre-launch admission, fencing, and concurrent-write ownership.
+Official Trellis `0.6.15` has no reliable cross-process CAS. M1 therefore permits one projection writer at a time, accepts only stable task-record reads, checks the expected SHA-256 before writing, verifies SHA-256 and content after writing, and fails closed on conflicts or unknown outcomes. These digest checks protect projection integrity; they are not CAS and do not act as a worker-dispatch lock. Backend workers write only isolated Git worktrees and the Journal. The separate Trellis scheduler mode needs its own qualified pre-launch admission, fencing, and concurrent-write ownership.
 
 ## What is implemented
 
@@ -169,21 +169,21 @@ npm install -g @mindfoldhq/trellis@0.6.15
 
 The Core bridge accepts either an extracted `@mindfoldhq/trellis-core@0.6.15` package root or its verified official npm tarball. The tarball is an input for local verification and is never bundled into a Wish Builder release. Do not substitute `@latest` or another prerelease.
 
-### Install from the local ZIP
+### Install the Skill ZIP
 
-The repository contains a synchronized development archive named [`wish-builder-skill.zip`](wish-builder-skill.zip). It is useful for local evaluation, but it is not a published release.
+Download [`wish-builder-skill-0.1.0.dev1.zip`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev1/wish-builder-skill-0.1.0.dev1.zip) and [`SHA256SUMS`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev1/SHA256SUMS) from the published prerelease. The repository also contains a synchronized [`wish-builder-skill.zip`](wish-builder-skill.zip) for testing directly from a source checkout.
 
 Windows PowerShell:
 
 ```powershell
-Expand-Archive .\wish-builder-skill.zip -DestinationPath "$env:USERPROFILE\.codex\skills"
+Expand-Archive .\wish-builder-skill-0.1.0.dev1.zip -DestinationPath "$env:USERPROFILE\.codex\skills"
 ```
 
 macOS or Linux:
 
 ```bash
 mkdir -p ~/.codex/skills
-unzip wish-builder-skill.zip -d ~/.codex/skills
+unzip wish-builder-skill-0.1.0.dev1.zip -d ~/.codex/skills
 ```
 
 The installed file should appear at:
@@ -198,7 +198,7 @@ Current ZIP SHA-256:
 cfe78dad83087ec5492e2192fb1d7e5e71cfa6c83a7a2755df4bdf62b5d9fc53
 ```
 
-The GitHub repository is currently private, so it is not an installation source for other users yet. Once it is made public, Codex's Skill installer can install the repository's `wish-builder/` directory.
+The repository is public. Codex's Skill installer can also install the repository's `wish-builder/` directory directly from GitHub.
 
 ## Start a project
 
@@ -299,8 +299,8 @@ The full operating rules live in [`wish-builder/SKILL.md`](wish-builder/SKILL.md
 | Check | Result |
 | --- | --- |
 | Earlier local non-performance matrix | Windows and Linux on Python 3.11/3.12/3.13; 1,498 run per cell, 0 failures or errors; 9 allowed skips on Windows and 13 on Linux |
-| Fresh full local suite | Windows on Python 3.13; 1,514 run including 16 performance tests, 0 failures or errors, 3 platform-specific skips |
-| Focused evidence, release, and live-adapter tests | 63 passed |
+| Fresh full local suite | Windows on Python 3.13; 1,517 run including 16 performance tests, 0 failures or errors, 3 platform-specific skips |
+| Focused evidence, release, and live-adapter tests | 84 passed |
 | Official Trellis `0.6.15` integration | Windows and Linux each passed 22 Node and 7 Python tests |
 | Skill/runtime parity | 12 passed |
 | Python compilation and whitespace checks | Passed |
