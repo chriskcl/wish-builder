@@ -41,8 +41,8 @@ PI_INTEGRITY = (
     "tN4zbYH/wOwvx9pJpeLCA=="
 )
 OMP_INTEGRITY = (
-    "sha512-RMLu7DrF/W2lEPNgQECGR1Uw6jbhAKnDUVGGhhRXvVPp3ntx8CCwW48aC2kfp5QV/"
-    "lDFYg0Rw6/CXMo/85jIBw=="
+    "sha512-3H90cCc+3yLtvSKM2RooIvkhG+77OFFoXD6+9GPZDF3PQ3FF6uCnPP57OaUa8VZ8"
+    "YwOm9Eio5ZmfdFuvwLn+VA=="
 )
 SDK_FIXTURES = {
     Provider.CODEX: (
@@ -64,7 +64,7 @@ SDK_FIXTURES = {
     Provider.OMP: (
         WorkerProvider.OH_MY_PI,
         "@oh-my-pi/pi-coding-agent",
-        "17.4.0",
+        "18.0.11",
         "omp",
         "dist/cli.js",
         OMP_INTEGRITY,
