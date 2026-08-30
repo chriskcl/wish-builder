@@ -21,6 +21,7 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 from wish_builder.adapters.git_identity import (
@@ -37,8 +38,22 @@ from wish_builder.adapters.providers import (
     JsonlRpcLaunch,
     JsonlRpcProtocol,
 )
+from wish_builder.compatibility import load_bundled_backend_version_registry
 from wish_builder.contracts import WorkerProvider
-from wish_builder.contracts.compatibility import PlatformCompatibility, SdkPin
+from wish_builder.contracts.backend_registry import (
+    BackendProtocolProfile,
+    BackendVersionQualificationRecord,
+    BackendVersionRegistry,
+    BackendVersionStatus,
+)
+from wish_builder.contracts.compatibility import (
+    Platform,
+    PlatformCompatibility,
+    Provider,
+    SdkPin,
+    NPM_INTEGRITY_RE,
+    VERSION_RE,
+)
 from wish_builder.contracts.models import HASH_RE
 from wish_builder.contracts.runtime import (
     AdapterKind,
@@ -72,6 +87,8 @@ from wish_builder.services.backend_effects import BackendDispatchPlan
 AttemptChannelFactory = Callable[[AttemptWorktree], BackendChannelPort]
 AttemptLifecycleFactory = Callable[[AttemptWorktree], TrellisLifecyclePort]
 RoutingClock = Callable[[], str]
+
+_MAX_PROVIDER_METADATA_BYTES = 16 * 1024 * 1024
 
 _EXTERNAL_EFFECT_OPERATIONS = frozenset(
     {
@@ -114,6 +131,7 @@ class ProviderSdkResolution:
     package_version: str
     package_shasum: str
     package_integrity: str
+    protocol_profile: str
     package_root: Path
     entrypoint: Path
     runtime: Path
@@ -128,44 +146,92 @@ class _ProviderSdkSpec:
     bin_name: str
     entrypoint: str
     runtime: str
+    protocol_profile: str
 
 
-# These are the only backend packages admitted by the M1 production factory.
-# Integrity is the npm registry integrity recorded by the qualification
-# installation's package-lock.json.  It is intentionally separate from the
-# legacy npm shasum stored in the compatibility bundle.
-_PROVIDER_SDK_SPECS: dict[WorkerProvider, _ProviderSdkSpec] = {
-    WorkerProvider.CODEX: _ProviderSdkSpec(
-        "@openai/codex",
-        "0.149.0",
-        "2e38d3859f52f288a86596d0c22366a10154437b",
-        "sha512-i4dryj2Y1j+00Mb5n+0n71EYnTK9/KDc2cdFo/dXD0d1oTog2bhUssKDEIOnKmn"
-        "Ef51P0Z/HJTWvTKw/UHyOvQ==",
-        "codex",
-        "bin/codex.js",
-        "node",
-    ),
-    WorkerProvider.PI: _ProviderSdkSpec(
-        "@earendil-works/pi-coding-agent",
-        "0.84.2",
-        "e4d4c1e769963c816959f5cea02a0a10ccc0495a",
-        "sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/"
-        "tN4zbYH/wOwvx9pJpeLCA==",
-        "pi",
-        "dist/cli.js",
-        "node",
-    ),
-    WorkerProvider.OH_MY_PI: _ProviderSdkSpec(
-        "@oh-my-pi/pi-coding-agent",
-        "17.4.0",
-        "557a9343748e8720b0600f95779c11ad7f447575",
-        "sha512-RMLu7DrF/W2lEPNgQECGR1Uw6jbhAKnDUVGGhhRXvVPp3ntx8CCwW48aC2kfp5QV/"
-        "lDFYg0Rw6/CXMo/85jIBw==",
-        "omp",
-        "dist/cli.js",
-        "bun",
-    ),
+_CONTRACT_PROVIDERS = {
+    WorkerProvider.CODEX: Provider.CODEX,
+    WorkerProvider.OH_MY_PI: Provider.OMP,
+    WorkerProvider.PI: Provider.PI,
 }
+
+
+def _spec_from_record(
+    profile: BackendProtocolProfile,
+    record: BackendVersionQualificationRecord,
+) -> _ProviderSdkSpec:
+    return _ProviderSdkSpec(
+        profile.package_name,
+        record.backend_version,
+        record.package_shasum,
+        record.package_integrity,
+        profile.bin_name,
+        profile.entrypoint,
+        profile.runtime,
+        profile.profile_id,
+    )
+
+
+def _default_sdk_specs() -> dict[WorkerProvider, _ProviderSdkSpec]:
+    """Compatibility view retained for tests and diagnostics, not admission."""
+
+    registry = load_bundled_backend_version_registry()
+    result: dict[WorkerProvider, _ProviderSdkSpec] = {}
+    for worker, provider in _CONTRACT_PROVIDERS.items():
+        candidates = tuple(item for item in registry.records if item.provider is provider)
+        selected = next(
+            (item for item in candidates if item.status is BackendVersionStatus.QUALIFIED),
+            candidates[0],
+        )
+        result[worker] = _spec_from_record(
+            registry.profile(selected.protocol_profile), selected
+        )
+    return result
+
+
+_PROVIDER_SDK_SPECS = _default_sdk_specs()
+
+
+class BackendVersionProbeStatus(StrEnum):
+    UNKNOWN = "unknown"
+    CANDIDATE = "candidate"
+    QUALIFIED = "qualified"
+    QUARANTINED = "quarantined"
+    DRIFT = "drift"
+
+
+@dataclass(frozen=True, slots=True)
+class BackendVersionProbeResult:
+    provider: WorkerProvider
+    platform: Platform
+    package_name: str
+    backend_version: str
+    protocol_profile: str
+    protocol: str
+    launch_profile_digest: str
+    observed_integrity: str
+    status: BackendVersionProbeStatus
+    enabled_for_dispatch: bool
+    max_concurrency: int
+    evidence_digest: str | None
+    reason: str
+
+    def to_primitive(self) -> dict[str, object]:
+        return {
+            "backendVersion": self.backend_version,
+            "enabledForDispatch": self.enabled_for_dispatch,
+            "evidenceDigest": self.evidence_digest,
+            "launchProfileDigest": self.launch_profile_digest,
+            "maxConcurrency": self.max_concurrency,
+            "npmIntegrity": self.observed_integrity,
+            "packageName": self.package_name,
+            "platform": self.platform.value,
+            "protocol": self.protocol,
+            "protocolProfile": self.protocol_profile,
+            "provider": self.provider.value,
+            "reason": self.reason,
+            "status": self.status.value,
+        }
 
 
 def _provider_for_cell(cell: PlatformCompatibility) -> WorkerProvider:
@@ -194,8 +260,34 @@ def _read_json_object(path: Path, description: str) -> dict[str, object]:
     if path.is_symlink() or not path.is_file():
         raise ProviderSdkUnavailable(f"{description} is missing or is a link")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raw = path.read_bytes()
+        if len(raw) > _MAX_PROVIDER_METADATA_BYTES:
+            raise ProviderSdkUnavailable(f"{description} exceeds the byte limit")
+        text = raw.decode("utf-8", errors="strict")
+
+        def object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, item in pairs:
+                if key in result:
+                    raise ProviderSdkUnavailable(
+                        f"{description} contains a duplicate JSON key"
+                    )
+                result[key] = item
+            return result
+
+        def reject_constant(value: str) -> None:
+            raise ProviderSdkUnavailable(
+                f"{description} contains a non-finite JSON number: {value}"
+            )
+
+        value = json.loads(
+            text,
+            object_pairs_hook=object_pairs,
+            parse_constant=reject_constant,
+        )
+    except ProviderSdkUnavailable:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ProviderSdkUnavailable(f"{description} is not valid JSON") from exc
     if type(value) is not dict:
         raise ProviderSdkUnavailable(f"{description} must contain a JSON object")
@@ -236,98 +328,129 @@ def _dependency_version(root_manifest: dict[str, object], package_name: str) -> 
     return None
 
 
-def resolve_provider_sdk(
-    compatibility_cell: PlatformCompatibility,
-    sdk_root: str | os.PathLike[str],
-    *,
-    sdk_pin: SdkPin | None = None,
-    runtime_executable: str | os.PathLike[str] | None = None,
-) -> ProviderSdkResolution:
-    """Verify and resolve one exact provider package without starting it.
+@dataclass(frozen=True, slots=True)
+class _ProviderSdkInspection:
+    provider: WorkerProvider
+    platform: Platform
+    profile: BackendProtocolProfile
+    record: BackendVersionQualificationRecord | None
+    root: Path
+    package_root: Path
+    entrypoint: Path
+    version: str
+    integrity: str
+    status: BackendVersionProbeStatus
+    reason: str
 
-    ``sdk_root`` is deliberately explicit.  It may be an npm project root
-    containing ``node_modules`` or the package directory itself.  No registry
-    lookup or ``@latest`` resolution is performed.
-    """
 
-    if type(compatibility_cell) is not PlatformCompatibility:
-        raise TypeError("compatibility_cell must be a PlatformCompatibility")
-    provider = _provider_for_cell(compatibility_cell)
-    spec = _PROVIDER_SDK_SPECS[provider]
-    if sdk_pin is not None:
-        if type(sdk_pin) is not SdkPin:
-            raise TypeError("sdk_pin must be an SdkPin or null")
-        if (
-            sdk_pin.name != spec.package_name
-            or sdk_pin.version != spec.version
-            or sdk_pin.shasum != spec.shasum
-        ):
-            raise ProviderSdkUnavailable("provider SDK pin does not match the admitted M1 pin")
+def _profile_for_cell(
+    cell: PlatformCompatibility,
+    registry: BackendVersionRegistry,
+) -> tuple[WorkerProvider, Provider, BackendProtocolProfile]:
+    worker = _provider_for_cell(cell)
+    provider = _CONTRACT_PROVIDERS[worker]
+    try:
+        profile = registry.profile_for_protocol(
+            provider,
+            cell.launch_profile.protocol,
+        )
+    except KeyError as exc:
+        raise ProviderSdkUnavailable(
+            "backend launch protocol has no admitted adapter profile"
+        ) from exc
+    return worker, provider, profile
 
-    root = _safe_absolute_directory(sdk_root, "provider SDK root")
+
+def _provider_package_root(
+    root: Path,
+    profile: BackendProtocolProfile,
+) -> tuple[Path, dict[str, object] | None]:
     direct_manifest_path = root / "package.json"
     direct_manifest = (
         _read_json_object(direct_manifest_path, "provider SDK package.json")
         if direct_manifest_path.is_file()
         else None
     )
-    if direct_manifest is not None and direct_manifest.get("name") == spec.package_name:
-        package_root = root
-    else:
-        package_candidate = root / "node_modules" / Path(spec.package_name)
-        if not package_candidate.exists() or not package_candidate.is_dir():
-            raise ProviderSdkUnavailable(
-                f"provider SDK package {spec.package_name}@{spec.version} is not "
-                "installed under the explicit root"
-            )
-        if package_candidate.is_symlink():
-            raise ProviderSdkUnavailable("provider SDK package directory must not be a link")
-        package_root = package_candidate.resolve(strict=True)
-        try:
-            package_root.relative_to(root)
-        except ValueError as exc:
-            raise ProviderSdkUnavailable(
-                "provider SDK package escapes the explicit root"
-            ) from exc
+    if direct_manifest is not None and direct_manifest.get("name") == profile.package_name:
+        return root, direct_manifest
 
+    package_candidate = root / "node_modules" / Path(profile.package_name)
+    if not package_candidate.exists() or not package_candidate.is_dir():
+        raise ProviderSdkUnavailable(
+            f"provider SDK package {profile.package_name} is not installed under "
+            "the explicit root"
+        )
+    if package_candidate.is_symlink():
+        raise ProviderSdkUnavailable("provider SDK package directory must not be a link")
+    package_root = package_candidate.resolve(strict=True)
+    try:
+        package_root.relative_to(root)
+    except ValueError as exc:
+        raise ProviderSdkUnavailable(
+            "provider SDK package escapes the explicit root"
+        ) from exc
+    return package_root, direct_manifest
+
+
+def _inspect_provider_sdk(
+    compatibility_cell: PlatformCompatibility,
+    sdk_root: str | os.PathLike[str],
+    *,
+    registry: BackendVersionRegistry,
+) -> _ProviderSdkInspection:
+    worker, provider, profile = _profile_for_cell(compatibility_cell, registry)
+    root = _safe_absolute_directory(sdk_root, "provider SDK root")
+    package_root, direct_manifest = _provider_package_root(root, profile)
     package_manifest = _read_json_object(
         package_root / "package.json", "provider SDK package.json"
     )
-    if package_manifest.get("name") != spec.package_name:
-        raise ProviderSdkUnavailable("provider SDK package name does not match the admitted pin")
-    if package_manifest.get("version") != spec.version:
+    if package_manifest.get("name") != profile.package_name:
         raise ProviderSdkUnavailable(
-            f"provider SDK version drift: expected {spec.version}, "
-            f"found {package_manifest.get('version')!r}"
+            "provider SDK package name does not match the protocol profile"
         )
-    if _dependency_version(direct_manifest or {}, spec.package_name) not in (None, spec.version):
-        raise ProviderSdkUnavailable("provider SDK dependency must use the exact pinned version")
+    installed_version = package_manifest.get("version")
+    if type(installed_version) is not str or not VERSION_RE.fullmatch(installed_version):
+        raise ProviderSdkUnavailable(
+            "provider SDK package version is not an exact semantic version"
+        )
+    declared = _dependency_version(direct_manifest or {}, profile.package_name)
+    if declared not in (None, installed_version):
+        raise ProviderSdkUnavailable(
+            "provider SDK version drift: dependency must use the exact pinned version"
+        )
 
     bin_value = package_manifest.get("bin")
     if type(bin_value) is str:
-        bin_target = bin_value if spec.bin_name == Path(spec.package_name).name else None
+        bin_target = (
+            bin_value
+            if profile.bin_name == Path(profile.package_name).name
+            else None
+        )
     elif type(bin_value) is dict:
-        bin_target = bin_value.get(spec.bin_name)
+        bin_target = bin_value.get(profile.bin_name)
     else:
         bin_target = None
-    if bin_target != spec.entrypoint:
+    if bin_target != profile.entrypoint:
         raise ProviderSdkUnavailable(
-            "provider SDK executable entrypoint does not match the pinned package"
+            "provider SDK executable entrypoint does not match the protocol profile"
         )
     if type(bin_target) is not str or "\x00" in bin_target:
         raise ProviderSdkUnavailable("provider SDK executable entrypoint is invalid")
     entrypoint_candidate = package_root / bin_target
     if not entrypoint_candidate.is_file() or entrypoint_candidate.is_symlink():
-        raise ProviderSdkUnavailable("provider SDK executable entrypoint is missing or is a link")
+        raise ProviderSdkUnavailable(
+            "provider SDK executable entrypoint is missing or is a link"
+        )
     entrypoint = entrypoint_candidate.resolve(strict=True)
     try:
         entrypoint.relative_to(package_root)
     except ValueError as exc:
-        raise ProviderSdkUnavailable("provider SDK entrypoint escapes its package root") from exc
+        raise ProviderSdkUnavailable(
+            "provider SDK entrypoint escapes its package root"
+        ) from exc
 
     lock_path = root / "package-lock.json"
     if not lock_path.is_file() and package_root.parent.parent.parent.exists():
-        # A package-directory root may be nested in a conventional npm tree.
         candidate = package_root.parent.parent.parent / "package-lock.json"
         if candidate.is_file():
             lock_path = candidate
@@ -338,27 +461,179 @@ def resolve_provider_sdk(
     lock = _read_json_object(lock_path, "provider SDK package-lock.json")
     lock_entry = _package_lock_entry(
         lock,
-        spec.package_name,
+        profile.package_name,
         package_root,
         lock_path.parent.resolve(strict=True),
     )
     if lock_entry is None:
-        raise ProviderSdkUnavailable("package-lock.json has no entry for the provider SDK")
-    if lock_entry.get("version") != spec.version:
         raise ProviderSdkUnavailable(
-            "package-lock provider version does not match the admitted pin"
+            "package-lock.json has no entry for the provider SDK"
         )
-    if lock_entry.get("integrity") != spec.integrity:
+    if lock_entry.get("version") != installed_version:
         raise ProviderSdkUnavailable(
-            "package-lock provider integrity does not match the official pin"
+            "package-lock provider version does not match package.json"
+        )
+    observed_integrity = lock_entry.get("integrity")
+    if (
+        type(observed_integrity) is not str
+        or not NPM_INTEGRITY_RE.fullmatch(observed_integrity)
+    ):
+        raise ProviderSdkUnavailable(
+            "package-lock provider integrity is missing or invalid"
         )
     root_lock = lock.get("packages")
     if type(root_lock) is dict and type(root_lock.get("")) is dict:
-        declared = _dependency_version(root_lock[""], spec.package_name)
-        if declared not in (None, spec.version):
+        locked_declaration = _dependency_version(root_lock[""], profile.package_name)
+        if locked_declaration not in (None, installed_version):
             raise ProviderSdkUnavailable(
                 "package-lock root dependency is not exactly pinned"
             )
+
+    record = registry.record(provider, compatibility_cell.platform, installed_version)
+    status = BackendVersionProbeStatus.UNKNOWN
+    reason = "backend version has no qualification record"
+    if record is not None:
+        if record.protocol_profile != profile.profile_id:
+            status = BackendVersionProbeStatus.DRIFT
+            reason = "backend protocol profile does not match its qualification record"
+        elif record.launch_profile_digest != compatibility_cell.launch_profile_digest:
+            status = BackendVersionProbeStatus.DRIFT
+            reason = "backend launch profile does not match its qualification record"
+        elif record.package_integrity != observed_integrity:
+            status = BackendVersionProbeStatus.DRIFT
+            reason = "backend package integrity does not match its qualification record"
+        elif record.status is BackendVersionStatus.CANDIDATE:
+            status = BackendVersionProbeStatus.CANDIDATE
+            reason = "backend version is a candidate and cannot dispatch"
+        elif record.status is BackendVersionStatus.QUARANTINED:
+            status = BackendVersionProbeStatus.QUARANTINED
+            reason = "backend version is quarantined"
+        else:
+            status = BackendVersionProbeStatus.QUALIFIED
+            reason = "exact backend version and protocol profile are qualified"
+    return _ProviderSdkInspection(
+        worker,
+        compatibility_cell.platform,
+        profile,
+        record,
+        root,
+        package_root,
+        entrypoint,
+        installed_version,
+        observed_integrity,
+        status,
+        reason,
+    )
+
+
+def probe_provider_sdk(
+    compatibility_cell: PlatformCompatibility,
+    sdk_root: str | os.PathLike[str],
+    *,
+    registry: BackendVersionRegistry | None = None,
+) -> BackendVersionProbeResult:
+    """Inspect one exact local backend package without launching the provider."""
+
+    if type(compatibility_cell) is not PlatformCompatibility:
+        raise TypeError("compatibility_cell must be a PlatformCompatibility")
+    if registry is not None and type(registry) is not BackendVersionRegistry:
+        raise TypeError("registry must be a BackendVersionRegistry or null")
+    selected_registry = registry or load_bundled_backend_version_registry()
+    inspected = _inspect_provider_sdk(
+        compatibility_cell,
+        sdk_root,
+        registry=selected_registry,
+    )
+    record = inspected.record
+    return BackendVersionProbeResult(
+        provider=inspected.provider,
+        platform=inspected.platform,
+        package_name=inspected.profile.package_name,
+        backend_version=inspected.version,
+        protocol_profile=inspected.profile.profile_id,
+        protocol=inspected.profile.protocol,
+        launch_profile_digest=compatibility_cell.launch_profile_digest,
+        observed_integrity=inspected.integrity,
+        status=inspected.status,
+        enabled_for_dispatch=inspected.status is BackendVersionProbeStatus.QUALIFIED,
+        max_concurrency=0 if record is None else record.max_concurrency,
+        evidence_digest=None if record is None else record.evidence_digest,
+        reason=inspected.reason,
+    )
+
+
+def resolve_provider_sdk(
+    compatibility_cell: PlatformCompatibility,
+    sdk_root: str | os.PathLike[str],
+    *,
+    sdk_pin: SdkPin | None = None,
+    runtime_executable: str | os.PathLike[str] | None = None,
+    registry: BackendVersionRegistry | None = None,
+    requested_concurrency: int = 1,
+) -> ProviderSdkResolution:
+    """Verify and resolve one exact provider package without starting it.
+
+    ``sdk_root`` is deliberately explicit.  It may be an npm project root
+    containing ``node_modules`` or the package directory itself.  No registry
+    lookup or ``@latest`` resolution is performed.
+    """
+
+    if type(compatibility_cell) is not PlatformCompatibility:
+        raise TypeError("compatibility_cell must be a PlatformCompatibility")
+    if registry is not None and type(registry) is not BackendVersionRegistry:
+        raise TypeError("registry must be a BackendVersionRegistry or null")
+    if type(requested_concurrency) is not int or isinstance(
+        requested_concurrency, bool
+    ) or requested_concurrency < 1:
+        raise ValueError("requested_concurrency must be a positive integer")
+    selected_registry = registry or load_bundled_backend_version_registry()
+    if sdk_pin is not None:
+        if type(sdk_pin) is not SdkPin:
+            raise TypeError("sdk_pin must be an SdkPin or null")
+        _, provider, profile = _profile_for_cell(
+            compatibility_cell,
+            selected_registry,
+        )
+        pinned_record = selected_registry.record(
+            provider,
+            compatibility_cell.platform,
+            sdk_pin.version,
+        )
+        if pinned_record is None:
+            raise ProviderSdkUnavailable(
+                "provider SDK pin does not match the admitted M1 pin"
+            )
+        pinned_spec = _spec_from_record(profile, pinned_record)
+        if (
+            sdk_pin.name != pinned_spec.package_name
+            or sdk_pin.version != pinned_spec.version
+            or sdk_pin.shasum != pinned_spec.shasum
+        ):
+            raise ProviderSdkUnavailable(
+                "provider SDK pin does not match the admitted M1 pin"
+            )
+    inspected = _inspect_provider_sdk(
+        compatibility_cell,
+        sdk_root,
+        registry=selected_registry,
+    )
+    if inspected.status is not BackendVersionProbeStatus.QUALIFIED:
+        raise ProviderSdkUnavailable(inspected.reason)
+    record = inspected.record
+    assert record is not None
+    if requested_concurrency > record.max_concurrency:
+        raise ProviderSdkUnavailable(
+            "requested concurrency exceeds the exact backend version qualification"
+        )
+    provider = inspected.provider
+    spec = _spec_from_record(inspected.profile, record)
+    if sdk_pin is not None:
+        if (
+            sdk_pin.name != spec.package_name
+            or sdk_pin.version != spec.version
+            or sdk_pin.shasum != spec.shasum
+        ):
+            raise ProviderSdkUnavailable("provider SDK pin does not match the admitted M1 pin")
 
     runtime_name = spec.runtime
     runtime_raw = (
@@ -384,8 +659,9 @@ def resolve_provider_sdk(
         spec.version,
         spec.shasum,
         spec.integrity,
-        package_root,
-        entrypoint,
+        spec.protocol_profile,
+        inspected.package_root,
+        inspected.entrypoint,
         runtime,
     )
 
@@ -452,6 +728,8 @@ class WishBuilderBackendAttemptChannelFactory:
         state_root: str | os.PathLike[str] | None = None,
         sdk_pin: SdkPin | None = None,
         runtime_executable: str | os.PathLike[str] | None = None,
+        registry: BackendVersionRegistry | None = None,
+        requested_concurrency: int = 1,
         channel_constructors: Mapping[
             WorkerProvider, Callable[[object], BackendChannelPort]
         ]
@@ -473,11 +751,19 @@ class WishBuilderBackendAttemptChannelFactory:
             channel_constructors, Mapping
         ):
             raise TypeError("channel_constructors must be a mapping or null")
+        if registry is not None and type(registry) is not BackendVersionRegistry:
+            raise TypeError("registry must be a BackendVersionRegistry or null")
+        if type(requested_concurrency) is not int or isinstance(
+            requested_concurrency, bool
+        ) or requested_concurrency < 1:
+            raise ValueError("requested_concurrency must be a positive integer")
         self._cell = compatibility_cell
         self._sdk_root = selected_root
         self._state_root = state_path
         self._sdk_pin = sdk_pin
         self._runtime_executable = runtime_executable
+        self._registry = registry
+        self._requested_concurrency = requested_concurrency
         self._constructors = dict(channel_constructors or {})
         self._lock = threading.RLock()
 
@@ -488,11 +774,6 @@ class WishBuilderBackendAttemptChannelFactory:
             f"{self._cell.capabilities.provider.value}/"
             f"{self._cell.platform.value}"
         )
-        if not self._cell.qualification.enabled_for_dispatch:
-            raise BackendDispatchUnavailable(
-                f"backend dispatch is unavailable for {target}: "
-                "enabledForDispatch=false"
-            )
         if self._sdk_root is None:
             raise ProviderSdkUnavailable(
                 f"backend dispatch is unavailable for {target}: "
@@ -505,6 +786,8 @@ class WishBuilderBackendAttemptChannelFactory:
                 self._sdk_root,
                 sdk_pin=self._sdk_pin,
                 runtime_executable=self._runtime_executable,
+                registry=self._registry,
+                requested_concurrency=self._requested_concurrency,
             )
         state_root = self._state_root
         if state_root is None:
@@ -1586,9 +1869,12 @@ __all__ = [
     "AttemptOperationRoute",
     "AttemptBackendChannelRouter",
     "BackendDispatchUnavailable",
+    "BackendVersionProbeResult",
+    "BackendVersionProbeStatus",
     "ProviderSdkResolution",
     "ProviderSdkUnavailable",
     "RoutingClock",
+    "probe_provider_sdk",
     "resolve_provider_sdk",
     "WishBuilderBackendAttemptChannelFactory",
 ]

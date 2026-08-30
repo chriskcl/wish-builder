@@ -683,7 +683,7 @@ class AttemptBackendChannelRouterTests(unittest.TestCase):
         self.assertEqual([], factory.created_for)
         self.assertEqual([], factory.calls)
 
-    def test_backend_factory_rejects_disabled_qualification_without_effects(
+    def test_backend_factory_ignores_legacy_enable_bit_but_requires_sdk_root(
         self,
     ) -> None:
         cell = load_bundled_compatibility().platform(
@@ -697,7 +697,7 @@ class AttemptBackendChannelRouterTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             BackendDispatchUnavailable,
-            "codex/linux: enabledForDispatch=false",
+            "codex/linux: no Wish Builder provider adapter is installed",
         ):
             factory(self.attempts[0])
 

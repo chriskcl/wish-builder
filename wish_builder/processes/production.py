@@ -65,7 +65,6 @@ from wish_builder.contracts.compatibility import (
     Platform,
     PlatformCompatibility,
     Provider,
-    SdkPin,
 )
 from wish_builder.contracts.manifest_v2 import ExecutionManifestV2, ManifestTask
 from wish_builder.contracts.models import HASH_RE
@@ -646,16 +645,6 @@ def _compatibility_cell(manifest: ExecutionManifestV2) -> PlatformCompatibility:
     return bundle.platform(provider, platform)
 
 
-def _provider_sdk_pin(manifest: ExecutionManifestV2) -> SdkPin:
-    provider = _COMPATIBILITY_PROVIDERS.get(manifest.provider)
-    if provider is None:
-        raise RuntimeError("the manifest provider is outside the M1 matrix")
-    bundle = load_bundled_compatibility()
-    return next(
-        entry.sdk for entry in bundle.providers if entry.provider is provider
-    )
-
-
 def _bridge_command() -> tuple[str, str]:
     executable = shutil.which("node")
     if executable is None:
@@ -1100,7 +1089,7 @@ class ProductionForegroundRunComponents:
                     {
                         "provider_sdk_root": sdk_root.resolve(strict=False),
                         "state_root": layout.run_root / "provider-state",
-                        "sdk_pin": _provider_sdk_pin(manifest),
+                        "requested_concurrency": manifest.max_concurrency,
                     }
                 )
             channel_factory = WishBuilderBackendAttemptChannelFactory(

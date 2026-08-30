@@ -7,6 +7,14 @@ from importlib.resources import files
 from wish_builder.compatibility._backend_qualification_pin import (
     BACKEND_QUALIFICATION_DIGESTS,
 )
+from wish_builder.compatibility._backend_version_registry_pin import (
+    BACKEND_VERSION_REGISTRY_DIGEST,
+)
+from wish_builder.contracts.backend_registry import BackendVersionRegistry
+from wish_builder.contracts.backend_registry_decoder import (
+    BackendRegistryDecodeError,
+    decode_backend_version_registry_bytes,
+)
 from wish_builder.contracts.compatibility import (
     SUPPORTED_TRELLIS_VERSION,
     BackendQualificationBundle,
@@ -137,6 +145,36 @@ def load_bundled_backend_qualification(
     )
 
 
+def bundled_backend_version_registry_bytes() -> bytes:
+    return _resource_bytes("backend-version-registry.json", "backend-version-registry")
+
+
+def admit_bundled_backend_version_registry_bytes(
+    raw: bytes,
+) -> BackendVersionRegistry:
+    """Admit the backend version matrix only when bytes and trust pin agree."""
+
+    try:
+        registry = decode_backend_version_registry_bytes(raw)
+    except BackendRegistryDecodeError as exc:
+        raise BundledCompatibilityError(str(exc)) from exc
+    if registry.registry_digest != BACKEND_VERSION_REGISTRY_DIGEST:
+        raise BundledCompatibilityError(
+            "bundled backend version registry digest does not match the compiled trust pin"
+        )
+    if raw != registry.canonical_json_bytes():
+        raise BundledCompatibilityError(
+            "bundled backend version registry bytes are not in canonical form"
+        )
+    return registry
+
+
+def load_bundled_backend_version_registry() -> BackendVersionRegistry:
+    return admit_bundled_backend_version_registry_bytes(
+        bundled_backend_version_registry_bytes()
+    )
+
+
 def bundled_compatibility_bytes(
     trellis_version: str = DEFAULT_TRELLIS_VERSION,
 ) -> bytes:
@@ -181,16 +219,20 @@ __all__ = [
     "BUNDLED_BACKEND_QUALIFICATION_DIGESTS",
     "BUNDLED_COMPATIBILITY_DIGESTS",
     "BUNDLED_TRELLIS_COMPATIBILITY_DIGESTS",
+    "BACKEND_VERSION_REGISTRY_DIGEST",
     "DEFAULT_TRELLIS_VERSION",
     "BundledCompatibilityError",
     "admit_backend_qualification_for_trellis",
     "admit_bundled_backend_qualification_bytes",
+    "admit_bundled_backend_version_registry_bytes",
     "admit_bundled_compatibility_bytes",
     "admit_bundled_trellis_compatibility_bytes",
     "bundled_backend_qualification_bytes",
+    "bundled_backend_version_registry_bytes",
     "bundled_compatibility_bytes",
     "bundled_trellis_compatibility_bytes",
     "load_bundled_backend_qualification",
+    "load_bundled_backend_version_registry",
     "load_bundled_compatibility",
     "load_bundled_trellis_compatibility",
 ]

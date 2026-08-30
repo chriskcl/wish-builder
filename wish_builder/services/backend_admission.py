@@ -8,7 +8,12 @@ from enum import StrEnum
 
 from wish_builder.compatibility import (
     load_bundled_compatibility,
+    load_bundled_backend_version_registry,
     load_bundled_trellis_compatibility,
+)
+from wish_builder.contracts.backend_registry import (
+    BackendVersionRegistry,
+    BackendVersionStatus,
 )
 from wish_builder.contracts.compatibility import (
     CompatibilityBundle,
@@ -154,6 +159,10 @@ def admit_backend(
     *,
     bundle: CompatibilityBundle | None = None,
     platform: Platform | None = None,
+    registry: BackendVersionRegistry | None = None,
+    backend_version: str | None = None,
+    package_integrity: str | None = None,
+    protocol_profile: str | None = None,
 ) -> BackendAdmissionResult:
     """Admit exactly one qualified provider/platform cell with matching digests."""
 
@@ -161,6 +170,8 @@ def admit_backend(
         raise TypeError("manifest must be an ExecutionManifestV2")
     if bundle is not None and type(bundle) is not CompatibilityBundle:
         raise TypeError("bundle must be a CompatibilityBundle or null")
+    if registry is not None and type(registry) is not BackendVersionRegistry:
+        raise TypeError("registry must be a BackendVersionRegistry or null")
     if platform is not None and type(platform) is not Platform:
         raise TypeError("platform must be a Platform or null")
     selected_platform = current_platform() if platform is None else platform
@@ -206,6 +217,73 @@ def admit_backend(
             BackendAdmissionReason.DISPATCH_NOT_QUALIFIED,
             cell,
         )
+    # Explicit bundles without a version registry retain the legacy admission
+    # path for compatibility fixtures and historical evidence verification.
+    # Production calls use the independently pinned version registry below.
+    if bundle is None or registry is not None or backend_version is not None:
+        selected_registry = registry or load_bundled_backend_version_registry()
+        exact_values = (backend_version, package_integrity, protocol_profile)
+        if any(value is not None for value in exact_values) and not all(
+            type(value) is str and bool(value) for value in exact_values
+        ):
+            return BackendAdmissionResult(
+                False,
+                BackendAdmissionReason.QUALIFICATION_EVIDENCE_MISMATCH,
+                cell,
+            )
+        records = tuple(
+            item
+            for item in selected_registry.records
+            if item.provider is provider
+            and item.platform is selected_platform
+            and (
+                backend_version is None or item.backend_version == backend_version
+            )
+        )
+        qualified = []
+        for record in records:
+            try:
+                profile = selected_registry.profile(record.protocol_profile)
+            except KeyError:
+                continue
+            if (
+                record.status is BackendVersionStatus.QUALIFIED
+                and record.launch_profile_digest == cell.launch_profile_digest
+                and profile.provider is provider
+                and profile.protocol == cell.launch_profile.protocol
+                and (
+                    package_integrity is None
+                    or record.package_integrity == package_integrity
+                )
+                and (
+                    protocol_profile is None
+                    or record.protocol_profile == protocol_profile
+                )
+            ):
+                qualified.append(record)
+        if not qualified:
+            return BackendAdmissionResult(
+                False,
+                BackendAdmissionReason.DISPATCH_NOT_QUALIFIED,
+                cell,
+            )
+        if not any(
+            manifest.max_concurrency <= item.max_concurrency for item in qualified
+        ):
+            return BackendAdmissionResult(
+                False,
+                BackendAdmissionReason.CONCURRENCY_NOT_QUALIFIED,
+                cell,
+            )
+        trellis = load_bundled_trellis_compatibility()
+        if trellis.compatibility_digest != selected_bundle.trellis_compatibility_digest:
+            return BackendAdmissionResult(
+                False,
+                BackendAdmissionReason.QUALIFICATION_EVIDENCE_MISMATCH,
+                cell,
+            )
+        return BackendAdmissionResult(True, BackendAdmissionReason.NONE, cell)
+
     qualification = _revalidate_qualification(cell.qualification)
     if qualification is None:
         return BackendAdmissionResult(
