@@ -1035,6 +1035,13 @@ class JsonlRpcBackendChannel:
 
     def _on_frame(self, frame: dict[str, object]) -> None:
         event_type = frame.get("type")
+        if event_type not in {
+            "agent_end",
+            "agent_settled",
+            "agent_start",
+            "turn_start",
+        }:
+            return
         if event_type == "agent_end":
             self._last_agent_end = dict(frame)
         terminal_frame: dict[str, object] | None = None

@@ -135,6 +135,7 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
         prompt_response_after_start: bool = False,
         abort_response_after_terminal: bool = False,
         barrier_directory: Path | None = None,
+        startup_event_before_response: bool = False,
     ) -> JsonlRpcBackendChannel:
         config = JsonlRpcBackendConfig(
             capabilities(provider),
@@ -155,6 +156,10 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
                 (
                     "FAKE_RPC_BARRIER_DIRECTORY",
                     str(barrier_directory) if barrier_directory is not None else "",
+                ),
+                (
+                    "FAKE_RPC_STARTUP_EVENT_BEFORE_RESPONSE",
+                    "1" if startup_event_before_response else "0",
                 ),
             ),
             handshake_timeout_seconds=5,
@@ -248,6 +253,24 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
                 )
                 session_files = tuple((self.root / f"state-{index}" / "provider-session").glob("*.jsonl"))
                 self.assertEqual(1, len(session_files))
+
+    def test_oh_my_pi_startup_events_do_not_block_handshake_responses(self) -> None:
+        channel = self.channel(
+            WorkerProvider.OH_MY_PI,
+            startup_event_before_response=True,
+        )
+        reserve, _, _ = self.commands(WorkerProvider.OH_MY_PI)
+
+        reserved = channel.reserve(
+            prepared_effect(
+                self.identity,
+                reserve,
+                EffectOperation.RESERVE_CHANNEL,
+                1,
+            )
+        )
+
+        self.assertEqual(EffectStatus.APPLIED, reserved.status)
 
     def test_active_cancel_updates_send_and_cancel_observations(self) -> None:
         channel = self.channel(
