@@ -1,5 +1,10 @@
 """Public M1 contracts and strict admission decoder."""
 
+from .backend_registry import *  # noqa: F403
+from .backend_registry import __all__ as _backend_registry_exports
+from .backend_registry_decoder import *  # noqa: F403
+from .backend_registry_decoder import __all__ as _backend_registry_decoder_exports
+
 from .compatibility import *  # noqa: F403
 from .compatibility import __all__ as _compatibility_exports
 from .compatibility_decoder import *  # noqa: F403
@@ -82,6 +87,8 @@ __all__ = [
     "decode_manifest_primitive",
     "strict_decode_manifest",
     "is_execution_manifest_model",
+    *_backend_registry_exports,
+    *_backend_registry_decoder_exports,
     *_compatibility_exports,
     *_compatibility_decoder_exports,
     *_manifest_v2_exports,

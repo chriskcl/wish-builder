@@ -23,6 +23,14 @@ from .backend_admission import (
     admit_backend,
     current_platform,
 )
+from .backend_version_registry import (
+    BackendVersionRegistryUpdateError,
+    backend_version_registry_pin_bytes,
+    prepare_backend_version_candidate,
+    prepare_backend_version_qualification,
+    prepare_backend_version_quarantine,
+    publish_backend_version_registry,
+)
 from .execution_checkpoints import (
     ExecutionCheckpointPublisher,
     ExecutionCheckpointReason,
@@ -126,6 +134,7 @@ __all__ = [
     "AttemptReconciliationStatus",
     "BackendAdmissionReason",
     "BackendAdmissionResult",
+    "BackendVersionRegistryUpdateError",
     "CoordinatorLeaseService",
     "CoordinatorLeaseState",
     "DecisionCommitResult",
@@ -195,4 +204,9 @@ __all__ = [
     "recover_coordinator_lease",
     "project_pending_external_effects",
     "advance_external_effect_projection",
+    "backend_version_registry_pin_bytes",
+    "prepare_backend_version_candidate",
+    "prepare_backend_version_qualification",
+    "prepare_backend_version_quarantine",
+    "publish_backend_version_registry",
 ]

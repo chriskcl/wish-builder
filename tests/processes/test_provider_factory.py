@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from wish_builder.adapters.fakes import FakeBackendChannelPort
 
+import dataclasses
 import json
 import tempfile
 import unittest
@@ -16,10 +17,14 @@ from tests.contracts.test_compatibility_v2 import (
 )
 from tests.processes.test_production_routing import attempt_identity, attempt_worktree
 from wish_builder.contracts import (
+    BackendVersionRegistry,
+    BackendVersionStatus,
     QUALIFICATION_ARTIFACT_SCHEMA_VERSION,
     WorkerProvider,
+    canonical_sha256,
     decode_compatibility_bundle_primitive,
 )
+from wish_builder.compatibility import load_bundled_backend_version_registry
 from wish_builder.contracts.compatibility import Platform, Provider
 from wish_builder.processes.production_routing import (
     ProviderSdkUnavailable,
@@ -65,6 +70,35 @@ SDK_FIXTURES = {
         OMP_INTEGRITY,
     ),
 }
+
+
+def qualified_registry(selected_provider: Provider, platform: Platform):
+    bundled = load_bundled_backend_version_registry()
+    records = tuple(
+        dataclasses.replace(
+            item,
+            status=BackendVersionStatus.QUALIFIED,
+            max_concurrency=2,
+            evidence_digest="sha256:" + "1" * 64,
+            publication_receipt_digest="sha256:" + "2" * 64,
+            review_reference="test-review:provider-factory",
+            note="Test-only qualified backend version.",
+        )
+        if item.provider is selected_provider and item.platform is platform
+        else item
+        for item in bundled.records
+    )
+    body = {
+        "profiles": [item.to_primitive() for item in bundled.profiles],
+        "records": [item.to_primitive() for item in records],
+        "schemaVersion": bundled.schema_version,
+    }
+    return BackendVersionRegistry(
+        schema_version=bundled.schema_version,
+        profiles=bundled.profiles,
+        records=records,
+        registry_digest="sha256:" + canonical_sha256(body),
+    )
 
 
 def enabled_cell(selected_provider: Provider):
@@ -186,11 +220,13 @@ class ProviderFactoryTests(unittest.TestCase):
 
     def factory(self, provider: Provider = Provider.CODEX, **overrides):
         runtime = self.bun_runtime if provider is Provider.OMP else self.node_runtime
+        cell = enabled_cell(provider)
         values = {
-            "compatibility_cell": enabled_cell(provider),
+            "compatibility_cell": cell,
             "provider_sdk_root": self.sdk_root,
             "state_root": self.state_root,
             "runtime_executable": runtime,
+            "registry": qualified_registry(provider, cell.platform),
         }
         values.update(overrides)
         return WishBuilderBackendAttemptChannelFactory(**values)

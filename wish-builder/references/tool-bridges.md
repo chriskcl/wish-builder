@@ -153,8 +153,9 @@ writing, and fail closed on conflicts or unknown outcomes. Trellis `0.6.15` prov
 cross-process compare-and-swap (CAS). This procedure protects projection integrity; it is not a
 dispatcher lock and does not qualify a backend. Backend workers never write Trellis, so backend
 qualification is evaluated from backend evidence independently of projection CAS. Final dispatch
-admission for active `wish_builder` dispatch requires an enabled backend/OS cell bound to the
-pinned Trellis compatibility digest; it does not inspect projection CAS. Keep projection to one
+admission for active `wish_builder` dispatch requires a qualified exact backend/OS/version record
+bound to the stable adapter baseline and pinned Trellis compatibility digest; it does not inspect
+projection CAS. Keep projection to one
 writer unless a future Trellis release provides a separately qualified concurrent-write boundary.
 The future `trellis` scheduler does not use those Agent backend/OS cells; it remains outside
 manifest v2 until its own pre-launch admission, fencing, stop/reject, and concurrent-write
@@ -210,11 +211,14 @@ The active combination and deferred design boundary are:
 | `trellis` | `trellis` | No; future schema only | No; pre-launch admission, identity, fencing, stop/reject behavior, and CAS are unqualified | Trellis |
 | `trellis` | `pi`, `oh_my_pi`, or `codex` | No | No | None; reject Gate B |
 | `wish_builder` | `trellis` | No | No | None; reject Gate B |
-| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Yes | `Codex / Windows` only, at concurrency 1-2; the other five cells remain disabled | Wish Builder |
+| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Yes | Exact `Codex 0.149.0 / Windows` only, at concurrency 1-2; all other bundled versions are candidates | Wish Builder |
 
-The current Python control plane implements only `scheduler_mode=wish_builder`. Its bundled record
-admits the locally published `Codex / Windows` cell at concurrency one or two. It returns
-`concurrency_not_qualified` for concurrency above two and `dispatch_not_qualified` for any other cell before launching a worker.
+The current Python control plane implements only `scheduler_mode=wish_builder`. It first probes the
+installed package, then admits only an exact qualified registry record whose version, npm
+integrity, protocol profile, launch profile, OS, and requested concurrency match. The bundled
+registry admits `Codex 0.149.0 / Windows` at concurrency one or two. It returns
+`concurrency_not_qualified` for concurrency above two and `dispatch_not_qualified` for unknown,
+candidate, quarantined, drifted, or otherwise unqualified versions before launching a worker.
 This local publication uses human-accepted detached provider provenance; it is not an
 OpenAI-signed attestation.
 The `trellis + trellis` row is a future design boundary and is not schema-valid in active M1.
@@ -261,12 +265,16 @@ recording a policy change, and repeating Gate B.
 ## Compatibility Rules
 
 - Treat Trellis package compatibility and backend dispatch qualification as independent records.
-  `wish_builder/compatibility/trellis-0.6.15.json` qualifies import and single-writer projection;
-  `wish_builder/compatibility/backend-qualification-0.6.15.json` controls the exact backend/OS
-  dispatch cells and references the exact Trellis compatibility digest used to create the frozen
-  graph. Final dispatch admission requires both records to pass their own checks.
-- For active `wish_builder` dispatch, keep each `enabledForDispatch` cell false until that backend/OS cell has complete live evidence
-  and the evidence has been independently verified and published. Projection CAS is not a backend
+  `wish_builder/compatibility/trellis-0.6.15.json` qualifies import and single-writer projection.
+  `wish_builder/compatibility/backend-qualification-0.6.15.json` is the stable adapter policy,
+  capability, launch-profile, and historical-evidence baseline.
+  `wish_builder/compatibility/backend-version-registry.json` controls exact backend/OS/version
+  dispatch and is independently digest-pinned. Final dispatch admission requires the Trellis
+  record, stable backend baseline, and exact version record to agree.
+- For active `wish_builder` dispatch, keep every new exact version at `status=candidate` until it
+  has complete live evidence and that evidence has been independently reviewed and published as
+  `qualified`. Unknown, candidate, quarantined, mismatched, and floating versions fail closed.
+  Projection CAS is not a backend
   admission condition. Future `trellis + trellis` does not use an Agent backend/OS cell; it
   separately requires a later manifest schema, qualified pre-launch admission, fencing,
   stop/reject behavior, and concurrent-write ownership.
@@ -279,3 +287,34 @@ recording a policy change, and repeating Gate B.
 - Keep the manifest schema versioned. Reject a newer unsupported schema instead of guessing.
 - Record tool versions, `scheduler_mode`, and `worker_backend` in the parent decision log so a
   resumed agent can reproduce the run.
+
+### Backend Version Qualification
+
+Keep the execution kernel dependent only on the stable Channel operations: create or resume a
+session, dispatch a task, query status, cancel, reconcile after a crash, and clean up processes and
+worktrees. Codex, Pi, and Oh My Pi command details belong in their adapters. Reuse one adapter
+across compatible package versions; create a new protocol profile only when the wire protocol is
+actually incompatible.
+
+Use `wishctl.py backend-probe --provider <provider> --provider-sdk-root <absolute-path>` to inspect
+an installed package without launching it. The probe returns the observed exact version,
+integrity, protocol profile, launch profile, OS status, and concurrency limit. It returns success
+only for a qualified record.
+
+New versions follow one route:
+
+```text
+detect exact version
+  -> run isolated adapter compatibility tests
+  -> publish candidate record
+  -> validate dispatch, structured result, cancellation, restart/reconciliation, cleanup,
+     disjoint sibling overlap, concurrency 1 and 2, over-limit refusal, and hostile inputs
+  -> independently review the immutable evidence digest
+  -> publish qualified record
+```
+
+Use `scripts/manage_backend_versions.py candidate|qualify|quarantine` with the current registry
+digest. Never hand-edit the registry, use a floating npm tag, infer compatibility from a nearby
+version, or silently downgrade. Keep at most the current and previous qualified versions for each
+backend/OS cell. Quarantine a bad version through the registry instead of changing `TaskDag`,
+`GraphIndex`, Gate, Journal, or recovery.

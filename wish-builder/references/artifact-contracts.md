@@ -97,37 +97,60 @@ scheduler path is not represented by active manifest v2 and remains deferred unt
 plus its pre-launch admission, fencing, stop/reject, and concurrent-write ownership integration are
 qualified.
 
-### Backend Qualification
+### Stable Backend Baseline
 
-`wish_builder/compatibility/backend-qualification-0.6.15.json` is the separate immutable record
-for the closed Codex, Pi, and Oh My Pi provider set, Windows and Linux launch profiles, SDK pins,
-capabilities, qualification evidence, the single-scheduler policy, and their digests. Trellis
-compatibility and backend-cell admission remain independent decisions.
+`wish_builder/compatibility/backend-qualification-0.6.15.json` is the immutable baseline for the
+closed Codex, Pi, and Oh My Pi provider set. It defines Windows and Linux launch profiles, stable
+Channel capabilities, the single-scheduler policy, SDK identities, and historical qualification
+evidence. Its `enabledForDispatch` fields are retained as historical baseline data; they are not
+the exact-version dispatch authority.
 
-`enabledForDispatch=true` is valid only with `status=passed`, `live=true`, and
-`evidenceScope=full_turn_and_cancellation`. Startup/handshake, deterministic fixture,
-credential-blocked, and CI-pending evidence may document capability progress but cannot authorize
-worker dispatch. The bundled M1 record enables only locally published `Codex / Windows`, with a
-maximum concurrency of two. That publication preserves human-accepted detached provider
-provenance and explicitly does not claim an OpenAI-signed attestation. Import and projection
-success must not be treated as dispatch admission. Every additional backend cell requires the
-full dispatch evidence above. For `scheduler_mode=wish_builder`, final admission binds that exact cell
-to the approved manifest, frozen Trellis compatibility digest, Journal lease, and fencing identity.
-It does not inspect projection CAS or concurrent-writer capability. A future
-`scheduler_mode=trellis` does not use an Agent backend/OS cell; before a later schema can admit it,
-require a separately qualified pre-launch proposal, admission, identity, fencing, stop/reject
-contract, and concurrent-write ownership. Neither scheduler path may treat projection digest
-checks as a dispatch lock.
+The baseline is still trust-pinned and must agree with the selected manifest's policy,
+capability, launch profile, and Trellis compatibility digest. Import or projection success never
+authorizes a worker. A future `scheduler_mode=trellis` does not use an Agent backend/OS version
+record; before a later schema can admit it, require a separately qualified pre-launch proposal,
+admission, identity, fencing, stop/reject contract, and concurrent-write ownership. Neither
+scheduler path may treat projection digest checks as a dispatch lock.
 
-An enabled cell must also be built with a content-addressed evidence root. Every harness,
-full-turn, active-cancellation, crash-reconcile, cleanup, and optional sibling-overlap digest must
-resolve to canonical JSON bytes whose SHA-256 matches the declared digest. The builder checks that
-the records agree on provider, platform, qualification run, harness, package pins, SDK pin, policy,
-launch profile, and capability. For parallel qualification, it derives simultaneous turn count and
-owned-path disjointness from the recorded sibling intervals and concrete repository-relative paths;
-caller-supplied booleans or dangling digest strings are not evidence. Keep the raw evidence records
-with the qualification release inputs even though the distributed qualification record contains
-only their content digests.
+### Backend Version Registry
+
+`wish_builder/compatibility/backend-version-registry.json` is the independently pinned dispatch
+authority for an exact `(provider, platform, backendVersion)` identity. It contains reusable
+protocol profiles plus records whose status is exactly `candidate`, `qualified`, or `quarantined`.
+Each record binds:
+
+- the exact package version, npm SHA-1, and npm SHA-512 integrity;
+- one protocol profile and the matching stable launch-profile digest;
+- the maximum qualified concurrency;
+- evidence, publication receipt, and review references when qualified.
+
+`enabledForDispatch` is a derived compatibility field and is true only for `status=qualified`.
+Candidate records have zero concurrency and no publication evidence. Quarantined records have zero
+concurrency and a review reference explaining why they were disabled. Unknown versions, floating
+tags, profile drift, integrity drift, launch-profile drift, unsupported OS values, malformed
+records, and registry/pin drift fail closed. The registry keeps at most two qualified versions per
+backend/OS cell.
+
+The bundled registry currently qualifies only `Codex 0.149.0 / Windows`, with a maximum
+concurrency of two. Its publication preserves human-accepted detached provider provenance and
+does not claim an OpenAI-signed attestation. The other bundled versions are candidates. For
+`scheduler_mode=wish_builder`, final admission probes the installed package and binds its exact
+registry record to the approved manifest, stable backend baseline, frozen Trellis compatibility
+digest, Journal lease, and fencing identity. It does not inspect projection CAS or
+concurrent-writer capability.
+
+A qualified record must be backed by a content-addressed evidence root. Every handshake,
+full-turn, structured-result, active-cancellation, crash-reconcile, cleanup, sibling-overlap,
+concurrency, and hostile-input digest must resolve to canonical bytes whose SHA-256 matches the
+declared digest. Derive simultaneous turn count and owned-path disjointness from recorded sibling
+intervals and concrete repository-relative paths; caller-supplied booleans or dangling digest
+strings are not evidence. Keep raw evidence with the qualification release inputs even though the
+distributed registry stores content digests and review references.
+
+Publish registry changes only through `scripts/manage_backend_versions.py` with the current
+registry digest. A detected version first becomes a candidate. A maintainer promotes it only after
+the fixed local qualification harness and independent evidence review pass. A known bad version
+can be quarantined without modifying the execution kernel.
 
 ## Execution Manifest
 
@@ -431,8 +454,8 @@ Reject an unsupported or incomplete Wish Builder snapshot version or Trellis tas
 instead of guessing. Active manifest v2 rejects every scheduler/worker pair except
 `wish_builder + pi|oh_my_pi|codex`, as defined in `tool-bridges.md`. Future `trellis + trellis`
 requires a later schema and is not executable in M1. Schema validation is not dispatch
-authorization: backend qualification is checked separately. The bundled M1 record enables only
-locally published `Codex / Windows`, at concurrency one or two.
+authorization: exact backend version qualification is checked separately. The bundled registry
+qualifies only `Codex 0.149.0 / Windows`, at concurrency one or two.
 
 Gate B approves the material graph projected from a stable Trellis task-record read,
 `trellis_parent_task_id`, the Wish Builder-derived `trellis_revision` provenance,

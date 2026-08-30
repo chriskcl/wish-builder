@@ -90,6 +90,51 @@ class WishCtlRunTests(unittest.TestCase):
         build_components.assert_not_called()
         self.assertFalse(runtime_root.exists())
 
+    def test_qualified_backend_without_sdk_root_rejects_before_composition(self) -> None:
+        platform = current_platform()
+        self.assertIn(platform, {Platform.WINDOWS, Platform.LINUX})
+        assert platform is not None
+        bundle = load_bundled_compatibility()
+        cell = bundle.platform(Provider.CODEX, platform)
+        manifest = dataclasses.replace(
+            serial_parallel_manifest(),
+            capability_digest=cell.capabilities.capability_digest,
+            launch_profile_digest=cell.launch_profile_digest,
+            policy_digest=bundle.policy_digest,
+        )
+        manifest_path = self.root / "execution-manifest.json"
+        manifest_path.write_bytes(manifest.canonical_json_bytes())
+        preliminary = BackendAdmissionResult(
+            True,
+            BackendAdmissionReason.NONE,
+            cell,
+        )
+
+        with (
+            mock.patch.object(wishctl, "admit_backend", return_value=preliminary),
+            mock.patch.object(wishctl, "_build_production_components") as build_components,
+        ):
+            code, stdout, stderr = invoke(
+                [
+                    "run",
+                    str(manifest_path),
+                    "--runtime-root",
+                    str(self.root / "runtime"),
+                    "--workspace-root",
+                    str(self.root),
+                ]
+            )
+
+        self.assertEqual((1, ""), (code, stderr))
+        payload = json.loads(stdout)
+        self.assertEqual("rejected", payload["status"])
+        self.assertEqual("backend_admission", payload["stage"])
+        self.assertEqual(
+            "dispatch_not_qualified",
+            payload["backend_admission_reason"],
+        )
+        build_components.assert_not_called()
+
     def test_legacy_manifest_is_not_an_execution_target(self) -> None:
         manifest_path = self.root / "legacy-manifest.json"
         manifest_path.write_text(
@@ -181,11 +226,8 @@ class WishCtlRunTests(unittest.TestCase):
         real_service = wishctl.ForegroundRunService
 
         def admitted_service(*args, **kwargs):
-            return real_service(
-                *args,
-                **kwargs,
-                backend_admitter=lambda _: admission,
-            )
+            kwargs["backend_admitter"] = lambda _: admission
+            return real_service(*args, **kwargs)
 
         with (
             mock.patch.object(

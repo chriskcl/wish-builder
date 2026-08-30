@@ -33,6 +33,7 @@ from wish_builder.adapters.trellis import (
     TrellisImportSettings,
     import_trellis_snapshot,
 )
+from wish_builder.compatibility import load_bundled_compatibility
 from wish_builder.contracts import (
     DEFAULT_DECODE_LIMITS,
     ActorIdentity,
@@ -67,6 +68,7 @@ from wish_builder.contracts import (
     decode_manifest_bytes,
     decode_manifest_v2_bytes,
 )
+from wish_builder.contracts.compatibility import Provider
 from wish_builder.kernel.gates import evaluate_decision
 from wish_builder.kernel.graph_index import GraphIndex
 from wish_builder.kernel.validation import (
@@ -81,6 +83,16 @@ from wish_builder.processes.foreground import (
     ForegroundRunComponents,
     ForegroundRunService,
     ForegroundRunStatus,
+)
+from wish_builder.processes.production_routing import (
+    ProviderSdkUnavailable,
+    probe_provider_sdk,
+)
+from wish_builder.services.backend_admission import (
+    BackendAdmissionReason,
+    BackendAdmissionResult,
+    admit_backend,
+    current_platform,
 )
 from wish_builder.services.decisions import commit_decision
 from wish_builder.services.checkpoints import CheckpointLoadStatus, CheckpointStore
@@ -590,10 +602,37 @@ def _run_foreground(args: argparse.Namespace) -> int:
             kwargs["provider_sdk_root"] = provider_sdk_root
         return _build_production_components(manifest, **kwargs)
 
-    result = ForegroundRunService(
-        manifest,
-        components_factory=components_factory,
-    ).run()
+    def backend_admitter(candidate: ExecutionManifestV2) -> BackendAdmissionResult:
+        preliminary = admit_backend(candidate)
+        if not preliminary.admitted:
+            return preliminary
+        assert preliminary.cell is not None
+        if provider_sdk_root is None:
+            return BackendAdmissionResult(
+                False,
+                BackendAdmissionReason.DISPATCH_NOT_QUALIFIED,
+                preliminary.cell,
+            )
+        try:
+            probe = probe_provider_sdk(preliminary.cell, provider_sdk_root)
+        except ProviderSdkUnavailable:
+            return BackendAdmissionResult(
+                False,
+                BackendAdmissionReason.DISPATCH_NOT_QUALIFIED,
+                preliminary.cell,
+            )
+        return admit_backend(
+            candidate,
+            backend_version=probe.backend_version,
+            package_integrity=probe.observed_integrity,
+            protocol_profile=probe.protocol_profile,
+        )
+
+    service_kwargs: dict[str, object] = {
+        "backend_admitter": backend_admitter,
+        "components_factory": components_factory,
+    }
+    result = ForegroundRunService(manifest, **service_kwargs).run()
     print(
         json.dumps(
             {
@@ -611,6 +650,38 @@ def _run_foreground(args: argparse.Namespace) -> int:
         )
     )
     return 0 if result.status is ForegroundRunStatus.COMPLETED else 1
+
+
+def _run_backend_probe(args: argparse.Namespace) -> int:
+    """Inspect an exact local provider package without launching it."""
+
+    selected_root = Path(args.provider_sdk_root).expanduser()
+    if not selected_root.is_absolute():
+        raise RunCliError("--provider-sdk-root must be an absolute path")
+    selected_platform = current_platform()
+    if selected_platform is None:
+        raise RunCliError("the current host is outside the backend qualification matrix")
+    provider = {
+        WorkerProvider.CODEX.value: Provider.CODEX,
+        WorkerProvider.OH_MY_PI.value: Provider.OMP,
+        WorkerProvider.PI.value: Provider.PI,
+    }[args.provider]
+    bundle = load_bundled_compatibility()
+    try:
+        result = probe_provider_sdk(
+            bundle.platform(provider, selected_platform),
+            selected_root.resolve(strict=False),
+        )
+    except ProviderSdkUnavailable as exc:
+        raise RunCliError(str(exc)) from exc
+    print(
+        json.dumps(
+            result.to_primitive(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    return 0 if result.enabled_for_dispatch else 1
 
 
 def _build_production_components(
@@ -2047,6 +2118,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    probe_parser = subparsers.add_parser(
+        "backend-probe",
+        help="inspect one exact installed backend version without launching it",
+    )
+    probe_parser.add_argument(
+        "--provider",
+        required=True,
+        choices=tuple(provider.value for provider in WorkerProvider),
+    )
+    probe_parser.add_argument(
+        "--provider-sdk-root",
+        required=True,
+        help=(
+            "absolute npm project (or package) root containing the exact backend "
+            "package; no registry resolution or provider launch is performed"
+        ),
+    )
+
     decide_parser = subparsers.add_parser(
         "decide",
         help="commit one direct-CLI Gate decision to the Journal",
@@ -2109,6 +2198,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_trellis_snapshot(args)
         if args.command == "run":
             return _run_foreground(args)
+        if args.command == "backend-probe":
+            return _run_backend_probe(args)
         if args.command == "decide":
             return _run_decide(args)
         if args.command == "resume":

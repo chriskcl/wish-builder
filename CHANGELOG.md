@@ -4,6 +4,8 @@ This file records user-visible changes to Wish Builder.
 
 ## Unreleased
 
+- Added an exact backend/OS/version qualification registry with protocol profiles, local SDK
+  probing, candidate and quarantine states, and fail-closed admission before runtime setup.
 - Locally published the independently reviewed Codex/Windows backend qualification with a
   maximum of two concurrent turns; all other backend/OS cells remain disabled.
 - Made backend qualification publication rollback cleanly after partial filesystem failures and

@@ -13,10 +13,10 @@ Wish Builder 是一套給 Codex 使用的 Skill，適合那些不能只靠一句
 > `Codex / Windows` 已完成本地資格驗證並正式發布，可執行真實派工，最大並行度為 2。
 > 記錄涵蓋完整 turn、執行中取消、當機重啟後不重送的 reconcile、cleanup，以及兩個
 > owned paths 互不重疊的 sibling 同時執行。證據和套件完整性經獨立核對後，才由
-> fail-closed 發布器更新隨附記錄和編譯 trust pin。這是採用人工接受之 detached
+> fail-closed 發布器加入精確版本記錄和編譯 registry trust pin。這是採用人工接受之 detached
 > provider provenance 的本地正式發布，不是 OpenAI 簽署的 attestation，也不是 OpenAI
-> 官方認證。其餘五個 Pi、Oh My Pi 和 Codex backend／OS cell 仍維持
-> `enabledForDispatch=false`。官方 Trellis `0.6.15` 也沒有跨程序 compare-and-swap
+> 官方認證。Pi、Oh My Pi 和 Codex/Linux 仍是 candidate，不能派工；未知、candidate、
+> quarantined 或不相符的 backend 版本都會直接停止。官方 Trellis `0.6.15` 也沒有跨程序 compare-and-swap
 > （CAS），所以投影採單一寫入者並在衝突時停止。Agent 派工和 Trellis 投影是分開的：
 > worker 只寫隔離 Git worktree 和 Journal，之後由單一 writer 把結果投影回 Trellis。
 > Repository 已公開，並以 GPL-3.0-only 授權發布
@@ -84,7 +84,7 @@ Wish Builder 把工作維持在固定順序：
 └────────────────────────────────────────┘
 ```
 
-這是完整流程的目標設計。目前預覽版已包含組裝完成的本機生命週期與當機恢復路徑，並使用受控 subprocess worker 通過驗證。Trellis 相容性已通過匯入和單一寫入者投影檢查。另一份 backend 資格記錄只准入本地已發布的 `Codex / Windows` cell，並行度可為 1 或 2；其餘五個 cell 仍會在真實派工前被擋下。
+這是完整流程的目標設計。目前預覽版已包含組裝完成的本機生命週期與當機恢復路徑，並使用受控 subprocess worker 通過驗證。Trellis 相容性已通過匯入和單一寫入者投影檢查。另一份 backend version registry 只准入 `Codex 0.149.0 / Windows`，並行度可為 1 或 2；其他隨附版本都仍是不可派工的 candidate。
 
 規劃階段通常依序使用 `office-hours`、`plan-ceo-review`、`plan-eng-review`；產品有畫面時，再加上 `plan-design-review`。每個 review 都在獨立、非互動的子工作階段執行。子工作階段只暫用 review 明確標示的推薦選項，讓審閱可以完成，再交回實際結果、其他選擇、日後是否容易修改和技術原因。純工程且容易撤回的選擇可以自動記錄；產品、架構、成本、安全或其他重要決定，會改寫成白話後集中放進 Gate A。gstack 的推薦只是建議，不代表人已批准。子工作階段若直接向使用者提問，或交回的決策資料不完整，該次 review 會停止。
 
@@ -113,9 +113,9 @@ Gate B 批准從一次穩定 Trellis task-record 讀取投影出的 material gra
 | `scheduler_mode` | `worker_backend` | 預定分工 | 目前 M1 狀態 |
 | --- | --- | --- | --- |
 | `trellis` | `trellis` | Trellis 排程同層任務；Wish Builder 驗證和監督 | 關閉：Trellis scheduler 尚未有通過資格驗證的派工前准入與 fencing 整合；`0.6.15` 也沒有跨程序 CAS |
-| `wish_builder` | `pi`、`oh_my_pi` 或 `codex` | Wish Builder 按凍結任務圖派工到隔離 worktree；另一個單一 writer 稍後把 Journal 結果投影到 Trellis | `Codex / Windows` 本地開放並行度 1-2；其餘五個 backend／OS cell 仍關閉 |
+| `wish_builder` | `pi`、`oh_my_pi` 或 `codex` | Wish Builder 按凍結任務圖派工到隔離 worktree；另一個單一 writer 稍後把 Journal 結果投影到 Trellis | 精確的 `Codex 0.149.0 / Windows` 已在本地取得並行度 1-2 資格；其他隨附版本都是 candidate |
 
-M1 目前的 Python 控制層只接受 `scheduler_mode=wish_builder`。每次執行只選一種 backend；如果該 backend 無法使用、尚未取得派工資格、所選組合不受支援，或要求的並行度高於證據上限，流程會直接停止，不會偷偷換成另一種。使用目前隨附的資格記錄時，`Codex / Windows` 可在並行度 1 或 2 通過准入；並行度 3 回傳 `concurrency_not_qualified`，其餘五個 backend／OS cell 則會在啟動 Agent 前回傳 `dispatch_not_qualified`。
+M1 目前的 Python 控制層只接受 `scheduler_mode=wish_builder`。每次執行只選一種 backend。啟動前，Wish Builder 會探測已安裝套件，要求精確版本、npm integrity、protocol profile、launch profile、OS 和並行度都符合固定 registry。未知、candidate、quarantined 或已 drift 的版本會直接停止，不會猜格式、偷偷降級或換成另一種。`Codex 0.149.0 / Windows` 可在並行度 1 或 2 通過准入；並行度 3 回傳 `concurrency_not_qualified`，其他隨附版本則會在啟動 Agent 前回傳 `dispatch_not_qualified`。
 
 未來實作 Trellis scheduler 時，`GraphIndex` 仍只會是驗證和恢復索引，不會變成第二個 dispatcher。
 
@@ -123,21 +123,22 @@ M1 目前的 Python 控制層只接受 `scheduler_mode=wish_builder`。每次執
 
 | Backend | Windows 證據 | Linux 證據 | 正式派工 |
 | --- | --- | --- | --- |
-| Codex | 已在本地正式發布完整真實資格；最多 2 個並行 turn | deterministic fixture；仍需完整真實資格驗證 | 只開放 Windows |
-| Pi | 只有啟動和 handshake，沒有 model turn | deterministic fixture；仍需完整真實資格驗證 | 關閉 |
-| Oh My Pi | live turn 受阻：需要已設定的 model 和 provider credential | deterministic fixture；仍需完整真實資格驗證 | 關閉 |
+| Codex | `0.149.0` 已取得資格；最多 2 個並行 turn | `0.149.0` 是 candidate；仍需完整真實資格驗證 | 只開放 Windows `0.149.0` |
+| Pi | `0.84.2` 是 candidate；只有啟動和 handshake，沒有 model turn | `0.84.2` 是 candidate；仍需完整真實資格驗證 | 關閉 |
+| Oh My Pi | `17.4.0` 是 candidate；需要已設定的 model 和 credential | `17.4.0` 是 candidate；仍需完整真實資格驗證 | 關閉 |
 
-本地已發布的 `Codex / Windows` cell 完成 full turn、active cancellation、crash/reconcile、
-cleanup、parallel overlap 和平台證據，現在是 `enabledForDispatch=true`，且
-`maxConcurrentTurns=2`。其來源 revision 為
+本地已發布的 `Codex 0.149.0 / Windows` 記錄完成 full turn、active cancellation、crash/reconcile、
+cleanup、parallel overlap 和平台證據，現在是 `status=qualified`，且
+`maxConcurrency=2`。其來源 revision 為
 `fd3296ed1f8d85e9a1347eb1e2dcdf611ec62720`。獨立核對亦確認官方
 `@openai/codex@0.149.0` 主套件和 Windows native package 的 npm integrity 與本機安裝
 檔案一致。保存的 provenance 是人工接受的本地 detached provider reference，不是 OpenAI
-簽署的 attestation。其餘五個 provider／OS 組合仍是 `enabledForDispatch=false`。
+簽署的 attestation。其餘五個隨附版本記錄仍是 `status=candidate`。
 
-Trellis 相容性和 backend 資格是兩份獨立記錄：前者綁定凍結任務圖和 projection adapter，
-後者記錄 Agent cell 證據。active `wish_builder` 派工必須有已開放、且綁定批准 Trellis
-compatibility digest 的 backend cell；因 worker 不寫 Trellis，所以不把 projection CAS
+Trellis 相容性和 backend 資格是不同記錄。Trellis 記錄綁定凍結任務圖與 projection
+adapter；穩定 backend baseline 保存 policy、capability、launch profile 和歷史證據；backend
+version registry 則決定某個精確 backend／OS／version 能否派工。active `wish_builder` 派工
+必須有符合已批准 baseline profile 和 launch digest 的 qualified 版本；因 worker 不寫 Trellis，所以不把 projection CAS
 當成派工條件。未來由 Trellis 排程的模式不使用 Agent backend／OS cell，但要有新版
 manifest schema、派工前准入、fencing、stop/reject 和並行寫入所有權資格。Claude Code 和
 macOS 已延後，等前三個 backend 與 Windows／Linux 矩陣穩定後再處理。
@@ -145,7 +146,8 @@ macOS 已延後，等前三個 backend 與 Windows／Linux 矩陣穩定後再處
 Trellis 相容性和 backend 派工資格是兩份不同契約：
 
 - [`wish_builder/compatibility/trellis-0.6.15.json`](wish_builder/compatibility/trellis-0.6.15.json) 驗證官方 `@mindfoldhq/trellis@0.6.15` 與 `@mindfoldhq/trellis-core@0.6.15`，只涵蓋文件所述的匯入和單一寫入者投影邊界。
-- [`wish_builder/compatibility/backend-qualification-0.6.15.json`](wish_builder/compatibility/backend-qualification-0.6.15.json) 記錄各 backend／OS 的派工證據；目前只開放本地已發布的 `Codex / Windows` cell，並行度上限為 2。
+- [`wish_builder/compatibility/backend-qualification-0.6.15.json`](wish_builder/compatibility/backend-qualification-0.6.15.json) 是穩定的 adapter policy、capability、launch profile 與歷史證據 baseline。
+- [`wish_builder/compatibility/backend-version-registry.json`](wish_builder/compatibility/backend-version-registry.json) 是精確 backend／OS／version 的派工權威；目前只把 `Codex 0.149.0 / Windows` 標為 qualified，並行度上限為 2。
 
 官方 Trellis `0.6.15` 沒有可靠的跨程序 CAS；M1 因此同一時間只允許一個投影寫入者，只接受穩定的 task record 讀取，寫入前核對預期 SHA-256，寫入後再驗證 SHA-256 和內容，遇到衝突或結果不明就停止。這些 digest 檢查是投影完整性保護，不是 CAS，也不是 Agent 派工鎖。backend worker 只寫隔離 Git worktree 和 Journal。另一個 Trellis scheduler 模式還需要通過資格驗證的派工前准入、fencing 和並行寫入所有權。
 
@@ -163,11 +165,12 @@ Trellis 相容性和 backend 派工資格是兩份不同契約：
 - 目標分支前進前，會在實際 promotion candidate 裡執行一般專案的驗收指令；
 - subprocess 隔離、輸出限制、timeout 與 fail-closed 恢復；
 - Git staging、promotion、cleanup、quarantine 和 trace/export service；
-- 獨立核對 backend 證據後，以 fail-closed 流程在本地正式發布，並保存不可變 receipt 和編譯 trust pin；
+- protocol profile adapter，以及 fail-closed 的精確版本探測與准入；
+- 獨立核對 backend 證據後，以 fail-closed 流程發布 candidate、qualified 或 quarantined 版本記錄，並保存 evidence digest 和編譯 registry trust pin；
 - Python package 與獨立 Skill runtime 同步，以及可重現的開發版 ZIP；
 - contracts、排程、恢復、Git effects、打包和受控效能的本機測試。
 
-這些元件已有實作和測試。組裝完成的本機生命週期，包括 Git 變更途中當機後的恢復，已使用受控 subprocess worker 通過端到端測試。受保護的 `wishctl run` 入口現在會准入本地已發布的 `Codex / Windows` cell，並行度可為 1 或 2。剩餘的 backend 工作，是在開放其餘五個平台 cell 前，產出並獨立核對同樣完整、可按內容摘要核對的資格證據。
+這些元件已有實作和測試。組裝完成的本機生命週期，包括 Git 變更途中當機後的恢復，已使用受控 subprocess worker 通過端到端測試。受保護的 `wishctl run` 入口會先探測 SDK，再只准入本地已發布的精確 `Codex 0.149.0 / Windows` 記錄，並行度可為 1 或 2。剩餘的 backend 工作，是在把其他 candidate 升為 qualified 前，產出並獨立核對同樣完整、可按內容摘要核對的資格證據。
 
 真實 Issue、Pull Request、託管平台、憑證、background supervisor 和正式部署 adapter 都不在目前實作內。
 
@@ -197,6 +200,8 @@ Core bridge 可讀取解壓後的 `@mindfoldhq/trellis-core@0.6.15` package 目�
 
 從已發布的預覽版下載 [`wish-builder-skill-0.1.0.dev1.zip`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev1/wish-builder-skill-0.1.0.dev1.zip) 和 [`SHA256SUMS`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev1/SHA256SUMS)。Repository 內也保留了已同步的 [`wish-builder-skill.zip`](wish-builder-skill.zip)，方便直接從原始碼 checkout 測試。
 
+已標記的 `v0.1.0.dev1` 資產早於本頁所述的 `Unreleased` backend version registry 變更。下一個預覽版發布前，如要測試目前 `main` 的行為，請使用同一 source revision 內的 repository ZIP。
+
 Windows PowerShell：
 
 ```powershell
@@ -219,7 +224,7 @@ unzip wish-builder-skill-0.1.0.dev1.zip -d ~/.codex/skills
 Repository 內 ZIP 的 SHA-256（預發布下載檔請以該版本的 `SHA256SUMS` 為準）：
 
 ```text
-8a9887281f5c1b60d11fe4231e298c09284f2d0a0fd9fb3b77a8c8dadeb1ed1a
+d1f3496a1058c7064189efce9291553b3378da802cacd92bb7f1031e3fb4bc88
 ```
 
 Repository 已公開，也可以透過 Codex Skill installer 直接從 GitHub 安裝其中的 `wish-builder/` 目錄。
@@ -279,6 +284,7 @@ Use $wish-builder in this repository.
 | `hash` | 計算 Gate 文件的 SHA-256 |
 | `snapshot-trellis` | 從官方 Trellis `0.6.15` task record 衍生 Wish Builder 任務圖快照 |
 | `import-trellis` | 把 Wish Builder 衍生的 Trellis 任務圖快照轉成 manifest v2 |
+| `backend-probe` | 不啟動 backend，檢查已安裝套件的精確版本、integrity、profile、OS 狀態與並行度上限 |
 | `decide` | 把 direct CLI Gate 決定寫入 Journal |
 | `resume` | 根據驗證過的恢復證明，恢復一項狀態不明的派工 |
 
@@ -286,12 +292,28 @@ Use $wish-builder in this repository.
 
 ```bash
 python scripts/wishctl.py --help
+python scripts/wishctl.py backend-probe --provider codex --provider-sdk-root C:/path/to/pinned-sdk-root
 python scripts/wishctl.py validate path/to/execution-manifest.json --stage planning
 python scripts/wishctl.py snapshot-trellis <parent-task-id> --core-archive path/to/mindfoldhq-trellis-core-0.6.15.tgz --output trellis-graph.json
 python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/import-settings.json --output execution-manifest.json
 ```
 
-安裝後的 Skill 也提供相同 runtime：`wish-builder/scripts/wishctl.py`。
+安裝後的 Skill 也提供相同 runtime：`wish-builder/scripts/wishctl.py`。`backend-probe` 只有在
+精確版本已 qualified 時回傳 exit code `0`；未知、candidate、quarantined 或 drift 回傳 `1`，
+輸入格式錯誤回傳 `2`。
+
+維護者可在不修改 execution kernel 的情況下更新 registry：
+
+```powershell
+python scripts\manage_backend_versions.py candidate --help
+python scripts\manage_backend_versions.py qualify --help
+python scripts\manage_backend_versions.py quarantine --help
+```
+
+每次更新都要提供當前 registry digest。新探測到的版本先是 `candidate`。只有固定本地 harness
+完成派工、structured result、取消、當機恢復、cleanup、sibling overlap、批准並行度和惡意輸入
+檢查，再經另一人核對證據，才能升為 `qualified`。有問題的版本可以直接改成 `quarantined`，
+不必修改 `TaskDag`、`GraphIndex`、Gate、Journal 或 recovery。
 
 ## Repository 結構
 
@@ -302,7 +324,7 @@ python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/impo
 |-- pyproject.toml                Python package 與 wishctl 入口
 |-- wish_builder/                 正式 Python 實作
 |   |-- adapters/                 Trellis、process、storage 與 Git 邊界
-|   |-- compatibility/            固定版本的 Trellis 相容性與 backend 資格證據
+|   |-- compatibility/            Trellis 相容性、穩定 backend baseline 與精確版本 registry
 |   |-- contracts/                輸入與 artifact 格式
 |   |-- kernel/                   DAG、Gate、狀態與 GraphIndex
 |   |-- presentation/             trace 與 export 輸出
@@ -323,7 +345,7 @@ python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/impo
 | 檢查 | 結果 |
 | --- | --- |
 | 較早的本地非效能矩陣 | Windows／Linux × Python 3.11／3.12／3.13；每格執行 1,498 項，0 failure、0 error；Windows 允許略過 9 項，Linux 允許略過 13 項 |
-| 最新本地完整測試 | Windows／Python 3.13；執行 1,527 項（含 16 項效能測試），0 failure、0 error，3 項平台條件式略過 |
+| 最新本地完整測試 | Windows／Python 3.13；1,534 項非效能測試加 16 項效能測試，0 failure、0 error，3 項平台條件式略過 |
 | Codex/Windows 證據獨立核對 | 52 項通過，1 項因 Windows symlink 權限略過；結論為 `PASS` |
 | 發布後資格與准入測試 | 68 項通過，1 項因 Windows symlink 權限略過，另有 59 個 subtests 通過 |
 | 官方 Trellis `0.6.15` 整合 | Windows 與 Linux 各通過 22 項 Node 和 7 項 Python 測試 |
@@ -358,8 +380,8 @@ uv run --locked --python 3.13 python scripts\ci_local_release.py `
 
 ## 尚餘派工工作
 
-- 開放 Pi、Oh My Pi、Codex/Linux 或日後其他平台 cell 前，重跑完整 live qualification 並完成獨立核對。
-- 在更強的證據正式發布前，`Codex / Windows` 的最大並行度維持 2。
+- 把 Pi、Oh My Pi、Codex/Linux 或日後其他版本記錄從 candidate 升為 qualified 前，重跑完整 live qualification 並完成獨立核對。
+- 在更強的證據正式發布前，`Codex 0.149.0 / Windows` 的最大並行度維持 2。
 - 補上所選流程需要的真實 Issue、Pull Request 和託管平台 adapter。
 - 完成一個公開案例，從一句產品願望走到通過審閱並合併的改動。
 
