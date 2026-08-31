@@ -551,15 +551,15 @@ def _task_graph(parent_id: str, source_revision: str) -> tuple[bytes, str]:
     def task(source: str, requirement: str, wave: int, paths: tuple[str, ...], depends: tuple[str, ...] = ()) -> dict[str, object]:
         return {
             "id": source,
-            "title": "Complete backend qualification probe without repository changes",
+            "title": "Return protocol-only backend qualification completion",
             "requirement_ids": [requirement],
             "depends_on": list(depends),
             "owned_paths": list(paths),
             "allowed_auxiliary_paths": [],
-            "acceptance_criteria": ["The provider turn returns a structured completion."],
+            "acceptance_criteria": ["Return a structured completion without repository inspection or file changes; only the declared no-op check may be run."],
             "regression_commands": [command()],
             "rollback": "Delete the qualification worktree.",
-            "documentation": ["docs/qualification.md"],
+            "documentation": [],
             "wave": wave,
             "risk": "low",
             "may_change_contracts": False,
