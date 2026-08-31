@@ -91,6 +91,7 @@ def finish_turn() -> None:
         "role": "assistant",
         "content": [{"type": "text", "text": "cancelled" if cancelled else "done"}],
         "stopReason": "aborted" if cancelled else "stop",
+        "usage": {"input": 1, "output": 1, "cost": 0.25},
     }
     append_message(assistant)
     terminal = {
