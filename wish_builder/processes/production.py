@@ -136,6 +136,7 @@ from wish_builder.services.journal import (
 )
 from wish_builder.services.ports import (
     BackendCapabilities,
+    CancelTurn,
     CheckAttempt,
     CheckObservation,
     FinishAttempt,
@@ -185,6 +186,7 @@ _COMPATIBILITY_PROVIDERS = {
 }
 _SEGMENT_RE = re.compile(r"segment-([0-9]{8})\.jsonl\Z")
 _MAX_ADMISSION_EVENTS = 1_000_000
+_AttemptRouteKey = tuple[str, int, str, int]
 _TRELLIS_PATH_ENVIRONMENT = (
     "WISH_BUILDER_TRELLIS_CORE_ARCHIVE",
     "WISH_BUILDER_TRELLIS_CORE_MODULE",
@@ -204,6 +206,34 @@ _PROVIDER_ENVIRONMENT = (
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
 )
+
+
+def _recovery_route_key(
+    operation: AttemptOperationRoute,
+    projected_keys: set[_AttemptRouteKey],
+) -> _AttemptRouteKey:
+    identity = operation.identity
+    assert identity.task_id is not None and identity.attempt is not None
+    key = (
+        identity.run_id,
+        identity.coordinator_epoch,
+        identity.task_id,
+        identity.attempt,
+    )
+    if key in projected_keys or operation.operation is not EffectOperation.CANCEL_TURN:
+        return key
+    candidates = tuple(
+        candidate
+        for candidate in projected_keys
+        if candidate[0] == key[0]
+        and candidate[2:] == key[2:]
+        and candidate[1] < key[1]
+    )
+    if len(candidates) != 1:
+        raise ValueError("takeover cancel does not resolve to one older attempt")
+    return candidates[0]
+
+
 def _absolute_path(value: object, field_name: str) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise TypeError(f"{field_name} must be a path")
@@ -1381,13 +1411,10 @@ class ProductionForegroundRunComponents:
                     recovery.pending_external_effects,
                 )
                 router = self._router(routes)
-                plans = {
-                    self._attempt_key(route.attempt.identity): route.plan
+                recovery_routes = {
+                    operation: route
                     for route in routes
-                }
-                routes_by_key = {
-                    self._attempt_key(route.attempt.identity): route
-                    for route in routes
+                    for operation in route.recovery_operations
                 }
                 reconciled = reconcile_pending_external_effects(
                     recovery.pending_external_effects,
@@ -1398,16 +1425,16 @@ class ProductionForegroundRunComponents:
                     trellis_lifecycle=router,
                     evidence_store=self._evidence_store,
                     cursor=current,
-                    plan_factory=lambda pending: plans[
-                        self._attempt_key(pending.request_event.identity)
-                    ],
+                    plan_factory=lambda pending: recovery_routes[
+                        AttemptOperationRoute.from_pending(pending)
+                    ].plan,
                     retry_admitted=self._retry_admitted,
                     command_resolver=lambda pending, plan: (
                         self._resolve_recovery_command(
                             pending,
                             plan,
-                            routes_by_key.get(
-                                self._attempt_key(pending.request_event.identity)
+                            recovery_routes.get(
+                                AttemptOperationRoute.from_pending(pending)
                             ),
                             router,
                         )
@@ -1519,6 +1546,54 @@ class ProductionForegroundRunComponents:
             )
             if len(requests) != 1 or len(observations) != 1:
                 return None
+            cancel_requests = tuple(
+                event
+                for event in events
+                if event.event_type is JournalEventType.EFFECT_REQUESTED
+                and type(event.payload) is EffectRequestPayload
+                and event.payload.adapter is AdapterKind.BACKEND
+                and event.payload.operation is EffectOperation.CANCEL_TURN
+                and event.payload.object_type is EffectObjectType.TURN
+                and event.identity.run_id == identity.run_id
+                and event.identity.task_id == identity.task_id
+                and event.identity.attempt == identity.attempt
+                and identity.coordinator_epoch
+                < event.identity.coordinator_epoch
+                < self._fencing_token
+            )
+            recovered_cancellations = tuple(
+                (request, event)
+                for request in cancel_requests
+                for event in events
+                if event.event_type is JournalEventType.EFFECT_RECONCILED
+                and type(event.payload) is EffectObservationPayload
+                and event.payload.adapter is AdapterKind.BACKEND
+                and event.payload.receipt.operation
+                is EffectOperation.CANCEL_TURN
+                and event.payload.receipt.status is EffectStatus.APPLIED
+                and event.payload.receipt.identity == request.identity
+                and event.sequence > request.sequence
+            )
+            if len(recovered_cancellations) > 1:
+                return None
+            recovered_cancellation = None
+            if recovered_cancellations:
+                cancel_request, cancel_event = recovered_cancellations[0]
+                pending_cancel = PendingExternalEffect(cancel_request)
+                cancel_routes = self._routes_for_cursor(cursor, (pending_cancel,))
+                cancel_router = self._router(cancel_routes)
+                cancel_turn = cancel_router.inspect_turn(
+                    pending_cancel.operation_id
+                )
+                try:
+                    self._evidence_store.verify_existing(
+                        cancel_turn,
+                        identity=cancel_request.identity,
+                        operation=EffectOperation.CANCEL_TURN,
+                    )
+                except Exception:
+                    return None
+                recovered_cancellation = (cancel_event, cancel_turn)
             task = next(item for item in self._manifest.tasks if item.id == attempt.task_id)
             command = self._repository.plan_attempt(
                 identity,
@@ -1540,6 +1615,7 @@ class ProductionForegroundRunComponents:
                 requests[0],
                 observations[0],
                 owned_path_changes=owned_path_changes,
+                recovered_cancellation=recovered_cancellation,
             )
         except Exception:
             return None
@@ -1980,12 +2056,26 @@ class ProductionForegroundRunComponents:
         planned = resolve_external_recovery_command(pending, plan)
         if planned is not None:
             return planned
+        recovered_operation = AttemptOperationRoute.from_pending(pending)
+        route_key = (
+            None
+            if type(route) is not AttemptChannelRoute
+            else self._attempt_key(route.attempt.identity)
+        )
+        pending_key = self._attempt_key(pending.request_event.identity)
+        takeover_cancel = (
+            pending.operation is EffectOperation.CANCEL_TURN
+            and route_key is not None
+            and route_key[0] == pending_key[0]
+            and route_key[2:] == pending_key[2:]
+            and route_key[1] < pending_key[1]
+        )
         if (
             type(route) is not AttemptChannelRoute
             or type(plan) is not BackendDispatchPlan
             or route.plan != plan
-            or self._attempt_key(route.attempt.identity)
-            != self._attempt_key(pending.request_event.identity)
+            or recovered_operation not in route.recovery_operations
+            or (route_key != pending_key and not takeover_cancel)
         ):
             return None
 
@@ -1993,6 +2083,23 @@ class ProductionForegroundRunComponents:
         command: ExternalRecoveryCommand | None = None
         if pending.operation is EffectOperation.PREPARE_ATTEMPT:
             command = self._prepare_lifecycle_command(identity, route)
+        elif takeover_cancel:
+            cancel_suffix = canonical_sha256(
+                {
+                    "fencing_token": pending_key[1],
+                    "identity": identity.to_primitive(),
+                    "operation": EffectOperation.CANCEL_TURN.value,
+                }
+            )[:48].upper()
+            if pending.operation_id != f"CANCEL-{cancel_suffix}":
+                return None
+            command = CancelTurn(
+                operation_id=pending.operation_id,
+                attempt_id=plan.send.attempt_id,
+                channel_id=plan.send.channel_id,
+                turn_id=plan.send.turn_id,
+                reason_code="lease_lost_takeover",
+            )
         elif pending.operation in {
             EffectOperation.CHECK_ATTEMPT,
             EffectOperation.FINISH_ATTEMPT,
@@ -2467,11 +2574,20 @@ class ProductionForegroundRunComponents:
         recovery_by_key: dict[
             tuple[str, int, str, int], list[AttemptOperationRoute]
         ] = {}
+        projected_keys = {
+            (
+                self._manifest.run_id,
+                projected.coordinator_epoch,
+                projected.task_id,
+                projected.attempt,
+            )
+            for projected in cursor.snapshot.attempts
+            if projected.correlation_id is not None
+        }
         for item in pending:
             operation = AttemptOperationRoute.from_pending(item)
-            recovery_by_key.setdefault(
-                self._attempt_key(operation.identity), []
-            ).append(operation)
+            route_key = _recovery_route_key(operation, projected_keys)
+            recovery_by_key.setdefault(route_key, []).append(operation)
 
         if recovery_by_key:
             for event in self._read_verified_events():

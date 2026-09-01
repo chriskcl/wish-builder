@@ -872,6 +872,20 @@ class _AttemptKey:
         )
 
 
+def _is_takeover_cancel_recovery(
+    route_key: _AttemptKey,
+    recovery_key: _AttemptKey,
+    operation: EffectOperation,
+) -> bool:
+    return (
+        operation is EffectOperation.CANCEL_TURN
+        and recovery_key.run_id == route_key.run_id
+        and recovery_key.task_id == route_key.task_id
+        and recovery_key.attempt == route_key.attempt
+        and recovery_key.coordinator_epoch > route_key.coordinator_epoch
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AttemptOperationRoute:
     """A durable child operation identity used to rebuild recovery routing."""
@@ -941,7 +955,12 @@ class AttemptChannelRoute:
             EffectOperation.SEND_TASK_PACKET: self.plan.send.operation_id,
         }
         for recovered in self.recovery_operations:
-            if _AttemptKey.from_identity(recovered.identity) != key:
+            recovered_key = _AttemptKey.from_identity(recovered.identity)
+            if recovered_key != key and not _is_takeover_cancel_recovery(
+                key,
+                recovered_key,
+                recovered.operation,
+            ):
                 raise ValueError("recovery operation does not match the Git attempt")
             operation_id = recovered.identity.correlation_id
             assert operation_id is not None
@@ -1502,7 +1521,8 @@ class AttemptBackendChannelRouter:
         if not valid_command:
             return None, "attempt command does not match route"
 
-        binding = _OperationBinding(key, operation, effect.command_hash)
+        route_key = _AttemptKey.from_identity(route.attempt.identity)
+        binding = _OperationBinding(route_key, operation, effect.command_hash)
         with self._lock:
             existing = self._operations.get(command.operation_id)
             if existing is not None and existing != binding:

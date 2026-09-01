@@ -234,7 +234,10 @@ class _ChildEffectRecoveryCore:
         observation_type: type[_ObservationT],
         inspect: Callable[[str], _ObservationT],
         retry: Callable[[PreparedEffect[_CommandT]], _ObservationT],
+        allow_stale_retry: bool = False,
     ) -> ExternalEffectRecoveryResult:
+        if type(allow_stale_retry) is not bool:
+            raise TypeError("allow_stale_retry must be a bool")
         request = pending.request_event
         run_id = request.identity.run_id
         operation_id = pending.operation_id
@@ -265,6 +268,7 @@ class _ChildEffectRecoveryCore:
                 observation_type=observation_type,
                 inspect=inspect,
                 retry=marked_retry,
+                allow_stale_retry=allow_stale_retry,
             )
             if (
                 result.observation is not None
@@ -294,6 +298,7 @@ class _ChildEffectRecoveryCore:
         observation_type: type[_ObservationT],
         inspect: Callable[[str], _ObservationT],
         retry: Callable[[PreparedEffect[_CommandT]], _ObservationT],
+        allow_stale_retry: bool,
     ) -> ExternalEffectRecoveryResult:
         request = pending.request_event
         operation_id = pending.operation_id
@@ -327,7 +332,10 @@ class _ChildEffectRecoveryCore:
                 ExternalEffectRecoveryStatus.RECONCILED,
             )
 
-        if request.identity.coordinator_epoch != self._fencing_token:
+        if request.identity.coordinator_epoch != self._fencing_token and not (
+            allow_stale_retry
+            and request.identity.coordinator_epoch < self._fencing_token
+        ):
             return self._blocked(
                 expected_head,
                 ExternalEffectRecoveryReason.STALE_EPOCH,
@@ -533,10 +541,19 @@ class BackendEffectRecoveryService:
         coordinator_id: str,
         fencing_token: int,
         retry_admitted: Callable[[], bool],
+        stale_cancel_retry_operation_ids: frozenset[str] = frozenset(),
     ) -> None:
         if not isinstance(backend_channel, BackendChannelPort):
             raise TypeError("backend_channel must implement BackendChannelPort")
+        if type(stale_cancel_retry_operation_ids) is not frozenset or not all(
+            type(operation_id) is str and operation_id
+            for operation_id in stale_cancel_retry_operation_ids
+        ):
+            raise TypeError(
+                "stale_cancel_retry_operation_ids must contain non-empty strings"
+            )
         self._backend_channel = backend_channel
+        self._stale_cancel_retry_operation_ids = stale_cancel_retry_operation_ids
         self._core = _ChildEffectRecoveryCore(
             journal,
             evidence_store,
@@ -587,6 +604,9 @@ class BackendEffectRecoveryService:
                 observation_type=TurnObservation,
                 inspect=self._backend_channel.inspect_turn,
                 retry=self._backend_channel.cancel,
+                allow_stale_retry=(
+                    pending.operation_id in self._stale_cancel_retry_operation_ids
+                ),
             )
         return self._core._blocked(
             expected_head,

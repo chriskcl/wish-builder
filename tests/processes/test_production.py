@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from wish_builder.adapters import FilesystemExternalEvidenceStore
 
-from wish_builder.adapters.fakes import FakeBackendChannelPort
+from wish_builder.adapters.fakes import FakeBackendChannelPort, FakeExternalState
 
 import dataclasses
 import hashlib
@@ -32,13 +32,24 @@ from tests.adapters.test_trellis_graph_import import (
     task as trellis_task,
 )
 from tests.processes.test_production_routing import attempt_worktree
+from tests.services.test_gate_b_bootstrap import material as gate_b_material
 from wish_builder.adapters.trellis import (
     FakeTrellisGraphPort,
+)
+from wish_builder.adapters.process_identity import (
+    LeaseOwnerProcessProbeResult,
+    LeaseOwnerProcessState,
 )
 from wish_builder.compatibility import load_bundled_compatibility
 from wish_builder.contracts import WorkerProvider
 from wish_builder.contracts.compatibility import Platform, Provider
-from wish_builder.contracts.runtime import ExecutionIdentity, JournalEventType
+from wish_builder.contracts.runtime import (
+    EffectOperation,
+    EffectStatus,
+    ExecutionIdentity,
+    JournalEventType,
+    RuntimeState,
+)
 from wish_builder.processes import (
     CoordinatorReason,
     CoordinatorStatus,
@@ -63,9 +74,13 @@ from wish_builder.services.execution_checkpoints import (
     ExecutionCheckpointReason,
     ExecutionCheckpointStatus,
 )
-from wish_builder.services.ports import BackendCapabilities
+from wish_builder.services.gate_b_bootstrap import bootstrap_gate_b
+from wish_builder.services.ports import BackendCapabilities, TurnObservation, TurnState
 from wish_builder.services.promotion import PromotionRecord
-from wish_builder.services.backend_effects import BackendDispatchEffectService
+from wish_builder.services.backend_effects import (
+    BackendDispatchEffectCrash,
+    BackendDispatchEffectService,
+)
 
 
 def channel_capabilities(manifest, *, max_task_packet_bytes: int = 1_048_576):
@@ -139,6 +154,44 @@ class ProductionRuntimeContractTests(unittest.TestCase):
             self.state_root,
             selected.run_id,
         )
+
+    def test_takeover_cancel_route_resolution_requires_one_older_lineage(self) -> None:
+        operation = production_module.AttemptOperationRoute(
+            ExecutionIdentity(
+                self.manifest.run_id,
+                3,
+                self.manifest.tasks[0].id,
+                1,
+                "CANCEL-ROUTE-001",
+            ),
+            EffectOperation.CANCEL_TURN,
+            "sha256:" + "a" * 64,
+        )
+        exact = (self.manifest.run_id, 3, self.manifest.tasks[0].id, 1)
+        older = (self.manifest.run_id, 2, self.manifest.tasks[0].id, 1)
+
+        self.assertEqual(
+            exact,
+            production_module._recovery_route_key(operation, {exact, older}),
+        )
+        self.assertEqual(
+            older,
+            production_module._recovery_route_key(operation, {older}),
+        )
+        rejected = (
+            set(),
+            {
+                (self.manifest.run_id, 1, self.manifest.tasks[0].id, 1),
+                older,
+            },
+            {(self.manifest.run_id, 4, self.manifest.tasks[0].id, 1)},
+            {("WISH-FOREIGN", 2, self.manifest.tasks[0].id, 1)},
+            {(self.manifest.run_id, 2, "TASK-FOREIGN", 1)},
+        )
+        for projected in rejected:
+            with self.subTest(projected=projected):
+                with self.assertRaisesRegex(ValueError, "one older attempt"):
+                    production_module._recovery_route_key(operation, projected)
 
     def config(
         self,
@@ -1204,6 +1257,252 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
         )
         self.assertFalse(unknown.outcomes_known)
         self.assertIs(active, unknown.cursor)
+
+    def test_acquire_lease_recovers_a_takeover_cancel_without_a_new_attempt(self) -> None:
+        state = FakeExternalState()
+        cancel_calls: list[str] = []
+
+        class CountingBackendChannel(FakeBackendChannelPort):
+            def cancel(self, effect):
+                cancel_calls.append(effect.command.operation_id)
+                return super().cancel(effect)
+
+        first = self.components()
+        capabilities = first._config.channel_capabilities
+        bootstrapped = bootstrap_gate_b(
+            gate_b_material(
+                self.manifest,
+                workspace_hash=first._workspace.workspace_hash,
+            ),
+            (),
+            first._journal,
+        )
+        self.assertTrue(bootstrapped.admitted)
+
+        def channel_factory(_attempt):
+            return CountingBackendChannel(
+                capabilities,
+                state=state,
+                send_state=TurnState.RUNNING,
+            )
+
+        first._channel_factory = channel_factory
+        initial = first.recover_verified_cursor(self.manifest)
+        self.assertIsNotNone(initial)
+        active = first.acquire_lease(initial)
+        self.assertIsNotNone(active)
+        reserved = first.coordinator(active).reserve_ready()
+        self.assertIs(CoordinatorStatus.PROGRESSED, reserved.status)
+        identity = reserved.reserved[0]
+        prepared = first.workflow(reserved.cursor).prepare_attempt(identity)
+        self.assertIsNotNone(prepared.attempt)
+        cancel_suffix = production_module.canonical_sha256(
+            {
+                "fencing_token": 2,
+                "identity": identity.to_primitive(),
+                "operation": EffectOperation.CANCEL_TURN.value,
+            }
+        )[:48].upper()
+        cancel_operation_id = f"CANCEL-{cancel_suffix}"
+        lifecycle = production_module._LifecycleProjection(
+            True,
+            CoordinatorReason.NONE,
+            (),
+        )
+        with (
+            mock.patch.object(
+                first,
+                "_project_prepare_lifecycle",
+                return_value=lifecycle,
+            ),
+            mock.patch.object(
+                first,
+                "_dispatch_runtime_admitted",
+                return_value=True,
+            ),
+        ):
+            dispatched = first.coordinator(prepared.cursor).dispatch_reserved(identity)
+        self.assertIs(CoordinatorStatus.PROGRESSED, dispatched.status)
+        self.assertIs(RuntimeState.RUNNING, dispatched.cursor.snapshot.attempts[0].state)
+        first.close()
+
+        self.authority_clock._value += timedelta(seconds=1_000)
+        with mock.patch.object(
+            production_module,
+            "capture_process_start_id",
+            return_value="test-restart-2",
+        ):
+            second = self.components()
+        second._lease_service._prior_owner_process_probe = lambda *args, **kwargs: (
+            LeaseOwnerProcessProbeResult(LeaseOwnerProcessState.DEAD)
+        )
+        second._channel_factory = channel_factory
+        recovered = second.recover_verified_cursor(self.manifest)
+        self.assertIsNotNone(recovered)
+        original_trigger = BackendDispatchEffectService._trigger
+
+        def crash_after_request(service, point, operation_id):
+            if (
+                point == "after_request_append"
+                and operation_id == cancel_operation_id
+            ):
+                raise BackendDispatchEffectCrash(operation_id)
+            return original_trigger(service, point, operation_id)
+
+        with (
+            mock.patch.object(
+                second,
+                "_dispatch_runtime_admitted",
+                return_value=True,
+            ),
+            mock.patch.object(
+                BackendDispatchEffectService,
+                "_trigger",
+                new=crash_after_request,
+            ),
+        ):
+            self.assertIsNone(second.acquire_lease(recovered))
+        blocked_recovery = second._recover()
+        pending_cancel = next(
+            (
+                item
+                for item in blocked_recovery.pending_external_effects
+                if item.operation is EffectOperation.CANCEL_TURN
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            pending_cancel,
+            tuple(
+                (event.sequence, event.event_type.value, event.identity.to_primitive())
+                for event in second._read_verified_events()
+            ),
+        )
+        assert pending_cancel is not None
+        self.assertEqual(cancel_operation_id, pending_cancel.operation_id)
+        self.assertEqual(2, pending_cancel.request_event.identity.coordinator_epoch)
+
+        self.assertNotIn(cancel_operation_id, state.channel_records)
+        second.close()
+
+        self.authority_clock._value += timedelta(seconds=1_000)
+        with mock.patch.object(
+            production_module,
+            "capture_process_start_id",
+            return_value="test-restart-3",
+        ):
+            third = self.components()
+        third._lease_service._prior_owner_process_probe = lambda *args, **kwargs: (
+            LeaseOwnerProcessProbeResult(LeaseOwnerProcessState.DEAD)
+        )
+        third._channel_factory = channel_factory
+        recovered = third.recover_verified_cursor(self.manifest)
+        self.assertIsNotNone(recovered)
+        recovery_results = []
+        original_reconcile = production_module.reconcile_pending_external_effects
+
+        def capture_recovery(*args, **kwargs):
+            result = original_reconcile(*args, **kwargs)
+            recovery_results.append(result)
+            return result
+
+        with (
+            mock.patch.object(
+                third,
+                "_dispatch_runtime_admitted",
+                return_value=True,
+            ),
+            mock.patch.object(
+                production_module,
+                "reconcile_pending_external_effects",
+                side_effect=capture_recovery,
+            ),
+        ):
+            active = third.acquire_lease(recovered)
+
+        self.assertIsNotNone(
+            active,
+            {
+                "recovery_results": recovery_results,
+                "pending": third._recover().pending_external_effects,
+                "events": tuple(
+                    (event.event_type.value, event.identity.to_primitive())
+                    for event in third._read_verified_events()
+                ),
+                "channel_records": tuple(state.channel_records),
+            },
+        )
+        self.assertTrue(
+            any(
+                event.event_type is JournalEventType.EFFECT_RECONCILED
+                and event.identity.correlation_id == cancel_operation_id
+                for event in third._read_verified_events()
+            )
+        )
+        self.assertEqual(1, len(active.snapshot.attempts))
+        self.assertEqual(identity.attempt, active.snapshot.attempts[0].attempt)
+        self.assertEqual(3, active.snapshot.attempts[0].coordinator_epoch)
+        self.assertIs(RuntimeState.RESERVED, active.snapshot.attempts[0].state)
+        self.assertTrue(state.channel_records[cancel_operation_id].applied)
+        self.assertEqual([cancel_operation_id], cancel_calls)
+
+        reconciled_cursor = recovery_results[0].cursor
+        self.assertIsNotNone(reconciled_cursor)
+        assert reconciled_cursor is not None
+        journal_events = third._read_verified_events()
+        request_event = next(
+            event
+            for event in journal_events
+            if event.event_type is JournalEventType.DISPATCH_REQUESTED
+            and event.identity == identity
+        )
+        observation_event = next(
+            event
+            for event in journal_events
+            if event.event_type is JournalEventType.DISPATCH_OBSERVED
+            and event.identity == identity
+        )
+        recovered_event = next(
+            event
+            for event in journal_events
+            if event.event_type is JournalEventType.EFFECT_RECONCILED
+            and event.identity.correlation_id == cancel_operation_id
+        )
+        recovered_turn = channel_factory(identity).inspect_turn(cancel_operation_id)
+        wrong_epoch = type(recovered_event).create(
+            sequence=recovered_event.sequence,
+            event_id=recovered_event.event_id,
+            event_type=recovered_event.event_type,
+            identity=dataclasses.replace(
+                recovered_event.identity,
+                coordinator_epoch=recovered_event.identity.coordinator_epoch + 1,
+            ),
+            actor_type=recovered_event.actor_type,
+            actor_id=recovered_event.actor_id,
+            recorded_at=recovered_event.recorded_at,
+            previous_event_hash=recovered_event.previous_event_hash,
+            payload=recovered_event.payload,
+            reason_code=recovered_event.reason_code,
+        )
+        invalid = third.coordinator(reconciled_cursor).reclaim_cancelled_dispatch(
+            request_event,
+            observation_event,
+            owned_path_changes=(),
+            recovered_cancellation=(wrong_epoch, recovered_turn),
+        )
+        self.assertIs(CoordinatorStatus.REJECTED, invalid.status)
+        self.assertIs(CoordinatorReason.RECOVERY_PROOF_INVALID, invalid.reason)
+        self.assertEqual((), invalid.events)
+        self.assertEqual(journal_events, third._read_verified_events())
+
+        with mock.patch.object(
+            third._evidence_store,
+            "verify_existing",
+            side_effect=RuntimeError("evidence unavailable"),
+        ) as verified:
+            self.assertIsNone(third._recover_cancelled_dispatch(reconciled_cursor))
+        verified.assert_called_once()
+        self.assertEqual(journal_events, third._read_verified_events())
 
     def test_lease_append_is_followed_by_graph_revalidation(self) -> None:
         built = self.components()

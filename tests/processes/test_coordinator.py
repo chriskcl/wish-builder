@@ -68,6 +68,7 @@ from wish_builder.processes.coordinator import (
     CoordinatorStatus,
     ForegroundCoordinator,
     WorkerResultProposal,
+    _recovered_cancel_evidence_matches,
 )
 from wish_builder.services.journal import (
     AppendStatus,
@@ -91,6 +92,7 @@ from wish_builder.services.ports import (
     BackendCapabilities,
     ReserveChannel,
     SendTaskPacket,
+    TurnObservation,
     TurnState,
 )
 
@@ -742,6 +744,153 @@ class ForegroundCoordinatorTests(unittest.TestCase):
         self.assertIs(CoordinatorStatus.PROGRESSED, replayed.status)
         self.assertEqual(reclaimed.reserved, replayed.reserved)
         self.assertEqual((), replayed.events)
+
+    def test_recovered_cancel_evidence_rejects_each_tampered_binding(self) -> None:
+        identity = ExecutionIdentity(
+            "RUN-2026-001",
+            2,
+            "TASK-001",
+            1,
+            "CANCEL-" + "A" * 48,
+        )
+        turn = TurnObservation(
+            identity.correlation_id,
+            EffectStatus.APPLIED,
+            "2026-08-19T00:00:00Z",
+            TurnState.CANCELLED,
+            effect_digest=digest("a"),
+            attempt_id="ATTEMPT-001",
+            channel_id="CHANNEL-001",
+            message_id="MESSAGE-001",
+            turn_id="TURN-001",
+        )
+        store = FilesystemExternalEvidenceStore(self.root / "recovered-evidence")
+        evidence = store.put(
+            turn,
+            identity=identity,
+            operation=EffectOperation.CANCEL_TURN,
+        )
+        receipt = EffectReceipt(
+            1,
+            identity,
+            EffectOperation.CANCEL_TURN,
+            EffectStatus.APPLIED,
+            turn.observed_at,
+            turn.effect_digest,
+            turn.turn_id,
+            (evidence,),
+        )
+        self.assertTrue(_recovered_cancel_evidence_matches(receipt, turn))
+
+        cases = {
+            "receipt-time": (
+                replace(receipt, observed_at="2099-01-01T00:00:00Z"),
+                turn,
+            ),
+            "receipt-effect-hash": (replace(receipt, effect_hash=digest("b")), turn),
+            "turn-time": (
+                receipt,
+                replace(turn, observed_at="2099-01-01T00:00:00Z"),
+            ),
+            "turn-effect-digest": (
+                receipt,
+                replace(turn, effect_digest=digest("b")),
+            ),
+            "evidence-digest": (
+                replace(receipt, evidence=(replace(evidence, digest=digest("b")),)),
+                turn,
+            ),
+            "evidence-length": (
+                replace(
+                    receipt,
+                    evidence=(replace(evidence, byte_length=evidence.byte_length + 1),),
+                ),
+                turn,
+            ),
+            "evidence-type": (
+                replace(
+                    receipt,
+                    evidence=(replace(evidence, evidence_type=EvidenceType.RESULT),),
+                ),
+                turn,
+            ),
+            "evidence-producer": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(
+                            evidence,
+                            producer=replace(
+                                evidence.producer,
+                                external_object_id="different-store",
+                            ),
+                        ),
+                    ),
+                ),
+                turn,
+            ),
+            "evidence-producer-event": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(
+                            evidence,
+                            producer=replace(
+                                evidence.producer,
+                                event_id="EVENT-TAMPERED-001",
+                            ),
+                        ),
+                    ),
+                ),
+                turn,
+            ),
+            "evidence-created-at": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(evidence, created_at="2099-01-01T00:00:00Z"),
+                    ),
+                ),
+                turn,
+            ),
+            "evidence-sensitivity": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(evidence, sensitivity=EvidenceSensitivity.PUBLIC),
+                    ),
+                ),
+                turn,
+            ),
+            "evidence-render-policy": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(evidence, render_policy=EvidenceRenderPolicy.TEXT),
+                    ),
+                ),
+                turn,
+            ),
+            "evidence-role": (
+                replace(
+                    receipt,
+                    evidence=(replace(evidence, role=EvidenceRole.OPTIONAL),),
+                ),
+                turn,
+            ),
+            "evidence-subject": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(evidence, structured_subject_hash=digest("b")),
+                    ),
+                ),
+                turn,
+            ),
+        }
+        for label, candidate in cases.items():
+            with self.subTest(label=label):
+                self.assertFalse(_recovered_cancel_evidence_matches(*candidate))
 
     def test_takeover_blocks_owned_changes_and_non_cancelled_provider_results(self) -> None:
         changed, request, observation, _ = self._takeover_with_running_backend_attempt(

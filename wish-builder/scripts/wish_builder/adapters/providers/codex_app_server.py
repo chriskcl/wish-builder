@@ -937,7 +937,61 @@ class CodexAppServerChannel:
                     observation = self._turn_observation(operation)
                 elif self._client is None or not self._client.is_alive:
                     observation = self._reconcile_locked(operation_id)
+            elif (
+                operation.get("kind") == "cancel"
+                and observation.status is EffectStatus.UNKNOWN
+            ):
+                observation = self._reconcile_cancel_locked(operation_id, operation)
             return observation
+
+    def _reconcile_cancel_locked(
+        self,
+        operation_id: str,
+        operation: dict[str, object],
+    ) -> TurnObservation:
+        observation = self._turn_observation(operation)
+        command_hash = operation.get("command_hash")
+        command = operation.get("command")
+        send_operation_id = (
+            command.get("send_operation_id") if _is_object(command) else None
+        )
+        send = self._state["operations"].get(send_operation_id)
+        if (
+            type(command_hash) is not str
+            or type(send_operation_id) is not str
+            or not _is_object(send)
+            or send.get("kind") != "send"
+        ):
+            return observation
+        send_command = send.get("command")
+        if not _is_object(send_command):
+            return observation
+        source = self._turn_observation(send)
+        if (
+            source.status is not EffectStatus.APPLIED
+            or source.state is not TurnState.CANCELLED
+            or source.result_digest is not None
+            or source.attempt_id != send_command.get("attempt_id")
+            or source.channel_id != send_command.get("channel_id")
+            or source.message_id != send_command.get("message_id")
+            or source.turn_id != send_command.get("logical_turn_id")
+        ):
+            return observation
+        reconciled = TurnObservation(
+            operation_id=operation_id,
+            status=EffectStatus.APPLIED,
+            observed_at=self._clock(),
+            state=TurnState.CANCELLED,
+            effect_digest=_effect_digest("cancel_turn", command_hash),
+            attempt_id=source.attempt_id,
+            channel_id=source.channel_id,
+            message_id=source.message_id,
+            turn_id=source.turn_id,
+            evidence=("codex_cancel_reconciled_from_terminal_send",),
+        )
+        operation["observation"] = reconciled.to_primitive()
+        self._save_state()
+        return reconciled
 
     def cancel(self, effect: PreparedEffect[CancelTurn]) -> TurnObservation:
         typed = self._require_effect(effect, CancelTurn)

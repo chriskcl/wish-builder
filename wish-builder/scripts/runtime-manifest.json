@@ -98,11 +98,11 @@
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/codex_app_server.py",
-      "runtime_sha256": "730d36f732a9ed2b04754622506e930932a5ae151333ca36d6e689ec2727e4c5",
-      "runtime_size": 67356,
+      "runtime_sha256": "e6ccc19577a8bb5cdf42ffde577fe06c8e987fb6efc87fe2f297599e9d9b1649",
+      "runtime_size": 69553,
       "source": "wish_builder/adapters/providers/codex_app_server.py",
-      "source_sha256": "730d36f732a9ed2b04754622506e930932a5ae151333ca36d6e689ec2727e4c5",
-      "source_size": 67356
+      "source_sha256": "e6ccc19577a8bb5cdf42ffde577fe06c8e987fb6efc87fe2f297599e9d9b1649",
+      "source_size": 69553
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/jsonl_rpc.py",
@@ -266,11 +266,11 @@
     },
     {
       "destination": "scripts/wish_builder/cli/wishctl.py",
-      "runtime_sha256": "aca38283a924b23162a001839f4a1926e0241d3873ce6d1f2dba12bed0d2a1e6",
-      "runtime_size": 102810,
+      "runtime_sha256": "e0b84993bf3d820085f8390937cf40fee67e73889ed9d1676c76029cf2edf17c",
+      "runtime_size": 102811,
       "source": "wish_builder/cli/wishctl.py",
-      "source_sha256": "aca38283a924b23162a001839f4a1926e0241d3873ce6d1f2dba12bed0d2a1e6",
-      "source_size": 102810
+      "source_sha256": "e0b84993bf3d820085f8390937cf40fee67e73889ed9d1676c76029cf2edf17c",
+      "source_size": 102811
     },
     {
       "destination": "scripts/wish_builder/compatibility/__init__.py",
@@ -690,11 +690,11 @@
     },
     {
       "destination": "scripts/wish_builder/processes/coordinator.py",
-      "runtime_sha256": "d2d836cac38c52fcb369212bcbb27b7b554f9ce6fcd2c2e87cef5db14a826a6b",
-      "runtime_size": 85062,
+      "runtime_sha256": "c7325ce7eaadf89155863d6c9cf54efbc5b56d740924977282234c7356220e93",
+      "runtime_size": 89530,
       "source": "wish_builder/processes/coordinator.py",
-      "source_sha256": "d2d836cac38c52fcb369212bcbb27b7b554f9ce6fcd2c2e87cef5db14a826a6b",
-      "source_size": 85062
+      "source_sha256": "c7325ce7eaadf89155863d6c9cf54efbc5b56d740924977282234c7356220e93",
+      "source_size": 89530
     },
     {
       "destination": "scripts/wish_builder/processes/foreground.py",
@@ -706,27 +706,27 @@
     },
     {
       "destination": "scripts/wish_builder/processes/production.py",
-      "runtime_sha256": "259a0c0a579ee51b4215a33afeae7f5aaff3108c96c98f3745c6a1d7fdb635e7",
-      "runtime_size": 108537,
+      "runtime_sha256": "6328d8643aaad2ecbfc03ba1143fdd1bb2fba3e0a5ab1afde892515c31005f80",
+      "runtime_size": 113411,
       "source": "wish_builder/processes/production.py",
-      "source_sha256": "259a0c0a579ee51b4215a33afeae7f5aaff3108c96c98f3745c6a1d7fdb635e7",
-      "source_size": 108537
+      "source_sha256": "6328d8643aaad2ecbfc03ba1143fdd1bb2fba3e0a5ab1afde892515c31005f80",
+      "source_size": 113411
     },
     {
       "destination": "scripts/wish_builder/processes/production_recovery.py",
-      "runtime_sha256": "365c5caa179d2f386569bdb036a3327b1494616d9cbf7a0ab9c09d29953b4629",
-      "runtime_size": 24791,
+      "runtime_sha256": "41ac8e894a87148460b99467320b945d62b606237312437ac0199130bff56caa",
+      "runtime_size": 26059,
       "source": "wish_builder/processes/production_recovery.py",
-      "source_sha256": "365c5caa179d2f386569bdb036a3327b1494616d9cbf7a0ab9c09d29953b4629",
-      "source_size": 24791
+      "source_sha256": "41ac8e894a87148460b99467320b945d62b606237312437ac0199130bff56caa",
+      "source_size": 26059
     },
     {
       "destination": "scripts/wish_builder/processes/production_routing.py",
-      "runtime_sha256": "78da8726bba8b66cb930c2d848b774ec01514104070a66d2e2c3a7db1023f490",
-      "runtime_size": 73854,
+      "runtime_sha256": "7cc9853e1431c167c4774982da146ea3e46b655ff3b7db60ed801fe03fac47c1",
+      "runtime_size": 74552,
       "source": "wish_builder/processes/production_routing.py",
-      "source_sha256": "78da8726bba8b66cb930c2d848b774ec01514104070a66d2e2c3a7db1023f490",
-      "source_size": 73854
+      "source_sha256": "7cc9853e1431c167c4774982da146ea3e46b655ff3b7db60ed801fe03fac47c1",
+      "source_size": 74552
     },
     {
       "destination": "scripts/wish_builder/processes/production_terminal.py",
@@ -858,11 +858,11 @@
     },
     {
       "destination": "scripts/wish_builder/services/external_recovery.py",
-      "runtime_sha256": "094714c53dd63579386444f0a0533e745cf1ed0c23102d01bf3635acacba3c09",
-      "runtime_size": 24102,
+      "runtime_sha256": "85913c6308658da79e11d00c28db6f295fe10269ccf52ecb8de1e5a29057597d",
+      "runtime_size": 25091,
       "source": "wish_builder/services/external_recovery.py",
-      "source_sha256": "094714c53dd63579386444f0a0533e745cf1ed0c23102d01bf3635acacba3c09",
-      "source_size": 24102
+      "source_sha256": "85913c6308658da79e11d00c28db6f295fe10269ccf52ecb8de1e5a29057597d",
+      "source_size": 25091
     },
     {
       "destination": "scripts/wish_builder/services/gate_b_bootstrap.py",
@@ -970,11 +970,11 @@
     },
     {
       "destination": "scripts/wishctl.py",
-      "runtime_sha256": "aca38283a924b23162a001839f4a1926e0241d3873ce6d1f2dba12bed0d2a1e6",
-      "runtime_size": 102810,
+      "runtime_sha256": "e0b84993bf3d820085f8390937cf40fee67e73889ed9d1676c76029cf2edf17c",
+      "runtime_size": 102811,
       "source": "wish_builder/cli/wishctl.py",
-      "source_sha256": "aca38283a924b23162a001839f4a1926e0241d3873ce6d1f2dba12bed0d2a1e6",
-      "source_size": 102810
+      "source_sha256": "e0b84993bf3d820085f8390937cf40fee67e73889ed9d1676c76029cf2edf17c",
+      "source_size": 102811
     }
   ],
   "generated_root": "scripts/wish_builder",

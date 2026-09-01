@@ -1,5 +1,4 @@
-usage: wishctl [-h]
-               {validate,ready,drift,trace,hash,import-trellis,snapshot-trellis,admit-gate-b,run,backend-probe,decide,resume} ...
+usage: wishctl [-h] {validate,ready,drift,trace,hash,import-trellis,snapshot-trellis,admit-gate-b,run,backend-probe,decide,resume} ...
 
 Validate and inspect wish-builder execution manifests.
 

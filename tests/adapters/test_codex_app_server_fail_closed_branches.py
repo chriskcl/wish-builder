@@ -776,6 +776,54 @@ class CodexAppServerFailClosedBranchTests(unittest.TestCase):
         self.assertIn("codex_cancel_observed", observed.evidence)
         self.assertIsNone(restarted._client)
 
+    def test_restart_reconciles_an_unknown_cancel_from_its_cancelled_send(self) -> None:
+        config = self.config("unknown-cancel-restart")
+        original = codex.CodexAppServerChannel(config, clock=lambda: OBSERVED_AT)
+        self._install_send(
+            original,
+            status=EffectStatus.APPLIED,
+            state=TurnState.CANCELLED,
+        )
+        original._put_operation(
+            "cancel-1",
+            "cancel",
+            HASH_A,
+            TurnObservation(
+                operation_id="cancel-1",
+                status=EffectStatus.UNKNOWN,
+                observed_at=OBSERVED_AT,
+                state=TurnState.UNKNOWN,
+                evidence=("codex_cancel_ambiguous:restart",),
+            ).to_primitive(),
+            command={"send_operation_id": "send-1"},
+        )
+        original._save_state()
+        original.close()
+
+        restarted = codex.CodexAppServerChannel(config, clock=lambda: OBSERVED_AT)
+        self.addCleanup(restarted.close)
+
+        observed = restarted.inspect_turn("cancel-1")
+
+        self.assertEqual(EffectStatus.APPLIED, observed.status)
+        self.assertEqual(TurnState.CANCELLED, observed.state)
+        self.assertEqual("cancel-1", observed.operation_id)
+        self.assertEqual("attempt-1", observed.attempt_id)
+        self.assertEqual("channel-1", observed.channel_id)
+        self.assertEqual("message-1", observed.message_id)
+        self.assertEqual("turn-1", observed.turn_id)
+        self.assertIsNone(observed.result_digest)
+        self.assertEqual(
+            ("codex_cancel_reconciled_from_terminal_send",),
+            observed.evidence,
+        )
+        persisted = restarted._operation("cancel-1")
+        self.assertEqual(HASH_A, persisted["command_hash"])
+        self.assertEqual(
+            {"send_operation_id": "send-1"},
+            persisted["command"],
+        )
+
     def test_reconciliation_fails_closed_for_missing_or_ambiguous_identity(self) -> None:
         terminal = self.channel()
         self._install_send(

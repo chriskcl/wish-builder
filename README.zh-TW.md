@@ -227,7 +227,7 @@ unzip wish-builder-skill-0.1.0.dev1.zip -d ~/.codex/skills
 Repository 內 ZIP 的 SHA-256（預發布下載檔請以該版本的 `SHA256SUMS` 為準）：
 
 ```text
-52cf08a363c15a8f514d122c2f04597248ef537f154637264d79f84d1e85f9a5
+adcda3a2a2aaa26785e3def244a45a37d5df2e9d506c72b374ea86d7fd6bd58f
 ```
 
 Repository 已公開，也可以透過 Codex Skill installer 直接從 GitHub 安裝其中的 `wish-builder/` 目錄。
@@ -355,10 +355,10 @@ python scripts\manage_backend_versions.py quarantine --help
 | 檢查 | 結果 |
 | --- | --- |
 | 較早的本地非效能矩陣 | Windows／Linux × Python 3.11／3.12／3.13；每格執行 1,498 項，0 failure、0 error；Windows 允許略過 9 項，Linux 允許略過 13 項 |
-| 最新本地完整測試 | Windows／Python 3.13.14；1,576 項非效能測試加 16 項效能測試，0 failure、0 error，3 項平台條件式略過 |
+| 最新本地完整測試 | Windows／Python 3.13.14；1,586 項非效能測試加 16 項效能測試，0 failure、0 error，3 項平台條件式略過 |
 | Codex/Windows 證據獨立核對 | 52 項通過，1 項因 Windows symlink 權限略過；結論為 `PASS` |
 | 發布後資格與准入測試 | 68 項通過，1 項因 Windows symlink 權限略過，另有 59 個 subtests 通過 |
-| 官方 Trellis `0.6.15` 整合 | 本次 Windows 通過 24 項 Node bridge 測試；固定的跨平台證據仍包含各平台 7 項 Python 整合測試 |
+| 官方 Trellis `0.6.15` 整合 | 本次 Windows 通過 24 項 Node bridge 測試與 11 項 Python 整合測試；固定的跨平台證據在各平台保留相同測試集 |
 | Skill 打包與已安裝 runtime | 完整套件中的 245 項打包與發布規則測試，以及 13 項 standalone runtime smoke tests 通過 |
 | Python 編譯與空白格式檢查 | 通過 |
 

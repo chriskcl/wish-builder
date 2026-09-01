@@ -50,9 +50,10 @@ class _ProjectionCheckout:
 
     def ensure(self, run_id: str) -> TrellisAuthoritativeProjectionTarget:
         self.calls += 1
+        workspace = capture_workspace_identity(self.path, self.scopes)
         return TrellisAuthoritativeProjectionTarget(
-            self.path,
-            capture_workspace_identity(self.path, self.scopes),
+            Path(workspace.worktree_root.canonical_path),
+            workspace,
         )
 
 

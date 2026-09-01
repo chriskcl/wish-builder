@@ -116,7 +116,7 @@ from wish_builder.services.recovery import (
 
 
 CLI_HELP_WIDTH = 82
-CLI_USAGE_WIDTH = 104
+CLI_USAGE_WIDTH = 4096
 
 
 class _StableHelpFormatter(argparse.HelpFormatter):

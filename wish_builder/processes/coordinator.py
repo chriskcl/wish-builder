@@ -21,6 +21,10 @@ from wish_builder.contracts.runtime import (
     EffectRequestPayload,
     EffectStatus,
     EvidenceRef,
+    EvidenceRenderPolicy,
+    EvidenceRole,
+    EvidenceSensitivity,
+    EvidenceType,
     ExecutionIdentity,
     JournalEvent,
     JournalEventType,
@@ -52,7 +56,13 @@ from wish_builder.services.journal import (
     JournalEventDraft,
     JournalHead,
 )
-from wish_builder.services.ports import CancelTurn, PersistedEffectRequest, TaskPort, TurnState
+from wish_builder.services.ports import (
+    CancelTurn,
+    PersistedEffectRequest,
+    TaskPort,
+    TurnObservation,
+    TurnState,
+)
 from wish_builder.services.backend_effects import (
     BackendDispatchPort,
     BackendDispatchResult,
@@ -97,6 +107,37 @@ CorrelationIdFactory = Callable[[str, int, int], str]
 BackendDispatchPlanFactory = Callable[[ExecutionIdentity], BackendDispatchPlan]
 AuthorityClock = Callable[[], datetime]
 ExecutionSnapshotAdmitter = Callable[[], bool]
+
+
+def _recovered_cancel_evidence_matches(
+    receipt: EffectReceipt,
+    turn: TurnObservation,
+) -> bool:
+    if len(receipt.evidence) != 1:
+        return False
+    evidence = receipt.evidence[0]
+    expected_subject_hash = "sha256:" + canonical_sha256(
+        {
+            "adapter": AdapterKind.BACKEND.value,
+            "identity": receipt.identity.to_primitive(),
+            "operation": EffectOperation.CANCEL_TURN.value,
+        }
+    )
+    return (
+        receipt.observed_at == turn.observed_at
+        and receipt.effect_hash == turn.effect_digest
+        and evidence.digest == turn.canonical_sha256()
+        and evidence.byte_length == len(turn.canonical_json_bytes())
+        and evidence.evidence_type is EvidenceType.EFFECT_RECEIPT
+        and evidence.producer.identity == receipt.identity
+        and evidence.producer.event_id is None
+        and evidence.producer.external_object_id == "external-observation-store"
+        and evidence.created_at == turn.observed_at
+        and evidence.sensitivity is EvidenceSensitivity.INTERNAL
+        and evidence.render_policy is EvidenceRenderPolicy.METADATA_ONLY
+        and evidence.role is EvidenceRole.REQUIRED
+        and evidence.structured_subject_hash == expected_subject_hash
+    )
 
 
 def _admit_frozen_snapshot() -> bool:
@@ -1287,6 +1328,7 @@ class ForegroundCoordinator:
         observation_event: JournalEvent,
         *,
         owned_path_changes: tuple[str, ...] | None,
+        recovered_cancellation: tuple[JournalEvent, TurnObservation] | None = None,
     ) -> CoordinatorReservationResult:
         """Cancel and re-fence one proven untouched prior-epoch dispatch."""
 
@@ -1299,6 +1341,15 @@ class ForegroundCoordinator:
             or not all(type(path) is str and path for path in owned_path_changes)
         ):
             raise TypeError("owned_path_changes must contain paths or be null")
+        if recovered_cancellation is not None and (
+            type(recovered_cancellation) is not tuple
+            or len(recovered_cancellation) != 2
+            or type(recovered_cancellation[0]) is not JournalEvent
+            or type(recovered_cancellation[1]) is not TurnObservation
+        ):
+            raise TypeError(
+                "recovered_cancellation must contain one event and turn or be null"
+            )
         admission = self._admission_reason(allow_recovery=True)
         if admission is not CoordinatorReason.NONE:
             return self._reservation_result(CoordinatorStatus.BLOCKED, admission)
@@ -1384,9 +1435,46 @@ class ForegroundCoordinator:
                 CoordinatorStatus.BLOCKED,
                 CoordinatorReason.PORT_OUTCOME_INVALID,
             )
+        cancel_epoch = self._fencing_token
+        recovered_event: JournalEvent | None = None
+        recovered_turn: TurnObservation | None = None
+        if recovered_cancellation is not None:
+            recovered_event, recovered_turn = recovered_cancellation
+            payload = recovered_event.payload
+            if (
+                recovered_event.event_type is not JournalEventType.EFFECT_RECONCILED
+                or type(payload) is not EffectObservationPayload
+                or payload.adapter is not AdapterKind.BACKEND
+                or payload.receipt.operation is not EffectOperation.CANCEL_TURN
+                or payload.receipt.status is not EffectStatus.APPLIED
+                or payload.receipt.identity.run_id != identity.run_id
+                or payload.receipt.identity.task_id != identity.task_id
+                or payload.receipt.identity.attempt != identity.attempt
+                or not (
+                    identity.coordinator_epoch
+                    < payload.receipt.identity.coordinator_epoch
+                    < self._fencing_token
+                )
+                or recovered_event.identity.run_id != identity.run_id
+                or recovered_event.identity.task_id != identity.task_id
+                or recovered_event.identity.attempt != identity.attempt
+                or recovered_event.identity.correlation_id
+                != payload.receipt.identity.correlation_id
+                or recovered_event.identity.coordinator_epoch
+                != self._fencing_token
+                or recovered_event.actor_type is not ActorType.COORDINATOR
+                or recovered_event.actor_id != self._coordinator_id
+                or recovered_event.sequence > self._cursor.head.sequence
+            ):
+                return self._reservation_result(
+                    CoordinatorStatus.REJECTED,
+                    CoordinatorReason.RECOVERY_PROOF_INVALID,
+                )
+            cancel_epoch = payload.receipt.identity.coordinator_epoch
+
         cancel_suffix = canonical_sha256(
             {
-                "fencing_token": self._fencing_token,
+                "fencing_token": cancel_epoch,
                 "identity": identity.to_primitive(),
                 "operation": EffectOperation.CANCEL_TURN.value,
             }
@@ -1398,39 +1486,49 @@ class ForegroundCoordinator:
             turn_id=plan.send.turn_id,
             reason_code="lease_lost_takeover",
         )
-        persisted = PersistedEffectRequest.from_append_result(
-            AppendResult(
-                AppendStatus.IDEMPOTENT,
-                JournalHead(request_event.sequence, request_event.event_hash),
-                request_event,
+        if recovered_event is None or recovered_turn is None:
+            persisted = PersistedEffectRequest.from_append_result(
+                AppendResult(
+                    AppendStatus.IDEMPOTENT,
+                    JournalHead(request_event.sequence, request_event.event_hash),
+                    request_event,
+                )
             )
-        )
-        cancelled = self._backend_effects.cancel(
-            persisted,
-            command,
-            expected_head=self._cursor.head,
-        )
-        if type(cancelled) is not BackendDispatchResult:
-            return self._reservation_result(
-                CoordinatorStatus.BLOCKED,
-                CoordinatorReason.PORT_OUTCOME_INVALID,
+            cancelled = self._backend_effects.cancel(
+                persisted,
+                command,
+                expected_head=self._cursor.head,
             )
-        adopted = self._adopt_committed_events(cancelled.events)
-        if adopted is not CoordinatorReason.NONE:
-            return self._reservation_result(
-                CoordinatorStatus.BLOCKED,
-                adopted,
-                events=cancelled.events,
-            )
-        turn = cancelled.turn
-        receipt = cancelled.receipt
+            if type(cancelled) is not BackendDispatchResult:
+                return self._reservation_result(
+                    CoordinatorStatus.BLOCKED,
+                    CoordinatorReason.PORT_OUTCOME_INVALID,
+                )
+            adopted = self._adopt_committed_events(cancelled.events)
+            if adopted is not CoordinatorReason.NONE:
+                return self._reservation_result(
+                    CoordinatorStatus.BLOCKED,
+                    adopted,
+                    events=cancelled.events,
+                )
+            events = list(cancelled.events)
+            cancelled_status = cancelled.status
+            turn = cancelled.turn
+            receipt = cancelled.receipt
+        else:
+            events = []
+            cancelled_status = BackendDispatchEffectStatus.APPLIED
+            turn = recovered_turn
+            payload = recovered_event.payload
+            assert type(payload) is EffectObservationPayload
+            receipt = payload.receipt
         cancel_identity = replace(
             identity,
-            coordinator_epoch=self._fencing_token,
+            coordinator_epoch=cancel_epoch,
             correlation_id=command.operation_id,
         )
         if (
-            cancelled.status is not BackendDispatchEffectStatus.APPLIED
+            cancelled_status is not BackendDispatchEffectStatus.APPLIED
             or receipt is None
             or receipt.identity != cancel_identity
             or receipt.operation is not EffectOperation.CANCEL_TURN
@@ -1446,14 +1544,14 @@ class ForegroundCoordinator:
             or turn.message_id != plan.send.message_id
             or turn.turn_id != command.turn_id
             or turn.result_digest is not None
+            or not _recovered_cancel_evidence_matches(receipt, turn)
         ):
             return self._reservation_result(
                 CoordinatorStatus.BLOCKED,
                 CoordinatorReason.PORT_OUTCOME_INVALID,
-                events=cancelled.events,
+                events=tuple(events),
             )
 
-        events = list(cancelled.events)
         transition_identity = replace(
             identity,
             coordinator_epoch=self._fencing_token,
