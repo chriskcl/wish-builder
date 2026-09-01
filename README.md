@@ -363,7 +363,7 @@ The full operating rules live in [`wish-builder/SKILL.md`](wish-builder/SKILL.md
 | Check | Result |
 | --- | --- |
 | Earlier local non-performance matrix | Windows and Linux on Python 3.11/3.12/3.13; 1,498 run per cell, 0 failures or errors; 9 allowed skips on Windows and 13 on Linux |
-| Fresh full local suites | Windows on Python 3.13.14; 1,586 non-performance tests plus 16 performance tests, 0 failures or errors, 3 platform-specific skips |
+| Fresh full local suites | Windows on Python 3.13.14; 1,589 non-performance tests plus 16 performance tests, 0 failures or errors, 3 platform-specific skips |
 | Independent Codex/Windows evidence audit | 52 passed, 1 Windows symlink-permission skip; verdict `PASS` |
 | Post-publication qualification and admission tests | 68 passed, 1 Windows symlink-permission skip, 59 subtests passed |
 | Official Trellis `0.6.15` integration | Current Windows run passed 24 Node bridge tests and 11 Python integration tests; the pinned cross-platform evidence retains the same set per platform |

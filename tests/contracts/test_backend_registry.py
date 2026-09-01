@@ -154,6 +154,96 @@ class BackendRegistryContractTests(unittest.TestCase):
                 record = dataclasses.replace(source, **values)
                 self.assertFalse(record.enabled_for_dispatch)
 
+    def test_profile_record_and_registry_boundaries_fail_closed(self) -> None:
+        profile = self.registry.profile("codex-app-server-v1")
+        profile_cases = (
+            ("schema_version", 2),
+            ("profile_id", "Not-Lowercase"),
+            ("provider", "codex"),
+            ("adapter", "codex_app_server"),
+            ("protocol", "Not-Lowercase"),
+            ("package_name", "unscoped-package"),
+            ("bin_name", "Not-Lowercase"),
+            ("entrypoint", "/absolute/entrypoint.js"),
+            ("entrypoint", "bin//codex.js"),
+            ("runtime", "python"),
+            ("version_probe", "floating-version-probe"),
+        )
+        for field_name, value in profile_cases:
+            with self.subTest(profile_field=field_name, value=value):
+                with self.assertRaises((TypeError, ValueError)):
+                    dataclasses.replace(profile, **{field_name: value})
+
+        record = self.registry.record(Provider.CODEX, Platform.WINDOWS, "0.149.0")
+        assert record is not None
+        record_cases = (
+            {"provider": "codex"},
+            {"platform": "windows"},
+            {"backend_version": "latest"},
+            {"protocol_profile": "Not-Lowercase"},
+            {"launch_profile_digest": "not-a-digest"},
+            {"package_shasum": "0" * 39},
+            {"package_integrity": "sha512-not-valid"},
+            {"status": "qualified"},
+            {"max_concurrency": True},
+            {"max_concurrency": 65},
+            {"evidence_digest": "not-a-digest"},
+            {"publication_receipt_digest": "not-a-digest"},
+            {"max_concurrency": 0},
+            {"evidence_digest": None},
+            {
+                "status": BackendVersionStatus.QUARANTINED,
+                "max_concurrency": 1,
+            },
+            {
+                "status": BackendVersionStatus.QUARANTINED,
+                "max_concurrency": 0,
+                "review_reference": None,
+            },
+            {
+                "status": BackendVersionStatus.CANDIDATE,
+                "max_concurrency": 1,
+            },
+        )
+        for values in record_cases:
+            with self.subTest(record_values=values):
+                with self.assertRaises((TypeError, ValueError)):
+                    dataclasses.replace(record, **values)
+
+        duplicate_profiles = (
+            self.registry.profiles[0],
+            self.registry.profiles[0],
+            *self.registry.profiles[1:],
+        )
+        duplicate_records = (
+            self.registry.records[0],
+            self.registry.records[0],
+            *self.registry.records[1:],
+        )
+        mismatched_record = dataclasses.replace(
+            self.registry.records[0],
+            protocol_profile="pi-jsonl-v1",
+        )
+        registry_cases = (
+            {"schema_version": 2},
+            {"profiles": list(self.registry.profiles)},
+            {"profiles": ()},
+            {"records": list(self.registry.records)},
+            {"records": ()},
+            {"profiles": tuple(reversed(self.registry.profiles))},
+            {"profiles": duplicate_profiles},
+            {"records": tuple(reversed(self.registry.records))},
+            {"records": duplicate_records},
+            {"records": (mismatched_record, *self.registry.records[1:])},
+        )
+        for values in registry_cases:
+            with self.subTest(registry_values=values):
+                with self.assertRaises((TypeError, ValueError)):
+                    dataclasses.replace(self.registry, **values)
+
+        with self.assertRaises(KeyError):
+            self.registry.profile_for_protocol(Provider.CODEX, "missing-protocol")
+
 
 if __name__ == "__main__":
     unittest.main()

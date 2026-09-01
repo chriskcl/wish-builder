@@ -5,8 +5,10 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from tests.processes.test_coordinator import one_task_manifest
+from wish_builder.services import gate_b_bootstrap as gate_b_module
 from wish_builder.adapters.storage import FilesystemJournalStorage
 from wish_builder.contracts import (
     ActorIdentity,
@@ -22,12 +24,14 @@ from wish_builder.services.execution_admission import admit_execution_snapshot
 from wish_builder.services.gate_b_bootstrap import (
     GateBBootstrapMaterial,
     GateBBootstrapReason,
+    GateBBootstrapResult,
     bootstrap_gate_b,
     gate_b_artifact_hash_from_nonce,
     gate_b_artifact_nonce,
     graph_projection_bytes,
 )
 from wish_builder.services.journal import (
+    AppendResult,
     AppendStatus,
     DurableJournal,
     GENESIS_HEAD,
@@ -275,6 +279,135 @@ class GateBBootstrapTests(unittest.TestCase):
         self.assertFalse(result.admitted)
         self.assertIs(result.reason, GateBBootstrapReason.JOURNAL_PREFIX_INVALID)
         self.assertEqual(0, result.appended_count)
+
+    def test_material_result_and_public_boundaries_fail_closed(self) -> None:
+        selected = material()
+
+        with self.assertRaises(ValueError):
+            gate_b_artifact_nonce(None)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            graph_projection_bytes(object())  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "material graph digest"):
+            graph_projection_bytes(
+                replace(
+                    selected.manifest,
+                    trellis_graph_digest="sha256:" + "d" * 64,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "unsupported Gate B bootstrap"):
+            gate_b_module._draft_for_index(selected, (), -1)
+
+        material_cases = (
+            {"manifest": object()},
+            {"workspace_hash": "not-a-digest"},
+            {"gate_b_artifact_hash": "not-a-digest"},
+            {"trellis_snapshot_hash": "not-a-digest"},
+            {"gate_b_artifact_byte_length": True},
+            {"trellis_snapshot_byte_length": 0},
+            {"coordinator": object()},
+            {"coordinator": selected.approver},
+            {"approver": object()},
+            {"approver": selected.coordinator},
+            {"trellis_observed_at": None},
+            {"requested_at": None},
+            {"decided_at": None},
+        )
+        for values in material_cases:
+            with self.subTest(material_values=values):
+                with self.assertRaises((TypeError, ValueError)):
+                    replace(selected, **values)
+
+        valid_result = GateBBootstrapResult(
+            False,
+            GateBBootstrapReason.JOURNAL_CONFLICT,
+            (),
+            0,
+        )
+        result_cases = (
+            {"admitted": 1},
+            {"reason": "journal_conflict"},
+            {"events": []},
+            {"appended_count": -1},
+            {"admitted": True},
+        )
+        for values in result_cases:
+            with self.subTest(result_values=values):
+                with self.assertRaises((TypeError, ValueError)):
+                    replace(valid_result, **values)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            target = journal(Path(temporary), selected.manifest.run_id)
+            with self.assertRaises(TypeError):
+                bootstrap_gate_b(object(), (), target)  # type: ignore[arg-type]
+            with self.assertRaises(TypeError):
+                bootstrap_gate_b(selected, [], target)  # type: ignore[arg-type]
+            with self.assertRaises(TypeError):
+                bootstrap_gate_b(selected, (), object())  # type: ignore[arg-type]
+
+    def test_append_failures_idempotency_and_postcondition_are_explicit(self) -> None:
+        selected = material()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            target = journal(Path(temporary), selected.manifest.run_id)
+            with mock.patch.object(
+                DurableJournal,
+                "append_draft",
+                return_value=AppendResult(AppendStatus.CONFLICT, GENESIS_HEAD),
+            ):
+                conflict = bootstrap_gate_b(selected, (), target)
+        self.assertIs(conflict.reason, GateBBootstrapReason.JOURNAL_CONFLICT)
+
+        missing_event = mock.Mock(
+            status=AppendStatus.COMMITTED,
+            event=None,
+            head=GENESIS_HEAD,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            target = journal(Path(temporary), selected.manifest.run_id)
+            with mock.patch.object(
+                DurableJournal,
+                "append_draft",
+                return_value=missing_event,
+            ):
+                failed = bootstrap_gate_b(selected, (), target)
+        self.assertIs(failed.reason, GateBBootstrapReason.PERSISTENCE_FAILED)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            template = bootstrap_gate_b(
+                selected,
+                (),
+                journal(Path(temporary), selected.manifest.run_id),
+            ).events
+        append_results = tuple(
+            AppendResult(
+                AppendStatus.IDEMPOTENT if index == 0 else AppendStatus.COMMITTED,
+                JournalHead(event.sequence, event.event_hash),
+                event,
+            )
+            for index, event in enumerate(template)
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            target = journal(Path(temporary), selected.manifest.run_id)
+            with mock.patch.object(
+                DurableJournal,
+                "append_draft",
+                side_effect=append_results,
+            ):
+                replayed = bootstrap_gate_b(selected, (), target)
+        self.assertTrue(replayed.admitted)
+        self.assertEqual(7, replayed.appended_count)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            target = journal(Path(temporary), selected.manifest.run_id)
+            with mock.patch(
+                "wish_builder.services.execution_admission.admit_execution_snapshot",
+                return_value=mock.Mock(admitted=False),
+            ):
+                postcondition = bootstrap_gate_b(selected, (), target)
+        self.assertIs(
+            postcondition.reason,
+            GateBBootstrapReason.POSTCONDITION_FAILED,
+        )
 
 
 if __name__ == "__main__":
