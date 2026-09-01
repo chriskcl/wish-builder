@@ -355,7 +355,7 @@ python scripts\manage_backend_versions.py quarantine --help
 | 檢查 | 結果 |
 | --- | --- |
 | 較早的本地非效能矩陣 | Windows／Linux × Python 3.11／3.12／3.13；每格執行 1,498 項，0 failure、0 error；Windows 允許略過 9 項，Linux 允許略過 13 項 |
-| 最新本地完整測試 | Windows／Python 3.13.14；1,589 項非效能測試加 16 項效能測試，0 failure、0 error，3 項平台條件式略過 |
+| 最新本地完整測試 | Windows／Python 3.13.14；1,601 項非效能測試加 16 項效能測試，0 failure、0 error，3 項平台條件式略過 |
 | Codex/Windows 證據獨立核對 | 52 項通過，1 項因 Windows symlink 權限略過；結論為 `PASS` |
 | 發布後資格與准入測試 | 68 項通過，1 項因 Windows symlink 權限略過，另有 59 個 subtests 通過 |
 | 官方 Trellis `0.6.15` 整合 | 本次 Windows 通過 24 項 Node bridge 測試與 14 項 Python 整合測試；固定的跨平台證據在各平台保留相同測試集 |

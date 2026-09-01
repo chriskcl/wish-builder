@@ -15,7 +15,7 @@ This file records user-visible changes to Wish Builder.
 - Added automatic lease renewal and stopped stale coordinators from continuing after ownership has
   moved to a newer run.
 - Added the production Trellis lifecycle bridge and its Python adapter to the official integration
-  evidence, with 24 Node tests and 11 Python tests on each supported CI platform.
+  evidence, with 24 Node tests and 14 Python tests on each supported CI platform.
 - Added an exact backend/OS/version qualification registry with protocol profiles, local SDK
   probing, candidate and quarantine states, and fail-closed admission before runtime setup.
 - Locally published the independently reviewed Codex/Windows backend qualification with a
