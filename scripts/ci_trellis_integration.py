@@ -31,7 +31,7 @@ from wish_builder.compatibility import load_bundled_trellis_compatibility
 
 SCHEMA_VERSION = 1
 EXPECTED_PLATFORMS = ("ubuntu-latest", "windows-latest")
-EXPECTED_NODE_TEST_COUNT = 24
+EXPECTED_NODE_TEST_COUNT = 25
 EXPECTED_PYTHON_TEST_COUNT = 14
 NODE_TEST_FILES = (
     "tests/node/trellis-core-bridge.test.mjs",

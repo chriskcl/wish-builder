@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -152,6 +154,51 @@ test("lifecycle adapter fails closed on collisions, missing dependencies, and un
   );
 });
 
+test("lifecycle writer rejects a concurrent owner and recovers after that process is killed", async (t) => {
+  const fixture = await lifecycleFixture(t, "task-lock-recovery");
+  if (fixture === null) return;
+  const prepare = command("prepare_attempt", {
+    attempt: 1,
+    dispatch_id: "DISPATCH-LOCK-RECOVERY",
+    expected_base_commit: "0123456789012345678901234567890123456789",
+    manifest_digest: digest("1"),
+    operation_id: "ATTEMPT-LOCK-RECOVERY",
+    parent_task_id: "parent-1",
+    run_id: "run-1",
+    task_id: "task-lock-recovery",
+    trellis_graph_digest: digest("2"),
+    trellis_task_id: "task-lock-recovery",
+  });
+  const request = applyRequest(fixture.root, prepare, {
+    worktreePath: path.join(fixture.root, "attempt-lock-recovery"),
+    worktreeId: "worktree-lock-recovery",
+  });
+  const holder = spawnLifecycleHolder(fixture, request);
+  t.after(async () => {
+    if (holder.exitCode === null && holder.signalCode === null) {
+      const exited = once(holder, "exit");
+      holder.kill("SIGKILL");
+      await exited;
+    }
+  });
+  await waitForOutput(holder, "LOCK_ACQUIRED");
+
+  await assert.rejects(
+    applyTrellisLifecycle(fixture.api, request),
+    (error) => error?.code === "lifecycle_writer_busy",
+  );
+
+  const exited = once(holder, "exit");
+  assert.equal(holder.kill("SIGKILL"), true);
+  await exited;
+  const recovered = await applyTrellisLifecycle(fixture.api, request);
+  assert.equal(recovered.status, "applied");
+  assert.equal(
+    existsSync(path.join(fixture.root, ".trellis", ".wish-builder-lifecycle-writer.lock")),
+    false,
+  );
+});
+
 async function lifecycleFixture(t, taskId = "task-1") {
   if (!existsSync(CORE_ROOT)) {
     t.skip("local pinned Trellis Core 0.6.15 fixture is unavailable");
@@ -208,4 +255,62 @@ function commandHash(value) {
 
 function digest(character) {
   return `sha256:${character.repeat(64)}`;
+}
+
+function spawnLifecycleHolder(fixture, request) {
+  const lifecycleUrl = pathToFileURL(path.resolve(
+    "wish_builder/bridges/trellis_core/lifecycle.mjs",
+  )).href;
+  const coreUrl = pathToFileURL(path.join(CORE_ROOT, "dist", "task", "index.js")).href;
+  const source = `
+    const [lifecycleUrl, coreUrl, requestJson] = process.argv.slice(1);
+    const [{ applyTrellisLifecycle }, taskApi] = await Promise.all([
+      import(lifecycleUrl),
+      import(coreUrl),
+    ]);
+    const blockingApi = Object.freeze({
+      loadTaskRecord: taskApi.loadTaskRecord,
+      async writeTaskRecord() {
+        process.stdout.write("LOCK_ACQUIRED\\n");
+        await new Promise(() => {});
+      },
+    });
+    await applyTrellisLifecycle(blockingApi, JSON.parse(requestJson));
+  `;
+  return spawn(
+    process.execPath,
+    ["--input-type=module", "--eval", source, lifecycleUrl, coreUrl, JSON.stringify(request)],
+    { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
+  );
+}
+
+function waitForOutput(child, marker) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => finish(new Error(
+      `timed out waiting for ${marker}; stdout=${stdout}; stderr=${stderr}`,
+    )), 10_000);
+    const onStdout = (chunk) => {
+      stdout += chunk.toString("utf8");
+      if (stdout.split(/\r?\n/u).includes(marker)) finish();
+    };
+    const onStderr = (chunk) => { stderr += chunk.toString("utf8"); };
+    const onError = (error) => finish(error);
+    const onExit = (code, signal) => finish(new Error(
+      `holder exited before ${marker}; code=${code}; signal=${signal}; stderr=${stderr}`,
+    ));
+    const finish = (error) => {
+      clearTimeout(timeout);
+      child.stdout.off("data", onStdout);
+      child.stderr.off("data", onStderr);
+      child.off("error", onError);
+      child.off("exit", onExit);
+      if (error) reject(error); else resolve();
+    };
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
 }

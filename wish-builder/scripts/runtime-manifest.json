@@ -218,11 +218,11 @@
     },
     {
       "destination": "scripts/wish_builder/bridges/trellis_core/lifecycle.mjs",
-      "runtime_sha256": "01f4406ee473d779bcd25f67c988d76f4bad9557d33cad6c6b72503299f577ab",
-      "runtime_size": 22116,
+      "runtime_sha256": "9bc2c96ec21615712e343d4db935b313f23d3a70ad1e23ed296d967ec9582d7f",
+      "runtime_size": 22913,
       "source": "wish_builder/bridges/trellis_core/lifecycle.mjs",
-      "source_sha256": "01f4406ee473d779bcd25f67c988d76f4bad9557d33cad6c6b72503299f577ab",
-      "source_size": 22116
+      "source_sha256": "9bc2c96ec21615712e343d4db935b313f23d3a70ad1e23ed296d967ec9582d7f",
+      "source_size": 22913
     },
     {
       "destination": "scripts/wish_builder/bridges/trellis_core/pins.json",

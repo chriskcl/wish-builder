@@ -1,11 +1,12 @@
-import { createHash, randomBytes } from "node:crypto";
-import { lstat, open, opendir, readFile, realpath, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, opendir, readFile, realpath } from "node:fs/promises";
+import { createServer } from "node:net";
 import path from "node:path";
 
 const MAX_TASK_DIRECTORIES = 4096;
 const MAX_TASK_RECORD_BYTES = 2 * 1024 * 1024;
 const LIFECYCLE_META_KEY = "wish_builder_lifecycle";
-const LIFECYCLE_WRITER_LOCK = ".wish-builder-lifecycle-writer.lock";
+const LIFECYCLE_WRITER_ENDPOINT_PREFIX = "wish-builder-lifecycle-writer";
 const TASK_RECORD_FIELDS = Object.freeze([
   "id", "name", "title", "description", "status", "dev_type", "scope",
   "package", "priority", "creator", "assignee", "createdAt", "completedAt",
@@ -343,16 +344,11 @@ async function stableTaskFile(taskFile) {
 }
 
 async function withLifecycleWriter(checkoutRoot, action) {
-  const lockPath = path.join(checkoutRoot, ".trellis", LIFECYCLE_WRITER_LOCK);
-  const tokenValue = `${process.pid}:${randomBytes(32).toString("hex")}`;
-  let handle;
+  const server = createServer((socket) => socket.destroy());
   try {
-    handle = await open(lockPath, "wx", 0o600);
-    await handle.writeFile(tokenValue, "utf8");
-    await handle.sync();
+    await listenForLifecycleWriter(server, lifecycleWriterEndpoint(checkoutRoot));
   } catch (error) {
-    if (handle) await handle.close().catch(() => {});
-    if (error?.code === "EEXIST") throw new TrellisLifecycleError("lifecycle_writer_busy");
+    if (error?.code === "EADDRINUSE") throw new TrellisLifecycleError("lifecycle_writer_busy");
     throw new TrellisLifecycleError("lifecycle_writer_lock_failed");
   }
   let result;
@@ -363,15 +359,44 @@ async function withLifecycleWriter(checkoutRoot, action) {
     actionError = error;
   }
   try {
-    await handle.close();
-    const stored = await readFile(lockPath, "utf8");
-    if (stored !== tokenValue) throw new Error("lock token changed");
-    await unlink(lockPath);
+    await closeLifecycleWriter(server);
   } catch {
     if (!actionError) actionError = new TrellisLifecycleError("lifecycle_writer_lock_release_failed");
   }
   if (actionError) throw actionError;
   return result;
+}
+
+function lifecycleWriterEndpoint(checkoutRoot) {
+  const canonicalRoot = path.normalize(checkoutRoot);
+  const lockIdentity = process.platform === "win32" ? canonicalRoot.toLowerCase() : canonicalRoot;
+  const digest = createHash("sha256").update(lockIdentity, "utf8").digest("hex");
+  const name = `${LIFECYCLE_WRITER_ENDPOINT_PREFIX}-${digest}`;
+  if (process.platform === "win32") return `\\\\.\\pipe\\${name}`;
+  if (process.platform === "linux") return `\0${name}`;
+  throw new TrellisLifecycleError("lifecycle_writer_lock_failed");
+}
+
+function listenForLifecycleWriter(server, endpoint) {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(endpoint);
+  });
+}
+
+function closeLifecycleWriter(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
 }
 
 function validateApplyInput(value) {
