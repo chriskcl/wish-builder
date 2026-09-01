@@ -1917,6 +1917,7 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
 
     def test_git_transport_text_and_lock_failures_have_stable_codes(self) -> None:
         commands: list[list[str]] = []
+        repository_root = Path(".")
 
         def completed(command: list[str], **_: object) -> SimpleNamespace:
             commands.append(command)
@@ -1929,7 +1930,7 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
                 mock.patch.object(git_boundary.subprocess, "run", side_effect=completed),
             ):
                 git_boundary._run_git(
-                    Path("."),
+                    repository_root,
                     ("status",),
                     environment={"WISH_BUILDER_TEST": "1"},
                 )
