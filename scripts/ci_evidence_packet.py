@@ -101,6 +101,12 @@ _REQUIRED_PLATFORM_SKIPS = {
                 "junction test is Windows-specific",
             ),
             (
+                "tests.adapters.test_git_worktree_boundaries."
+                "GitWorktreeBoundaryCoverageTests."
+                "test_git_transport_materializes_long_worktree_paths_on_windows",
+                "requires Git for Windows",
+            ),
+            (
                 "tests.processes.test_containment.ContainmentTests."
                 "test_windows_job_creation_failures_are_unavailable",
                 "Windows API failure mapping",
