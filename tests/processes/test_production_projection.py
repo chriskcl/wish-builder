@@ -242,7 +242,8 @@ class ProductionTrellisProjectionTests(unittest.TestCase):
         git(attempt_root, "commit", "-m", "implement projected task")
 
     def test_durable_dispatch_projects_in_progress_through_production(self) -> None:
-        built, _factory, _checkout, port, repository, _runtime = self._new_runtime()
+        built, _factory, _checkout, port, _repository, _runtime = self._new_runtime()
+        checkout_root = Path(built._workspace.worktree_root.canonical_path)
 
         _identity, _prepared, dispatched = self._dispatch(built)
 
@@ -262,10 +263,10 @@ class ProductionTrellisProjectionTests(unittest.TestCase):
             TrellisProjectionSyncStatus.APPLIED,
         )
         self.assertTrue(
-            all(root == repository for root, _task_id in port.inspect_calls)
+            all(root == checkout_root for root, _task_id in port.inspect_calls)
         )
         self.assertTrue(
-            all(request.checkout_root == repository for request in port.apply_calls)
+            all(request.checkout_root == checkout_root for request in port.apply_calls)
         )
         built._journal.current_position(expected_head=dispatched.cursor.head)
 

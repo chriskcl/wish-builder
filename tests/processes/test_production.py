@@ -1412,6 +1412,7 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
                 "_dispatch_runtime_admitted",
                 return_value=True,
             ),
+            mock.patch.object(third, "_retry_admitted", return_value=True),
             mock.patch.object(
                 production_module,
                 "reconcile_pending_external_effects",

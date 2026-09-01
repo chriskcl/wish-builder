@@ -521,7 +521,8 @@ class ProductionLifecycleIntegrationTests(unittest.TestCase):
         built, _factory = self.components()
         blocked, _command, _append = self.block_absent_git_preparation(built)
 
-        recovered = built.acquire_lease(blocked)
+        with mock.patch.object(built, "_retry_admitted", return_value=True):
+            recovered = built.acquire_lease(blocked)
 
         self.assertIsNotNone(recovered)
         assert recovered is not None
