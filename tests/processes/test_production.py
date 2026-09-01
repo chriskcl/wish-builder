@@ -702,6 +702,39 @@ class ProductionHostBoundaryTests(unittest.TestCase):
         self.assertNotIn("WISH_BUILDER_TRELLIS_CLI_ROOT", environment)
         self.assertNotIn("BACKEND_CHANNEL_ROOT", environment)
 
+    def test_explicit_trellis_core_pin_overrides_environment(self) -> None:
+        environment_root = self.root / "environment-core"
+        environment_root.mkdir()
+        explicit_root = self.root / "explicit-core"
+        explicit_root.mkdir()
+        environment_archive = self.root / "environment-core.tgz"
+        environment_archive.write_bytes(b"environment")
+        explicit_archive = self.root / "explicit-core.tgz"
+        explicit_archive.write_bytes(b"explicit")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "WISH_BUILDER_TRELLIS_CORE_ROOT": str(environment_root),
+                "WISH_BUILDER_TRELLIS_CORE_ARCHIVE": str(environment_archive),
+            },
+            clear=True,
+        ):
+            environment = production_module._bridge_environment(
+                self.layout,
+                trellis_core_root=explicit_root,
+                trellis_core_archive=explicit_archive,
+            )
+
+        self.assertEqual(
+            str(explicit_root.resolve(strict=True)),
+            environment["WISH_BUILDER_TRELLIS_CORE_ROOT"],
+        )
+        self.assertEqual(
+            str(explicit_archive.resolve(strict=True)),
+            environment["WISH_BUILDER_TRELLIS_CORE_ARCHIVE"],
+        )
+
     def test_host_id_is_sanitized_bounded_and_has_a_stable_fallback(self) -> None:
         with mock.patch.object(
             production_module.host_platform,
@@ -829,6 +862,35 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
         self.assertTrue(built.verify_workspace_identity(self.manifest))
         self.assertIsNotNone(built.recover_verified_cursor(self.manifest))
         self.assertTrue(self.runtime_root.is_dir())
+
+    def test_composition_keeps_live_projection_and_gate_clean_git_identity(self) -> None:
+        task_file = (
+            self.repository / ".trellis" / "tasks" / "task-a" / "task.json"
+        )
+        task_file.parent.mkdir(parents=True)
+        task_file.write_text('{"status":"planning"}\n', encoding="utf-8")
+        git(self.repository, "add", ".trellis/tasks/task-a/task.json")
+        git(self.repository, "commit", "-m", "add Trellis task")
+        self.manifest = dataclasses.replace(
+            self.manifest,
+            protected_paths=tuple(
+                sorted({*self.manifest.protected_paths, ".trellis/tasks/**"})
+            ),
+        )
+        gate_workspace = production_module.capture_workspace_identity(
+            self.repository,
+            production_module._workspace_scopes(self.manifest),
+        )
+        task_file.write_text('{"status":"in_progress"}\n', encoding="utf-8")
+
+        built = self.components()
+
+        self.assertNotEqual(gate_workspace, built._workspace)
+        self.assertEqual(gate_workspace, built._repository.expected_workspace)
+        self.assertEqual(
+            built._workspace.workspace_hash,
+            built._owner.workspace_hash,
+        )
 
     def test_factory_rejects_invalid_inputs_before_host_or_runtime_effects(self) -> None:
         with mock.patch.object(
@@ -1039,13 +1101,78 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
             changed.reason,
         )
 
+    def test_execution_validation_accepts_only_reconstructed_task_projection_drift(
+        self,
+    ) -> None:
+        built = self.components()
+        events = ()
+        workspace_drift = ExecutionAdmissionResult(
+            False,
+            ExecutionAdmissionReason.WORKSPACE_DRIFT,
+        )
+        admitted = mock.Mock(admitted=True)
+        reconstructed = dataclasses.replace(
+            built._workspace,
+            index_dirty_fingerprint="sha256:" + "f" * 64,
+        )
+        provider = mock.Mock()
+        provider.ensure.side_effect = (
+            mock.Mock(workspace=built._workspace),
+            mock.Mock(workspace=built._workspace),
+        )
+
+        with (
+            mock.patch.object(built, "_read_verified_events", return_value=events),
+            mock.patch.object(built, "_live_graph_admitted", return_value=True),
+            mock.patch.object(
+                production_module,
+                "admit_execution_snapshot",
+                side_effect=(workspace_drift, admitted),
+            ) as admission,
+            mock.patch.object(
+                production_module,
+                "TrellisAuthoritativeProjectionProvider",
+                return_value=provider,
+            ),
+            mock.patch.object(
+                production_module,
+                "reconstruct_pristine_workspace_identity",
+                return_value=reconstructed,
+            ),
+        ):
+            actual = built.validate_execution(self.manifest)
+
+        self.assertIs(admitted, actual)
+        self.assertEqual(2, provider.ensure.call_count)
+        self.assertEqual(
+            [
+                mock.call(
+                    self.manifest,
+                    events,
+                    workspace_hash=built._workspace.workspace_hash,
+                ),
+                mock.call(
+                    self.manifest,
+                    events,
+                    workspace_hash=reconstructed.workspace_hash,
+                ),
+            ],
+            admission.call_args_list,
+        )
+
     def test_local_lease_cursor_workflow_and_empty_worker_batch_are_composed(self) -> None:
         built = self.components()
         initial = built.recover_verified_cursor(self.manifest)
         self.assertIsNotNone(initial)
 
-        active = built.acquire_lease(initial)
+        with mock.patch.object(
+            built,
+            "_recover_cancelled_dispatch",
+            wraps=built._recover_cancelled_dispatch,
+        ) as takeover_recovery:
+            active = built.acquire_lease(initial)
         self.assertIsNotNone(active)
+        takeover_recovery.assert_called_once()
         self.assertTrue(active.lease_state.active)
         lease = active.lease_state.lease
         self.assertIsNotNone(lease)

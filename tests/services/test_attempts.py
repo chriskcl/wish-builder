@@ -9,7 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
-from wish_builder.adapters.git_identity import capture_workspace_identity
+from wish_builder.adapters.git_identity import (
+    WorkspaceIdentity,
+    capture_workspace_identity,
+    reconstruct_pristine_workspace_identity,
+)
 from wish_builder.adapters.git_worktree import (
     AttemptEffectDisposition,
     AttemptWorktree,
@@ -20,6 +24,7 @@ from wish_builder.adapters.git_worktree import (
     StageResultCommand,
     StagedResult,
 )
+from wish_builder.adapters.trellis import TrellisAuthoritativeProjectionProvider
 from wish_builder.contracts import (
     ActorType,
     EffectObjectType,
@@ -1036,6 +1041,251 @@ class AttemptBoundaryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "repository identity"):
             restarted_cleanup.apply(effect, plan)
         self.assertTrue(Path(attempt.path).exists())
+
+
+class ProjectionAwareAttemptBoundaryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.repository = self.root / "repository"
+        self.attempts_root = self.root / "attempts"
+        initialize_repository(self.repository)
+        self.task_file = (
+            self.repository / ".trellis" / "tasks" / "task-a" / "task.json"
+        )
+        self.task_file.parent.mkdir(parents=True)
+        self.task_file.write_text('{"status":"planning"}\n', encoding="utf-8")
+        git(self.repository, "add", ".trellis/tasks/task-a/task.json")
+        git(self.repository, "commit", "-m", "add Trellis task")
+        self.attempts_root.mkdir()
+        self.scopes = (*SCOPES, ".trellis/tasks/**")
+        self.gate_workspace = capture_workspace_identity(
+            self.repository,
+            self.scopes,
+        )
+        self.provider = TrellisAuthoritativeProjectionProvider(
+            self.repository,
+            self.gate_workspace,
+        )
+        self.ordinal = 0
+
+    def normalize_projection(
+        self,
+        observed: WorkspaceIdentity,
+    ) -> WorkspaceIdentity:
+        before = self.provider.ensure("WISH-001")
+        if before.workspace != observed:
+            raise ValueError("projection changed before reconstruction")
+        reconstructed = reconstruct_pristine_workspace_identity(observed)
+        after = self.provider.ensure("WISH-001")
+        if after.workspace != observed:
+            raise ValueError("projection changed during reconstruction")
+        return reconstructed
+
+    def adapter(self) -> GitWorktreeAdapter:
+        return GitWorktreeAdapter(
+            self.repository,
+            self.attempts_root,
+            self.gate_workspace,
+            clock=lambda: FIXED_TIME,
+            projection_workspace_validator=self.normalize_projection,
+        )
+
+    def command(self, adapter: GitWorktreeAdapter, correlation: str = "CREATE-101"):
+        return adapter.plan_attempt(
+            ExecutionIdentity("WISH-001", 1, "TASK-001", 1, correlation),
+            owned_paths=("src/a.txt",),
+            protected_paths=(".github/**", ".trellis/tasks/**"),
+            path_case_mode=PathCaseMode.INSENSITIVE,
+        )
+
+    def effect(
+        self,
+        adapter: GitWorktreeAdapter,
+        command: object,
+        operation: EffectOperation,
+        object_type: EffectObjectType,
+        event_type: JournalEventType,
+    ) -> PreparedEffect:
+        self.ordinal += 1
+        return prepared_effect(
+            adapter,
+            command,
+            operation=operation,
+            object_type=object_type,
+            event_type=event_type,
+            ordinal=self.ordinal,
+        )
+
+    def test_task_projection_reconstructs_exact_command_and_creates_worktree(self) -> None:
+        adapter = self.adapter()
+        original = self.command(adapter)
+        self.task_file.write_text('{"status":"in_progress"}\n', encoding="utf-8")
+
+        reconstructed = self.command(adapter)
+        self.assertEqual(original, reconstructed)
+        effect = self.effect(
+            adapter,
+            original,
+            EffectOperation.REPOSITORY_UPDATE,
+            EffectObjectType.WORKTREE,
+            JournalEventType.EFFECT_REQUESTED,
+        )
+        created = adapter.create_attempt(effect)
+
+        self.assertIs(AttemptEffectDisposition.APPLIED, created.disposition)
+        self.assertIsNotNone(created.value)
+        self.assertEqual(
+            self.gate_workspace.workspace_hash,
+            original.target_workspace_hash,
+        )
+
+    def test_staged_projection_source_drift_and_head_drift_fail_closed(self) -> None:
+        for case in ("staged_projection", "source_drift", "head_drift"):
+            with self.subTest(case=case):
+                with tempfile.TemporaryDirectory() as raw_root:
+                    root = Path(raw_root)
+                    repository = root / "repository"
+                    attempts_root = root / "attempts"
+                    initialize_repository(repository)
+                    task_file = (
+                        repository / ".trellis" / "tasks" / "task-a" / "task.json"
+                    )
+                    task_file.parent.mkdir(parents=True)
+                    task_file.write_text('{"status":"planning"}\n', encoding="utf-8")
+                    git(repository, "add", ".trellis/tasks/task-a/task.json")
+                    git(repository, "commit", "-m", "add Trellis task")
+                    attempts_root.mkdir()
+                    gate = capture_workspace_identity(repository, self.scopes)
+                    provider = TrellisAuthoritativeProjectionProvider(repository, gate)
+
+                    def normalize(observed: WorkspaceIdentity) -> WorkspaceIdentity:
+                        before = provider.ensure("WISH-001")
+                        if before.workspace != observed:
+                            raise ValueError("projection changed")
+                        return reconstruct_pristine_workspace_identity(observed)
+
+                    adapter = GitWorktreeAdapter(
+                        repository,
+                        attempts_root,
+                        gate,
+                        projection_workspace_validator=normalize,
+                    )
+                    if case == "staged_projection":
+                        task_file.write_text(
+                            '{"status":"in_progress"}\n',
+                            encoding="utf-8",
+                        )
+                        git(repository, "add", ".trellis/tasks/task-a/task.json")
+                    elif case == "source_drift":
+                        (repository / "src" / "a.txt").write_text(
+                            "source drift\n",
+                            encoding="utf-8",
+                        )
+                    else:
+                        (repository / "docs" / "outside.txt").write_text(
+                            "advanced\n",
+                            encoding="utf-8",
+                        )
+                        git(repository, "add", "docs/outside.txt")
+                        git(repository, "commit", "-m", "advance target")
+
+                    with self.assertRaisesRegex(GitBoundaryError, "workspace_drift"):
+                        adapter.plan_attempt(
+                            ExecutionIdentity(
+                                "WISH-001",
+                                1,
+                                "TASK-001",
+                                1,
+                                f"CREATE-{case.upper().replace('_', '-')}",
+                            ),
+                            owned_paths=("src/a.txt",),
+                            protected_paths=(
+                                ".github/**",
+                                ".trellis/tasks/**",
+                            ),
+                            path_case_mode=PathCaseMode.INSENSITIVE,
+                        )
+
+    def test_promotion_advances_clean_baseline_while_projection_remains_dirty(self) -> None:
+        adapter = self.adapter()
+        command = self.command(adapter, "CREATE-102")
+        created = adapter.create_attempt(
+            self.effect(
+                adapter,
+                command,
+                EffectOperation.REPOSITORY_UPDATE,
+                EffectObjectType.WORKTREE,
+                JournalEventType.EFFECT_REQUESTED,
+            )
+        )
+        self.assertIsNotNone(created.value)
+        attempt = created.value
+        assert attempt is not None
+        attempt_path = Path(attempt.path)
+        (attempt_path / "src" / "a.txt").write_text("result\n", encoding="utf-8")
+        git(attempt_path, "add", "src/a.txt")
+        git(attempt_path, "commit", "-m", "result")
+        validation = adapter.validate_result(attempt, process_tree_terminated=True)
+        self.assertTrue(validation.accepted, validation)
+        stage_command = adapter.plan_stage(validation, operation_id="STAGE-102")
+        staged = adapter.stage_result(
+            self.effect(
+                adapter,
+                stage_command,
+                EffectOperation.RESULT_STAGE,
+                EffectObjectType.RESULT_BUNDLE,
+                JournalEventType.EFFECT_REQUESTED,
+            ),
+            validation,
+        )
+        self.assertIsNotNone(staged.value)
+        staged_value = staged.value
+        assert staged_value is not None
+        self.task_file.write_text('{"status":"in_progress"}\n', encoding="utf-8")
+
+        service = PromotionService(adapter, graph_index())
+        plan = service.plan_next(
+            (staged_value,),
+            expected_target_sha=self.gate_workspace.base_commit_sha,
+            operation_id="PROMOTE-102",
+            coordinator_epoch=1,
+        )
+        plan = service.bind_acceptance(
+            plan,
+            (evidence(staged_value.manifest.identity, 102),),
+        )
+        promoted = service.apply(
+            self.effect(
+                adapter,
+                plan.command,
+                EffectOperation.RESULT_PROMOTION,
+                EffectObjectType.GIT_REF,
+                JournalEventType.PROMOTION_REQUESTED,
+            ),
+            plan,
+        )
+
+        self.assertIs(PromotionDisposition.APPLIED, promoted.disposition)
+        self.assertEqual(
+            git_text(self.repository, "rev-parse", "HEAD"),
+            adapter.expected_workspace.base_commit_sha,
+        )
+        self.assertEqual(
+            '{"status":"in_progress"}\n',
+            self.task_file.read_text(encoding="utf-8"),
+        )
+        follow_up = adapter.plan_attempt(
+            ExecutionIdentity("WISH-001", 1, "TASK-002", 1, "CREATE-103"),
+            owned_paths=("src/b.txt",),
+            protected_paths=(".github/**", ".trellis/tasks/**"),
+            path_case_mode=PathCaseMode.INSENSITIVE,
+        )
+        self.assertEqual(
+            adapter.expected_workspace.workspace_hash,
+            follow_up.target_workspace_hash,
+        )
 
 
 if __name__ == "__main__":

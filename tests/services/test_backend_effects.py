@@ -142,13 +142,13 @@ class BackendDispatchEffectServiceTests(unittest.TestCase):
         )
         return PersistedEffectRequest.from_append_result(result)
 
-    def service(self, channel=None, *, failpoint=None):
+    def service(self, channel=None, *, failpoint=None, fencing_token=1):
         return BackendDispatchEffectService(
             self.journal,
             channel or FakeBackendChannelPort(capabilities()),
             self.evidence,
             coordinator_id="coordinator-001",
-            fencing_token=1,
+            fencing_token=fencing_token,
             failpoint=failpoint,
         )
 
@@ -303,6 +303,39 @@ class BackendDispatchEffectServiceTests(unittest.TestCase):
         self.assertIs(result.receipt.operation, EffectOperation.CANCEL_TURN)
         self.assertIs(result.receipt.status, EffectStatus.UNKNOWN)
         self.assertTrue(result.receipt.evidence)
+
+    def test_takeover_epoch_can_cancel_but_cannot_dispatch_an_old_parent(self) -> None:
+        dispatch_plan = plan()
+        command = cancel_command()
+        channel = FakeBackendChannelPort(
+            capabilities(),
+            send_state=TurnState.RUNNING,
+        )
+        dispatched = self.service(channel).dispatch(self.parent, dispatch_plan)
+        takeover = self.service(channel, fencing_token=2)
+
+        blocked = takeover.dispatch(self.parent, dispatch_plan)
+        cancelled = takeover.cancel(
+            self.parent,
+            command,
+            expected_head=dispatched.head,
+        )
+
+        self.assertIs(blocked.status, BackendDispatchEffectStatus.BLOCKED)
+        self.assertIs(
+            blocked.reason,
+            BackendDispatchEffectReason.PARENT_REQUEST_INVALID,
+        )
+        self.assertEqual(self.parent.append_result.head, blocked.head)
+        self.assertEqual((), blocked.events)
+        self.assertIs(cancelled.status, BackendDispatchEffectStatus.APPLIED)
+        self.assertEqual(2, len(cancelled.events))
+        request, observation = cancelled.events
+        self.assertEqual(2, request.identity.coordinator_epoch)
+        self.assertEqual(2, request.payload.fencing_token)
+        self.assertEqual(2, observation.identity.coordinator_epoch)
+        assert cancelled.receipt is not None
+        self.assertEqual(2, cancelled.receipt.identity.coordinator_epoch)
 
     def test_cancel_evidence_is_durable_before_journal_observation(self) -> None:
         dispatch_plan = plan()

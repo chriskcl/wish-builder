@@ -229,6 +229,10 @@ class _Components:
         self.worker_unknown_after_renewal = False
         self.worker_omits_renewal_head = False
         self.worker_input_cursor = None
+        self.effect_renewal_calls = 0
+        self.effect_renewal_result = True
+        self.effect_renewal_failure_call = None
+        self.effect_renewal_cursors = []
         self.checkpoint_events = ()
         self.coordinator_cursors = []
         self.acceptance_fails = False
@@ -346,6 +350,19 @@ class _Components:
     def acquire_lease(self, cursor):
         self.trace.append("lease")
         return self.cursor if self.lease_result else None
+
+    def renew_lease(self, cursor):
+        self.effect_renewal_calls += 1
+        if (
+            not self.effect_renewal_result
+            or self.effect_renewal_calls == self.effect_renewal_failure_call
+        ):
+            return WorkerLeaseRenewalResult(False)
+        renewed = _renew_cursor(cursor)
+        assert renewed.cursor is not None
+        self.cursor = renewed.cursor
+        self.effect_renewal_cursors.append(renewed.cursor)
+        return renewed
 
     def coordinator(self, cursor):
         self.trace.append("coordinator")
@@ -561,6 +578,9 @@ class ForegroundRunServiceTests(unittest.TestCase):
             def acquire_lease(self, cursor):
                 raise AssertionError("component access preceded backend admission")
 
+            def renew_lease(self, cursor):
+                raise AssertionError("component access preceded backend admission")
+
             def coordinator(self, cursor):
                 raise AssertionError("component access preceded backend admission")
 
@@ -741,6 +761,11 @@ class ForegroundRunServiceTests(unittest.TestCase):
         )
         self.assertEqual(1, result.batch_count)
         self.assertEqual(1, self.components.execution_admission_calls)
+        self.assertEqual(3, self.components.effect_renewal_calls)
+        self.assertIs(
+            self.components.effect_renewal_cursors[-1],
+            self.components.worker_input_cursor,
+        )
         self.assertEqual(
             [
                 "backend_admission",
@@ -769,6 +794,30 @@ class ForegroundRunServiceTests(unittest.TestCase):
             ],
             self.components.trace,
         )
+
+    def test_pre_effect_renewal_failure_stops_before_worktree_creation(self):
+        self.components.effect_renewal_result = False
+
+        result = self.service().run()
+
+        self.assertIs(result.status, ForegroundRunStatus.BLOCKED)
+        self.assertIs(result.reason, ForegroundRunReason.LEASE_NOT_ADMITTED)
+        self.assertIs(result.stage, ForegroundRunStage.LEASE)
+        self.assertEqual(1, self.components.effect_renewal_calls)
+        self.assertNotIn("prepare", self.components.trace)
+        self.assertNotIn("dispatch", self.components.trace)
+
+    def test_post_dispatch_renewal_failure_stops_before_worker_monitoring(self):
+        self.components.effect_renewal_failure_call = 3
+
+        result = self.service().run()
+
+        self.assertIs(result.status, ForegroundRunStatus.BLOCKED)
+        self.assertIs(result.reason, ForegroundRunReason.LEASE_NOT_ADMITTED)
+        self.assertIs(result.stage, ForegroundRunStage.LEASE)
+        self.assertEqual(3, self.components.effect_renewal_calls)
+        self.assertIn("dispatch", self.components.trace)
+        self.assertNotIn("workers", self.components.trace)
 
     def test_recovered_verified_and_archived_tasks_count_as_completed(self):
         harness = CoordinatorHarness(
@@ -1156,7 +1205,7 @@ class ForegroundRunServiceTests(unittest.TestCase):
         )
         renewal = next(
             event
-            for event in self.components.checkpoint_events
+            for event in reversed(self.components.checkpoint_events)
             if event.event_type is JournalEventType.LEASE_RENEWED
         )
         self.assertEqual(

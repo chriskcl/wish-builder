@@ -1461,6 +1461,17 @@ class AttemptBackendChannelRouter:
             return None, "attempt effect identity incomplete"
         with self._lock:
             route = self._routes.get(key)
+            if route is None and operation is EffectOperation.CANCEL_TURN:
+                candidates = tuple(
+                    candidate
+                    for candidate_key, candidate in self._routes.items()
+                    if candidate_key.run_id == key.run_id
+                    and candidate_key.task_id == key.task_id
+                    and candidate_key.attempt == key.attempt
+                    and candidate_key.coordinator_epoch < key.coordinator_epoch
+                )
+                if len(candidates) == 1:
+                    route = candidates[0]
         if route is None:
             return None, "attempt identity route unknown"
 

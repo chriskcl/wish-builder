@@ -163,6 +163,12 @@ class WishCtlRunTests(unittest.TestCase):
         service.run.return_value = result
         runtime_root = self.root / "runtime" / ".." / "runtime"
         workspace_root = self.root / "workspace" / ".." / "workspace"
+        core_root = self.root / "trellis-core"
+        core_root.mkdir()
+        core_archive = self.root / "mindfoldhq-trellis-core-0.6.15.tgz"
+        core_archive.write_bytes(b"pinned archive")
+        node = self.root / "node.exe"
+        node.write_bytes(b"pinned node")
         component = object()
         with (
             mock.patch.object(
@@ -184,6 +190,12 @@ class WishCtlRunTests(unittest.TestCase):
                     str(runtime_root),
                     "--workspace-root",
                     str(workspace_root),
+                    "--core-root",
+                    str(core_root),
+                    "--core-archive",
+                    str(core_archive),
+                    "--node",
+                    str(node),
                 ]
             )
             build_components.assert_not_called()
@@ -202,6 +214,9 @@ class WishCtlRunTests(unittest.TestCase):
             manifest,
             runtime_root=runtime_root.expanduser().absolute(),
             workspace_root=workspace_root.expanduser().absolute(),
+            trellis_core_root=core_root.resolve(strict=True),
+            trellis_core_archive=core_archive.resolve(strict=True),
+            node_executable=node.absolute(),
         )
 
     def test_missing_runtime_root_blocks_only_after_backend_admission(self) -> None:
@@ -273,6 +288,9 @@ class WishCtlRunTests(unittest.TestCase):
         self.assertIn("--runtime-root RUNTIME_ROOT", help_text)
         self.assertIn("--workspace-root WORKSPACE_ROOT", help_text)
         self.assertIn("--provider-sdk-root PROVIDER_SDK_ROOT", help_text)
+        self.assertIn("--core-root CORE_ROOT", help_text)
+        self.assertIn("--core-archive CORE_ARCHIVE", help_text)
+        self.assertNotIn("--node", help_text)
 
     def test_run_rejects_relative_provider_sdk_root(self) -> None:
         manifest_path = self.root / "relative-sdk-manifest.json"
@@ -290,6 +308,9 @@ class WishCtlRunTests(unittest.TestCase):
 
         self.assertIsNone(args.runtime_root)
         self.assertIsNone(args.provider_sdk_root)
+        self.assertIsNone(args.core_root)
+        self.assertIsNone(args.core_archive)
+        self.assertIsNone(args.node)
         self.assertEqual(".", args.workspace_root)
 
 

@@ -843,7 +843,10 @@ class WishCtlTests(unittest.TestCase):
             self.assertEqual(0, planning_code, planning_stderr)
             self.assertIn("OK: manifest valid", planning_stdout)
             self.assertEqual(1, execution_code, execution_stderr)
-            self.assertIn("Gate B approval evidence is incomplete", execution_stdout)
+            self.assertIn(
+                "execution validation requires --journal-root and --workspace-root",
+                execution_stdout,
+            )
             self.assertEqual(0, ready_code, ready_stderr)
             ready = json.loads(ready_stdout)
             self.assertEqual(["TASK-001"], ready["task_ids"])

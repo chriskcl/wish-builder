@@ -507,6 +507,71 @@ class StateKernelTests(unittest.TestCase):
             apply_transition(dispatched, missing_attempt).reason,
         )
 
+    def test_terminated_reservation_can_only_be_reclaimed_by_a_higher_epoch(self) -> None:
+        frozen, _ = freeze_graph(self.initial)
+        reserved = accepted(
+            frozen,
+            transition(
+                frozen,
+                JournalEventType.ATTEMPT_RESERVED,
+                TransitionSubject.ATTEMPT,
+                RuntimeState.PLANNED,
+                RuntimeState.RESERVED,
+                task_id="TASK-001",
+                attempt=1,
+                correlation_id="CORRELATION-OLD",
+            ),
+        )
+        terminated = accepted(
+            reserved,
+            transition(
+                reserved,
+                JournalEventType.ATTEMPT_RELEASED,
+                TransitionSubject.ATTEMPT,
+                RuntimeState.RESERVED,
+                RuntimeState.TERMINATED,
+                task_id="TASK-001",
+                attempt=1,
+                correlation_id="CORRELATION-OLD",
+                reason_code=RuntimeReasonCode.LEASE_LOST,
+            ),
+        )
+        same_epoch = transition(
+            terminated,
+            JournalEventType.ATTEMPT_RESERVED,
+            TransitionSubject.ATTEMPT,
+            RuntimeState.TERMINATED,
+            RuntimeState.RESERVED,
+            task_id="TASK-001",
+            attempt=1,
+            correlation_id="CORRELATION-NEW",
+        )
+        self.assertEqual(
+            ApplyReason.STALE_EPOCH,
+            apply_transition(terminated, same_epoch).reason,
+        )
+
+        takeover = dataclasses.replace(terminated, coordinator_epoch=2)
+        reclaimed = accepted(
+            takeover,
+            transition(
+                takeover,
+                JournalEventType.ATTEMPT_RESERVED,
+                TransitionSubject.ATTEMPT,
+                RuntimeState.TERMINATED,
+                RuntimeState.RESERVED,
+                task_id="TASK-001",
+                attempt=1,
+                correlation_id="CORRELATION-NEW",
+                epoch=2,
+            ),
+        )
+        self.assertEqual(1, len(reclaimed.attempts))
+        self.assertEqual(1, reclaimed.attempts[0].attempt)
+        self.assertEqual(2, reclaimed.attempts[0].coordinator_epoch)
+        self.assertEqual("CORRELATION-NEW", reclaimed.attempts[0].correlation_id)
+        self.assertIs(RuntimeState.RESERVED, reclaimed.attempts[0].state)
+
     def test_illegal_transition_and_blocked_run_close_readiness(self) -> None:
         frozen, _ = freeze_graph(self.initial)
         illegal = transition(

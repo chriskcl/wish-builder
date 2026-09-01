@@ -30,6 +30,7 @@ from wish_builder.adapters.git_identity import (
     WorkspaceIdentity,
     capture_filesystem_identity,
     capture_workspace_identity,
+    compare_workspace_identity,
     revalidate_workspace_identity,
 )
 from wish_builder.contracts.manifest_v2 import PathCaseMode
@@ -724,16 +725,22 @@ def _run_git(
         "git",
         "--no-pager",
         "--no-replace-objects",
-        "-c",
-        f"core.hooksPath={hooks_path}",
-        "-c",
-        "core.fsmonitor=false",
-        "-c",
-        "commit.gpgSign=false",
-        "-C",
-        str(repository),
-        *arguments,
     ]
+    if os.name == "nt":
+        command.extend(("-c", "core.longpaths=true"))
+    command.extend(
+        (
+            "-c",
+            f"core.hooksPath={hooks_path}",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "commit.gpgSign=false",
+            "-C",
+            str(repository),
+            *arguments,
+        )
+    )
     try:
         completed = subprocess.run(
             command,
@@ -882,6 +889,9 @@ class GitWorktreeAdapter:
         lock_timeout_seconds: float = DEFAULT_REPOSITORY_LOCK_TIMEOUT_SECONDS,
         clock: Callable[[], str] = _utc_now,
         failpoint: GitMutationFailpoint | None = None,
+        projection_workspace_validator: (
+            Callable[[WorkspaceIdentity], WorkspaceIdentity] | None
+        ) = None,
     ) -> None:
         if type(expected_workspace) is not WorkspaceIdentity:
             raise TypeError("expected_workspace must be a WorkspaceIdentity")
@@ -893,6 +903,10 @@ class GitWorktreeAdapter:
             raise ValueError("lock_timeout_seconds must be positive")
         if not callable(clock):
             raise TypeError("clock must be callable")
+        if projection_workspace_validator is not None and not callable(
+            projection_workspace_validator
+        ):
+            raise TypeError("projection_workspace_validator must be callable or null")
         requested = Path(repository).expanduser().absolute()
         root = Path(expected_workspace.worktree_root.canonical_path)
         try:
@@ -948,6 +962,7 @@ class GitWorktreeAdapter:
         self._expected_workspace = expected_workspace
         self._clock = clock
         self._failpoint = failpoint
+        self._projection_workspace_validator = projection_workspace_validator
         common_dir = Path(expected_workspace.common_dir.canonical_path)
         self._mutation_lock = _RepositoryMutationLock(
             common_dir / "wish-builder.repository.lock",
@@ -988,12 +1003,86 @@ class GitWorktreeAdapter:
 
     def _guard_target(self) -> None:
         comparison = revalidate_workspace_identity(self._expected_workspace)
+        if not comparison.ok and comparison.observed is not None:
+            try:
+                normalized = self._normalize_projection_workspace(comparison.observed)
+            except GitBoundaryError:
+                normalized = comparison.observed
+            comparison = compare_workspace_identity(
+                self._expected_workspace,
+                normalized,
+            )
         if not comparison.ok:
             raise GitBoundaryError(
                 "workspace_drift",
                 ",".join(comparison.mismatches),
                 reason_code=RuntimeReasonCode.WORKSPACE_DRIFT,
             )
+
+    def _normalize_projection_workspace(
+        self,
+        observed: WorkspaceIdentity,
+    ) -> WorkspaceIdentity:
+        validator = self._projection_workspace_validator
+        if validator is None:
+            return observed
+        if _run_git(
+            self.repository,
+            (
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+                "--",
+                *observed.scopes,
+            ),
+        ):
+            raise GitBoundaryError(
+                "workspace_drift",
+                "staged_changes",
+                reason_code=RuntimeReasonCode.WORKSPACE_DRIFT,
+            )
+        try:
+            normalized = validator(observed)
+        except Exception as exc:
+            raise GitBoundaryError(
+                "workspace_drift",
+                type(exc).__name__,
+                reason_code=RuntimeReasonCode.WORKSPACE_DRIFT,
+            ) from exc
+        if type(normalized) is not WorkspaceIdentity:
+            raise GitBoundaryError(
+                "workspace_drift",
+                "projection_validator_result",
+                reason_code=RuntimeReasonCode.WORKSPACE_DRIFT,
+            )
+        for field in (
+            "local_repository_id",
+            "local_worktree_id",
+            "target_full_ref",
+            "base_commit_sha",
+            "scopes",
+        ):
+            if getattr(normalized, field) != getattr(observed, field):
+                raise GitBoundaryError(
+                    "workspace_drift",
+                    f"projection_validator_{field}",
+                    reason_code=RuntimeReasonCode.WORKSPACE_DRIFT,
+                )
+        try:
+            confirmed = capture_workspace_identity(
+                self.repository,
+                observed.scopes,
+            )
+        except GitIdentityError as exc:
+            raise GitBoundaryError("workspace_drift", exc.reason) from exc
+        if not compare_workspace_identity(observed, confirmed).ok:
+            raise GitBoundaryError(
+                "workspace_drift",
+                "projection_validation_race",
+                reason_code=RuntimeReasonCode.WORKSPACE_DRIFT,
+            )
+        return normalized
 
     def _guard_target_structure(self) -> WorkspaceIdentity:
         try:
@@ -1183,6 +1272,93 @@ class GitWorktreeAdapter:
         if type(command) is not AttemptWorktreeCommand:
             raise TypeError("command must be an AttemptWorktreeCommand")
         return self._attempt_observation_effect(command, self._inspect_attempt(command))
+
+    def inspect_owned_path_changes(
+        self,
+        command: AttemptWorktreeCommand,
+    ) -> tuple[str, ...] | None:
+        """Return stable material changes inside owned paths, or unknown."""
+
+        if type(command) is not AttemptWorktreeCommand:
+            raise TypeError("command must be an AttemptWorktreeCommand")
+        try:
+            self._guard_target()
+            before = self._inspect_attempt(command)
+            if not before.exact or before.attempt is None or before.head_sha is None:
+                return None
+            attempt = before.attempt
+            first = self._worktree_changed_paths(attempt)
+            middle = self._inspect_attempt(command)
+            second = self._worktree_changed_paths(attempt)
+            after = self._inspect_attempt(command)
+            self._guard_target()
+            if (
+                not middle.exact
+                or not after.exact
+                or middle.attempt != attempt
+                or after.attempt != attempt
+                or middle.head_sha != before.head_sha
+                or after.head_sha != before.head_sha
+                or first != second
+            ):
+                return None
+            writable_patterns = (
+                *attempt.owned_paths,
+                *attempt.allowed_auxiliary_paths,
+            )
+            return tuple(
+                path
+                for path in first
+                if any(
+                    _pattern_matches(pattern, path, attempt.path_case_mode)
+                    for pattern in writable_patterns
+                )
+            )
+        except (GitBoundaryError, GitIdentityError, OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _worktree_changed_paths(attempt: AttemptWorktree) -> tuple[str, ...]:
+        root = Path(attempt.path)
+        raw = _run_git(
+            root,
+            (
+                "diff",
+                "--name-only",
+                "-z",
+                "--no-renames",
+                attempt.base_commit_sha,
+                "--",
+            ),
+        ) + _run_git(
+            root,
+            ("ls-files", "--others", "--exclude-standard", "-z"),
+        )
+        records = tuple(record for record in raw.split(b"\0") if record)
+        if len(records) > MAX_TREE_ENTRIES:
+            raise GitBoundaryError(
+                "git_changed_path_limit",
+                reason_code=RuntimeReasonCode.LIMIT_EXCEEDED,
+            )
+        paths: set[str] = set()
+        collisions: dict[str, str] = {}
+        for record in records:
+            try:
+                path = record.decode("utf-8", errors="strict")
+            except UnicodeDecodeError as exc:
+                raise GitBoundaryError("git_path_invalid_utf8") from exc
+            _validate_portable_path(path)
+            collision_key = (
+                path
+                if attempt.path_case_mode is PathCaseMode.SENSITIVE
+                else path.casefold()
+            )
+            prior = collisions.get(collision_key)
+            if prior is not None and prior != path:
+                raise GitBoundaryError("git_path_collision", f"{prior}:{path}")
+            collisions[collision_key] = path
+            paths.add(path)
+        return tuple(sorted(paths))
 
     def _validate_attempt_effect(
         self,
@@ -2344,6 +2520,9 @@ class GitWorktreeAdapter:
                 head,
             )
             if merge_base == command.candidate_commit_sha:
+                normalized_workspace = self._normalize_projection_workspace(
+                    observed_workspace
+                )
                 target_status = _run_git(
                     self.repository,
                     (
@@ -2356,13 +2535,13 @@ class GitWorktreeAdapter:
                         *observed_workspace.scopes,
                     ),
                 )
-                if target_status:
+                if target_status and self._projection_workspace_validator is None:
                     raise GitBoundaryError(
                         "promoted_target_worktree_dirty",
                         reason_code=RuntimeReasonCode.WORKSPACE_DRIFT,
                     )
                 record = plan.candidate_record()
-                self._expected_workspace = observed_workspace
+                self._expected_workspace = normalized_workspace
                 receipt = self._receipt(
                     identity,
                     EffectOperation.RESULT_PROMOTION,

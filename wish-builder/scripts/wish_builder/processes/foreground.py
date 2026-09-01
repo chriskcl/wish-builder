@@ -349,6 +349,8 @@ class ForegroundRunComponents(Protocol):
 
     def acquire_lease(self, cursor: CoordinatorCursor) -> CoordinatorCursor | None: ...
 
+    def renew_lease(self, cursor: CoordinatorCursor) -> WorkerLeaseRenewalResult: ...
+
     def coordinator(self, cursor: CoordinatorCursor) -> ForegroundCoordinatorPort: ...
 
     def workflow(self, cursor: CoordinatorCursor) -> ForegroundWorkflowPort: ...
@@ -383,6 +385,7 @@ _FOREGROUND_COMPONENT_METHODS = (
     "verify_workspace_identity",
     "recover_verified_cursor",
     "acquire_lease",
+    "renew_lease",
     "coordinator",
     "workflow",
     "run_workers",
@@ -660,6 +663,19 @@ class ForegroundRunService:
             prepared: list[PreparedForegroundAttempt] = []
             batch_events = list(reservation.events)
             for identity in identities:
+                renewal = self._renew_effect_lease(components, cursor)
+                if renewal is None:
+                    return self._blocked(
+                        ForegroundRunReason.LEASE_NOT_ADMITTED,
+                        ForegroundRunStage.LEASE,
+                        admission,
+                        cursor,
+                        completed,
+                        batch_count - 1,
+                    )
+                cursor = renewal.cursor
+                assert cursor is not None and renewal.event is not None
+                batch_events.append(renewal.event)
                 try:
                     preparation = components.workflow(cursor).prepare_attempt(identity)
                 except Exception:
@@ -685,6 +701,19 @@ class ForegroundRunService:
                 )
 
             for identity in identities:
+                renewal = self._renew_effect_lease(components, cursor)
+                if renewal is None:
+                    return self._blocked(
+                        ForegroundRunReason.LEASE_NOT_ADMITTED,
+                        ForegroundRunStage.LEASE,
+                        admission,
+                        cursor,
+                        completed,
+                        batch_count - 1,
+                    )
+                cursor = renewal.cursor
+                assert cursor is not None and renewal.event is not None
+                batch_events.append(renewal.event)
                 try:
                     dispatched = components.coordinator(cursor).dispatch_reserved(
                         identity
@@ -707,6 +736,20 @@ class ForegroundRunService:
                     )
                 cursor = dispatched.cursor
                 batch_events.extend(dispatched.events)
+
+            renewal = self._renew_effect_lease(components, cursor)
+            if renewal is None:
+                return self._blocked(
+                    ForegroundRunReason.LEASE_NOT_ADMITTED,
+                    ForegroundRunStage.LEASE,
+                    admission,
+                    cursor,
+                    completed,
+                    batch_count - 1,
+                )
+            cursor = renewal.cursor
+            assert cursor is not None and renewal.event is not None
+            batch_events.append(renewal.event)
 
             try:
                 worker_batch = components.run_workers(tuple(prepared), cursor)
@@ -1089,6 +1132,27 @@ class ForegroundRunService:
         if worker_batch.cursor != expected or not self._lease_cursor_valid(expected):
             return None
         return expected
+
+    def _renew_effect_lease(
+        self,
+        components: ForegroundRunComponents,
+        cursor: CoordinatorCursor,
+    ) -> WorkerLeaseRenewalResult | None:
+        try:
+            renewal = components.renew_lease(cursor)
+        except Exception:
+            return None
+        if (
+            type(renewal) is not WorkerLeaseRenewalResult
+            or not renewal.succeeded
+            or renewal.cursor is None
+            or renewal.event is None
+            or renewal.event.sequence != cursor.head.sequence + 1
+            or renewal.event.previous_event_hash != cursor.head.event_hash
+            or not self._lease_cursor_valid(renewal.cursor)
+        ):
+            return None
+        return renewal
 
     @staticmethod
     def _result(

@@ -24,7 +24,11 @@ from tests.services.test_external_recovery import (
 )
 from wish_builder.compatibility import load_bundled_compatibility
 from wish_builder.contracts.compatibility import Platform
-from wish_builder.contracts.runtime import EffectOperation, EffectStatus
+from wish_builder.contracts.runtime import (
+    EffectOperation,
+    EffectStatus,
+    JournalEventType,
+)
 from wish_builder.services.backend_admission import (
     BackendAdmissionReason,
     BackendAdmissionResult,
@@ -261,8 +265,13 @@ class AdmissionFailClosedTests(unittest.TestCase):
             )  # type: ignore[arg-type]
         with self.assertRaises(ValueError):
             admit_execution_snapshot(manifest, tuple(events), workspace_hash="bad")
-        without_request = tuple(events[:1])
-        without_decision = tuple(events[:2])
+        request_index = next(
+            index
+            for index, event in enumerate(events)
+            if event.event_type is JournalEventType.DECISION_REQUESTED
+        )
+        without_request = tuple(events[:request_index])
+        without_decision = tuple(events[: request_index + 1])
         self.assertIs(
             admit_execution_snapshot(
                 manifest, without_request, workspace_hash=WORKSPACE_HASH

@@ -352,6 +352,23 @@ class SkillRuntimePackagingTests(unittest.TestCase):
             self.assertEqual(0, package_cli.returncode, package_cli.stderr)
             self.assertEqual(direct.stdout, package_cli.stdout)
 
+            direct_bridge = self._run_clean_python(
+                scripts_root,
+                "-c",
+                "import wishctl; print(wishctl._trellis_bridge_path())",
+            )
+            self.assertEqual(0, direct_bridge.returncode, direct_bridge.stderr)
+            self.assertEqual(
+                (
+                    scripts_root
+                    / "wish_builder"
+                    / "bridges"
+                    / "trellis_core"
+                    / "bridge.mjs"
+                ).resolve(),
+                Path(direct_bridge.stdout.strip()),
+            )
+
             qualification_cli = self._run_clean_python(
                 root,
                 str(scripts_root / "ci_backend_qualification.py"),

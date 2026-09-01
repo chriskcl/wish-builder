@@ -13,10 +13,17 @@ from wish_builder.contracts.runtime import (
     DecisionObservedPayload,
     DecisionRequestPayload,
     DecisionType,
+    EvidenceRole,
+    EvidenceType,
     JournalEvent,
     JournalEventType,
+    RuntimeState,
     SourceChannel,
+    TransitionPayload,
+    TransitionSubject,
 )
+from wish_builder.contracts.runtime_decoder import decode_journal_event_bytes
+from wish_builder.services.gate_b_bootstrap import gate_b_artifact_hash_from_nonce
 from wish_builder.services.journal import GENESIS_HEAD
 
 
@@ -30,11 +37,15 @@ class ExecutionAdmissionReason(StrEnum):
     GATE_B_DECISION_PENDING = "gate_b_decision_pending"
     GATE_B_NOT_APPROVED = "gate_b_not_approved"
     GATE_B_LINK_INVALID = "gate_b_link_invalid"
+    GATE_B_ARTIFACT_INVALID = "gate_b_artifact_invalid"
     MANIFEST_DIGEST_MISMATCH = "manifest_digest_mismatch"
     WORKSPACE_DRIFT = "workspace_drift"
+    LIFECYCLE_ORDER_INVALID = "lifecycle_order_invalid"
     TRELLIS_GRAPH_IMPORT_MISSING = "trellis_graph_import_missing"
+    TRELLIS_GRAPH_EVIDENCE_INVALID = "trellis_graph_evidence_invalid"
     TRELLIS_GRAPH_CHANGED = "trellis_graph_changed"
     TASK_GRAPH_NOT_FROZEN = "task_graph_not_frozen"
+    TASK_GRAPH_FREEZE_EVIDENCE_INVALID = "task_graph_freeze_evidence_invalid"
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,13 +86,78 @@ def _rejected(reason: ExecutionAdmissionReason) -> ExecutionAdmissionResult:
 def _journal_chain_valid(events: tuple[JournalEvent, ...]) -> bool:
     head = GENESIS_HEAD
     for event in events:
+        decoded = decode_journal_event_bytes(event.canonical_json_bytes())
         if (
-            event.sequence != head.sequence + 1
+            not decoded.ok
+            or decoded.value != event
+            or event.sequence != head.sequence + 1
             or event.previous_event_hash != head.event_hash
         ):
             return False
         head = type(head)(event.sequence, event.event_hash)
     return True
+
+
+_RUN_TRANSITIONS = {
+    JournalEventType.RUN_INITIALIZED: (RuntimeState.NONE, RuntimeState.PREFLIGHT),
+    JournalEventType.PREFLIGHT_COMPLETED: (
+        RuntimeState.PREFLIGHT,
+        RuntimeState.DISCOVERY,
+    ),
+    JournalEventType.DISCOVERY_COMPLETED: (
+        RuntimeState.DISCOVERY,
+        RuntimeState.GATE_A_PENDING,
+    ),
+    JournalEventType.GATE_APPROVED: (
+        RuntimeState.GATE_A_PENDING,
+        RuntimeState.TRELLIS_PREPARATION,
+    ),
+    JournalEventType.TRELLIS_GRAPH_IMPORTED: (
+        RuntimeState.TRELLIS_PREPARATION,
+        RuntimeState.GATE_B_PENDING,
+    ),
+    JournalEventType.TASK_GRAPH_FROZEN: (
+        RuntimeState.GATE_B_PENDING,
+        RuntimeState.EXECUTING,
+    ),
+}
+
+
+def _transition_matches(event: JournalEvent) -> bool:
+    states = _RUN_TRANSITIONS.get(event.event_type)
+    payload = event.payload
+    return (
+        states is not None
+        and type(payload) is TransitionPayload
+        and payload.subject is TransitionSubject.RUN
+        and (payload.from_state, payload.to_state) == states
+        and event.identity.task_id is None
+        and event.identity.attempt is None
+        and event.identity.correlation_id is None
+    )
+
+
+def _single_event(
+    events: tuple[JournalEvent, ...],
+    event_type: JournalEventType,
+) -> JournalEvent | None:
+    matches = tuple(event for event in events if event.event_type is event_type)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _required_contract_evidence(event: JournalEvent, digest: str) -> bool:
+    payload = event.payload
+    if type(payload) is not TransitionPayload:
+        return False
+    return any(
+        evidence.digest == digest
+        and evidence.byte_length > 0
+        and evidence.evidence_type is EvidenceType.CONTRACT
+        and evidence.role is EvidenceRole.REQUIRED
+        and evidence.structured_subject_hash == digest
+        and evidence.producer.identity.run_id == event.identity.run_id
+        for evidence in payload.evidence
+    )
 
 
 def admit_execution_snapshot(
@@ -125,7 +201,12 @@ def admit_execution_snapshot(
     if not decisions:
         return _rejected(ExecutionAdmissionReason.GATE_B_DECISION_MISSING)
 
-    decision_event = decisions[-1]
+    if len(requests) != 1 or len(decisions) != 1:
+        if any(event.sequence > decisions[-1].sequence for event in requests):
+            return _rejected(ExecutionAdmissionReason.GATE_B_DECISION_PENDING)
+        return _rejected(ExecutionAdmissionReason.GATE_B_LINK_INVALID)
+
+    decision_event = decisions[0]
     if any(event.sequence > decision_event.sequence for event in requests):
         return _rejected(ExecutionAdmissionReason.GATE_B_DECISION_PENDING)
     observation = decision_event.payload.observation
@@ -138,14 +219,9 @@ def admit_execution_snapshot(
     if request.workspace_hash != workspace_hash:
         return _rejected(ExecutionAdmissionReason.WORKSPACE_DRIFT)
 
-    matching_requests = tuple(
-        event
-        for event in requests
-        if event.payload.request == request
-    )
-    if len(matching_requests) != 1:
+    request_event = requests[0]
+    if request_event.payload.request != request:
         return _rejected(ExecutionAdmissionReason.GATE_B_LINK_INVALID)
-    request_event = matching_requests[0]
     if (
         request.command.expected_sequence != request_event.sequence
         or observation.event_sequence != decision_event.sequence
@@ -157,6 +233,12 @@ def admit_execution_snapshot(
         or decision_event.actor_id != decision.actor.actor_id
     ):
         return _rejected(ExecutionAdmissionReason.GATE_B_LINK_INVALID)
+
+    gate_b_artifact_hash = gate_b_artifact_hash_from_nonce(
+        request.command.request_nonce
+    )
+    if gate_b_artifact_hash is None:
+        return _rejected(ExecutionAdmissionReason.GATE_B_ARTIFACT_INVALID)
 
     graph_imports = tuple(
         event
@@ -170,6 +252,14 @@ def admit_execution_snapshot(
             else ExecutionAdmissionReason.TRELLIS_GRAPH_CHANGED
         )
         return _rejected(reason)
+    if len(graph_imports) != 1:
+        return _rejected(ExecutionAdmissionReason.TRELLIS_GRAPH_CHANGED)
+    graph_event = graph_imports[0]
+    if not _required_contract_evidence(
+        graph_event,
+        manifest.trellis_graph_digest,
+    ):
+        return _rejected(ExecutionAdmissionReason.TRELLIS_GRAPH_EVIDENCE_INVALID)
     frozen = tuple(
         event
         for event in events
@@ -178,12 +268,60 @@ def admit_execution_snapshot(
     )
     if not frozen:
         return _rejected(ExecutionAdmissionReason.TASK_GRAPH_NOT_FROZEN)
-    frozen_event = frozen[-1]
+    if len(frozen) != 1:
+        return _rejected(ExecutionAdmissionReason.LIFECYCLE_ORDER_INVALID)
+    frozen_event = frozen[0]
     if any(
         event.sequence > decision_event.sequence
         for event in graph_imports
     ):
         return _rejected(ExecutionAdmissionReason.TRELLIS_GRAPH_CHANGED)
+    if not all(
+        _required_contract_evidence(frozen_event, digest)
+        for digest in (
+            gate_b_artifact_hash,
+            manifest.trellis_graph_digest,
+            manifest.canonical_sha256(),
+        )
+    ):
+        return _rejected(
+            ExecutionAdmissionReason.TASK_GRAPH_FREEZE_EVIDENCE_INVALID
+        )
+
+    lifecycle = tuple(
+        _single_event(events, event_type)
+        for event_type in (
+            JournalEventType.RUN_INITIALIZED,
+            JournalEventType.PREFLIGHT_COMPLETED,
+            JournalEventType.DISCOVERY_COMPLETED,
+            JournalEventType.GATE_APPROVED,
+            JournalEventType.TRELLIS_GRAPH_IMPORTED,
+            JournalEventType.TASK_GRAPH_FROZEN,
+        )
+    )
+    if any(event is None for event in lifecycle):
+        return _rejected(ExecutionAdmissionReason.LIFECYCLE_ORDER_INVALID)
+    run_initialized, preflight, discovery, gate_approved, imported, frozen_check = lifecycle
+    assert all(event is not None for event in lifecycle)
+    if (
+        not all(_transition_matches(event) for event in lifecycle if event is not None)
+        or run_initialized.sequence != 1
+        or preflight.sequence != 2
+        or discovery.sequence != 3
+        or not (
+            discovery.sequence
+            < gate_approved.sequence
+            < imported.sequence
+            < request_event.sequence
+            < decision_event.sequence
+            < frozen_check.sequence
+        )
+        or imported.sequence != gate_approved.sequence + 1
+        or request_event.sequence != imported.sequence + 1
+        or decision_event.sequence != request_event.sequence + 1
+        or frozen_check.sequence != decision_event.sequence + 1
+    ):
+        return _rejected(ExecutionAdmissionReason.LIFECYCLE_ORDER_INVALID)
     return ExecutionAdmissionResult(
         True,
         ExecutionAdmissionReason.NONE,

@@ -25,7 +25,7 @@ from wish_builder.adapters.git_worktree import (
     StageResultCommand,
     StagedResult,
 )
-from wish_builder.adapters.git_identity import WorkspaceIdentity
+from wish_builder.adapters.git_identity import WorkspaceIdentity, capture_workspace_identity
 from wish_builder.contracts import (
     AdapterKind,
     EffectObjectType,
@@ -160,6 +160,7 @@ def adapter_stub() -> GitWorktreeAdapter:
     adapter.attempts_root_identity = filesystem_identity()
     adapter._clock = lambda: FIXED_TIME
     adapter._failpoint = None
+    adapter._projection_workspace_validator = None
     adapter._object_id_length = 40
     return adapter
 
@@ -1906,6 +1907,13 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
                     )
         with self.assertRaises(TypeError):
             GitWorktreeAdapter(".", ".", placeholder, clock=object())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            GitWorktreeAdapter(  # type: ignore[arg-type]
+                ".",
+                ".",
+                placeholder,
+                projection_workspace_validator=object(),
+            )
 
     def test_git_transport_text_and_lock_failures_have_stable_codes(self) -> None:
         with mock.patch.object(
@@ -1938,6 +1946,146 @@ class GitWorktreeBoundaryCoverageTests(unittest.TestCase):
                 GitBoundaryError, "repository_lock_open_failed"
             ), lock.acquire():
                 self.fail("a failed lock open must not enter")
+
+    @unittest.skipUnless(git_boundary.os.name == "nt", "requires Git for Windows")
+    def test_git_transport_materializes_long_worktree_paths_on_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repository"
+            repository.mkdir()
+            git_boundary._run_git(repository, ("init", "--quiet"))
+            git_boundary._run_git(
+                repository,
+                ("config", "user.name", "Wish Builder Test"),
+            )
+            git_boundary._run_git(
+                repository,
+                ("config", "user.email", "test@wish-builder.invalid"),
+            )
+            blob = git_boundary._run_git(
+                repository,
+                ("hash-object", "-w", "--stdin"),
+                input_data=b"fixture\n",
+            ).strip().decode("ascii")
+            long_path = "/".join(
+                ("segment1234567890",) * 12 + ("execution-manifest.json",)
+            )
+            git_boundary._run_git(
+                repository,
+                (
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    f"100644,{blob},{long_path}",
+                ),
+            )
+            tree = git_boundary._run_git(
+                repository,
+                ("write-tree",),
+            ).strip().decode("ascii")
+            commit = git_boundary._run_git(
+                repository,
+                ("commit-tree", tree),
+                input_data=b"fixture\n",
+            ).strip().decode("ascii")
+            destination = Path(directory) / "attempt"
+
+            git_boundary._run_git(
+                repository,
+                ("worktree", "add", "--detach", str(destination), commit),
+            )
+
+            self.assertGreater(len(str(destination / Path(long_path))), 260)
+            self.assertEqual(
+                b"fixture\n",
+                (destination / Path(long_path)).read_bytes(),
+            )
+
+    def test_owned_path_inspection_ignores_lifecycle_changes_and_finds_owned_work(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            repository = root / "repository"
+            attempts = root / "attempts"
+            repository.mkdir()
+            attempts.mkdir()
+            git_boundary._run_git(repository, ("init", "-b", "main"))
+            git_boundary._run_git(
+                repository,
+                ("config", "user.name", "Wish Builder Test"),
+            )
+            git_boundary._run_git(
+                repository,
+                ("config", "user.email", "test@wish-builder.invalid"),
+            )
+            (repository / "src").mkdir()
+            (repository / "docs").mkdir()
+            (repository / ".trellis").mkdir()
+            (repository / ".agents").mkdir()
+            (repository / "src" / "base.txt").write_text("base\n", encoding="utf-8")
+            (repository / "docs" / "base.txt").write_text("base\n", encoding="utf-8")
+            (repository / ".trellis" / "tracked.txt").write_text(
+                "base\n", encoding="utf-8"
+            )
+            (repository / ".agents" / "seed.txt").write_text(
+                "base\n", encoding="utf-8"
+            )
+            (repository / ".gitignore").write_text(".cache/\n", encoding="utf-8")
+            git_boundary._run_git(repository, ("add", "."))
+            git_boundary._run_git(repository, ("commit", "-m", "baseline"))
+            workspace = capture_workspace_identity(
+                repository,
+                (".agents/**", ".trellis/**", "docs/**", "src/**"),
+            )
+            adapter = GitWorktreeAdapter(repository, attempts, workspace)
+            command = adapter.plan_attempt(
+                attempt_identity("OP-OWNED-INSPECTION"),
+                owned_paths=("src/**",),
+                allowed_auxiliary_paths=("docs/**",),
+                protected_paths=(".agents/**", ".trellis/**"),
+            )
+            destination = attempts / command.directory_name
+            git_boundary._run_git(
+                repository,
+                ("worktree", "add", "--detach", str(destination), command.base_commit_sha),
+            )
+            (destination / ".trellis" / "committed.txt").write_text(
+                "committed\n", encoding="utf-8"
+            )
+            git_boundary._run_git(destination, ("add", ".trellis/committed.txt"))
+            git_boundary._run_git(destination, ("commit", "-m", "lifecycle commit"))
+            (destination / ".agents" / "staged.txt").write_text(
+                "staged\n", encoding="utf-8"
+            )
+            git_boundary._run_git(destination, ("add", ".agents/staged.txt"))
+            (destination / ".trellis" / "tracked.txt").write_text(
+                "dirty\n", encoding="utf-8"
+            )
+            (destination / ".agents" / "untracked.txt").write_text(
+                "untracked\n", encoding="utf-8"
+            )
+            (destination / ".cache").mkdir()
+            (destination / ".cache" / "ignored.txt").write_text(
+                "ignored\n", encoding="utf-8"
+            )
+
+            self.assertEqual((), adapter.inspect_owned_path_changes(command))
+
+            (destination / "src" / "owned.txt").write_text(
+                "owned\n", encoding="utf-8"
+            )
+            self.assertEqual(
+                ("src/owned.txt",),
+                adapter.inspect_owned_path_changes(command),
+            )
+
+            (destination / "docs" / "partial.md").write_text(
+                "partial\n", encoding="utf-8"
+            )
+            self.assertEqual(
+                ("docs/partial.md", "src/owned.txt"),
+                adapter.inspect_owned_path_changes(command),
+            )
 
     def test_identity_scan_and_tree_decode_errors_fail_closed(self) -> None:
         adapter = adapter_stub()

@@ -963,6 +963,13 @@ class CodexAppServerChannel:
                 or type(thread_id) is not str
             ):
                 return self._unknown_turn(command.operation_id, typed.command_hash, "cancel", "turn_not_found")
+            source = self._turn_observation(send)
+            if source.state in {
+                TurnState.DONE,
+                TurnState.FAILED,
+                TurnState.CANCELLED,
+            }:
+                return self._complete_cancel_locked(typed, command, send_id, source)
             self._put_operation(
                 command.operation_id,
                 "cancel",
@@ -1000,21 +1007,45 @@ class CodexAppServerChannel:
                 self._save_state()
                 return self._turn_observation(operation)
             source = self._turn_observation(send)
-            observation = TurnObservation(
-                operation_id=command.operation_id,
-                status=EffectStatus.APPLIED,
-                observed_at=self._clock(),
-                state=TurnState.CANCELLED,
-                effect_digest=_effect_digest("cancel_turn", typed.command_hash),
-                attempt_id=command.attempt_id,
-                channel_id=command.channel_id,
-                message_id=source.message_id,
-                turn_id=command.turn_id,
-                evidence=("codex_turn_completed_interrupted",),
+            return self._complete_cancel_locked(
+                typed,
+                command,
+                send_id,
+                source,
+                evidence="codex_turn_completed_interrupted",
             )
-            self._operation(command.operation_id)["observation"] = observation.to_primitive()
-            self._save_state()
-            return observation
+
+    def _complete_cancel_locked(
+        self,
+        effect: PreparedEffect[CancelTurn],
+        command: CancelTurn,
+        send_operation_id: str,
+        source: TurnObservation,
+        *,
+        evidence: str = "codex_cancel_observed",
+    ) -> TurnObservation:
+        observation = TurnObservation(
+            operation_id=command.operation_id,
+            status=EffectStatus.APPLIED,
+            observed_at=self._clock(),
+            state=source.state,
+            effect_digest=_effect_digest("cancel_turn", effect.command_hash),
+            attempt_id=command.attempt_id,
+            channel_id=command.channel_id,
+            message_id=source.message_id,
+            turn_id=command.turn_id,
+            result_digest=source.result_digest,
+            evidence=(evidence,),
+        )
+        self._put_operation(
+            command.operation_id,
+            "cancel",
+            effect.command_hash,
+            observation.to_primitive(),
+            command={"send_operation_id": send_operation_id},
+        )
+        self._save_state()
+        return observation
 
     def close(self) -> None:
         with self._lock:

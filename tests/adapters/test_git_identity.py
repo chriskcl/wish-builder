@@ -15,6 +15,7 @@ from wish_builder.adapters.git_identity import (
     capture_filesystem_identity,
     capture_workspace_identity,
     compare_workspace_identity,
+    reconstruct_pristine_workspace_identity,
     revalidate_control_root,
     revalidate_workspace_identity,
 )
@@ -89,6 +90,37 @@ class GitIdentityTests(unittest.TestCase):
         self.assertFalse(staged.ok)
         self.assertIn("index_dirty_fingerprint", staged.mismatches)
         self.assertEqual(staged_before, repository_snapshot(self.root))
+
+    def test_pristine_reconstruction_ignores_only_unstaged_worktree_bytes(
+        self,
+    ) -> None:
+        baseline = capture_workspace_identity(self.root, ("src/**",))
+        source = self.root / "src" / "owned.txt"
+        source.write_text("derived projection\n", encoding="utf-8")
+        dirty = capture_workspace_identity(self.root, ("src/**",))
+
+        reconstructed = reconstruct_pristine_workspace_identity(dirty)
+
+        self.assertEqual(baseline, reconstructed)
+        git(self.root, "add", "src/owned.txt")
+        staged = capture_workspace_identity(self.root, ("src/**",))
+        self.assertNotEqual(
+            baseline.workspace_hash,
+            reconstruct_pristine_workspace_identity(staged).workspace_hash,
+        )
+
+    def test_pristine_reconstruction_retains_head_identity(self) -> None:
+        baseline = capture_workspace_identity(self.root, ("src/**",))
+        source = self.root / "src" / "owned.txt"
+        source.write_text("next commit\n", encoding="utf-8")
+        git(self.root, "add", "src/owned.txt")
+        git(self.root, "commit", "-m", "next")
+        advanced = capture_workspace_identity(self.root, ("src/**",))
+
+        self.assertNotEqual(
+            baseline.workspace_hash,
+            reconstruct_pristine_workspace_identity(advanced).workspace_hash,
+        )
 
     def test_unrelated_dirty_file_does_not_change_scoped_fingerprint(self) -> None:
         expected = capture_workspace_identity(self.root, ("src/**",))

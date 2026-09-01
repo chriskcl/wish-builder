@@ -194,7 +194,8 @@ _TASK_TRANSITIONS = {
 
 _ATTEMPT_TRANSITIONS = {
     JournalEventType.ATTEMPT_RESERVED: {
-        (RuntimeState.PLANNED, RuntimeState.RESERVED)
+        (RuntimeState.PLANNED, RuntimeState.RESERVED),
+        (RuntimeState.TERMINATED, RuntimeState.RESERVED),
     },
     JournalEventType.DISPATCH_REQUESTED: {
         (RuntimeState.RESERVED, RuntimeState.DISPATCH_REQUESTED)
@@ -697,12 +698,29 @@ def apply_transition(
             updated = replace(snapshot, attempts=(*snapshot.attempts, attempt))
         else:
             attempt = snapshot.attempts[attempt_index]
-            if attempt.correlation_id != transition.identity.correlation_id:
+            reclaiming = (
+                transition.event_type is JournalEventType.ATTEMPT_RESERVED
+                and transition.from_state is RuntimeState.TERMINATED
+                and transition.to_state is RuntimeState.RESERVED
+            )
+            if reclaiming and transition.identity.coordinator_epoch <= attempt.coordinator_epoch:
+                return rejected(ApplyReason.STALE_EPOCH)
+            if not reclaiming and attempt.correlation_id != transition.identity.correlation_id:
                 return rejected(ApplyReason.STALE_CORRELATION)
             if attempt.state is not transition.from_state:
                 return rejected(ApplyReason.STATE_MISMATCH)
             replacement = replace(
                 attempt,
+                correlation_id=(
+                    transition.identity.correlation_id
+                    if reclaiming
+                    else attempt.correlation_id
+                ),
+                coordinator_epoch=(
+                    transition.identity.coordinator_epoch
+                    if reclaiming
+                    else attempt.coordinator_epoch
+                ),
                 state=transition.to_state,
                 reason_code=transition.reason_code,
             )

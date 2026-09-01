@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import unicodedata
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import BinaryIO, Self
 
@@ -337,6 +337,57 @@ def _scope_fingerprint(repository: Path, scopes: tuple[str, ...]) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _pristine_scope_fingerprint(repository: Path, scopes: tuple[str, ...]) -> str:
+    """Bind the current index while reconstructing an otherwise clean scope."""
+
+    digest = hashlib.sha256()
+    digest.update(b"wish-builder-workspace-fingerprint-v1\0")
+    digest.update(canonical_json_bytes(list(scopes)))
+    path_arguments = ("--", *scopes)
+    commands = (
+        ("ls-files", "--stage", "-z", *path_arguments),
+        (
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=no",
+            *path_arguments,
+        ),
+        (
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--full-index",
+            *path_arguments,
+        ),
+        (
+            "diff",
+            "--cached",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--full-index",
+            *path_arguments,
+        ),
+    )
+    for index, command in enumerate(commands):
+        writer = _HashWriter()
+        if index == 0:
+            _run_git(repository, command, stream_to=writer)
+        digest.update(
+            canonical_json_bytes(
+                {
+                    "arguments": list(command),
+                    "stdout_bytes": writer.byte_count,
+                    "stdout_sha256": writer.sha256,
+                }
+            )
+        )
+    return "sha256:" + digest.hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class WorkspaceIdentity:
     local_repository_id: str
@@ -424,6 +475,23 @@ def capture_workspace_identity(
         scopes=normalized_scopes,
         index_dirty_fingerprint=fingerprint,
     )
+
+
+def reconstruct_pristine_workspace_identity(
+    observed: WorkspaceIdentity,
+) -> WorkspaceIdentity:
+    """Reconstruct Gate-clean identity while retaining the current Git index.
+
+    Callers must independently prove that every working-tree change is an
+    allowed derived projection. Staged changes remain bound by ``ls-files`` and
+    therefore cannot be hidden by this reconstruction.
+    """
+
+    if type(observed) is not WorkspaceIdentity:
+        raise TypeError("observed must be a WorkspaceIdentity")
+    repository = Path(observed.worktree_root.canonical_path)
+    fingerprint = _pristine_scope_fingerprint(repository, observed.scopes)
+    return replace(observed, index_dirty_fingerprint=fingerprint)
 
 
 @dataclass(frozen=True, slots=True)

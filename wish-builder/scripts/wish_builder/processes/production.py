@@ -26,6 +26,7 @@ from wish_builder.adapters.git_identity import (
     ProtectedControlRoot,
     WorkspaceIdentity,
     capture_workspace_identity,
+    reconstruct_pristine_workspace_identity,
     revalidate_workspace_identity,
 )
 from wish_builder.adapters.git_worktree import (
@@ -39,6 +40,7 @@ from wish_builder.adapters.storage import FilesystemJournalStorage
 from wish_builder.adapters.trellis import (
     TrellisAuthoritativeProjectionProvider,
     TrellisCoreGraphPort,
+    TrellisCoreLifecyclePort,
     TrellisCoreProjectionPort,
 )
 from wish_builder.compatibility import load_bundled_compatibility
@@ -46,6 +48,7 @@ from wish_builder.contracts import (
     ActorIdentity,
     ActorType,
     AdapterKind,
+    EffectObjectType,
     EffectObservationPayload,
     EffectOperation,
     EffectReceipt,
@@ -68,7 +71,11 @@ from wish_builder.contracts.compatibility import (
 )
 from wish_builder.contracts.manifest_v2 import ExecutionManifestV2, ManifestTask
 from wish_builder.contracts.models import HASH_RE
-from wish_builder.contracts.runtime import ExecutionIdentity, RuntimeState
+from wish_builder.contracts.runtime import (
+    ExecutionIdentity,
+    RuntimeReasonCode,
+    RuntimeState,
+)
 from wish_builder.kernel.state import apply_journal_event
 from wish_builder.processes.acceptance import ProcessAcceptancePort
 from wish_builder.processes.coordinator import (
@@ -607,12 +614,34 @@ def _workspace_scopes(manifest: ExecutionManifestV2) -> tuple[str, ...]:
     )
 
 
+def _reconstruct_projection_workspace(
+    provider: TrellisAuthoritativeProjectionProvider,
+    run_id: str,
+    observed: WorkspaceIdentity,
+) -> WorkspaceIdentity:
+    """Prove one stable projection-only view and return its clean identity."""
+
+    before = provider.ensure(run_id)
+    if before.workspace != observed:
+        raise ValueError("projection workspace changed before reconstruction")
+    reconstructed = reconstruct_pristine_workspace_identity(observed)
+    after = provider.ensure(run_id)
+    if after.workspace != observed:
+        raise ValueError("projection workspace changed during reconstruction")
+    return reconstructed
+
+
 def _safe_host_id() -> str:
     value = re.sub(r"[^A-Za-z0-9._:@/-]", "-", host_platform.node().strip())
     return value.strip("-./")[:128] or "localhost"
 
 
-def _bridge_environment(layout: ProductionRuntimeLayout) -> dict[str, str]:
+def _bridge_environment(
+    layout: ProductionRuntimeLayout,
+    *,
+    trellis_core_root: str | os.PathLike[str] | None = None,
+    trellis_core_archive: str | os.PathLike[str] | None = None,
+) -> dict[str, str]:
     environment = {
         key: os.environ[key]
         for key in _PROVIDER_ENVIRONMENT
@@ -629,6 +658,19 @@ def _bridge_environment(layout: ProductionRuntimeLayout) -> dict[str, str]:
         if not path.is_absolute():
             path = Path.cwd() / path
         environment[key] = os.path.abspath(path)
+    for key, value, directory in (
+        ("WISH_BUILDER_TRELLIS_CORE_ROOT", trellis_core_root, True),
+        ("WISH_BUILDER_TRELLIS_CORE_ARCHIVE", trellis_core_archive, False),
+    ):
+        if value is None:
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise ValueError(f"{key} must be an absolute path")
+        path = path.resolve(strict=True)
+        if path.is_symlink() or (not path.is_dir() if directory else not path.is_file()):
+            raise ValueError(f"{key} must identify a non-link {'directory' if directory else 'file'}")
+        environment[key] = str(path)
     return environment
 
 
@@ -645,11 +687,16 @@ def _compatibility_cell(manifest: ExecutionManifestV2) -> PlatformCompatibility:
     return bundle.platform(provider, platform)
 
 
-def _bridge_command() -> tuple[str, str]:
-    executable = shutil.which("node")
+def _bridge_command(
+    node_executable: str | os.PathLike[str] | None = None,
+) -> tuple[str, str]:
+    executable = node_executable or shutil.which("node")
     if executable is None:
         raise FileNotFoundError("Node.js is required for the Trellis Core bridge")
-    node = Path(executable).resolve(strict=True)
+    node = Path(executable).expanduser()
+    if not node.is_absolute():
+        raise ValueError("Node.js executable must be an absolute path")
+    node = node.resolve(strict=True)
     bridge = (
         Path(__file__).resolve().parents[1]
         / "bridges"
@@ -968,6 +1015,9 @@ class ProductionForegroundRunComponents:
         runtime_root: str | os.PathLike[str] | None,
         workspace_root: str | os.PathLike[str],
         provider_sdk_root: str | os.PathLike[str] | None = None,
+        trellis_core_root: str | os.PathLike[str] | None = None,
+        trellis_core_archive: str | os.PathLike[str] | None = None,
+        node_executable: str | os.PathLike[str] | None = None,
         authority_clock: Callable[[], datetime] = _utc_datetime,
     ) -> "ProductionForegroundRunComponents":
         """Build the effectful component set after backend admission."""
@@ -984,7 +1034,7 @@ class ProductionForegroundRunComponents:
             manifest.run_id,
         )
         cell = _compatibility_cell(manifest)
-        command = _bridge_command()
+        command = _bridge_command(node_executable)
         config = ProductionRuntimeConfig.from_compatibility_cell(
             manifest,
             layout,
@@ -1002,6 +1052,26 @@ class ProductionForegroundRunComponents:
         workspace = capture_workspace_identity(
             layout.repository,
             _workspace_scopes(manifest),
+        )
+        projection_target = TrellisAuthoritativeProjectionProvider(
+            layout.repository,
+            workspace,
+        )
+
+        def normalize_projection_workspace(
+            observed: WorkspaceIdentity,
+        ) -> WorkspaceIdentity:
+            return _reconstruct_projection_workspace(
+                projection_target,
+                manifest.run_id,
+                observed,
+            )
+
+        pristine_workspace = reconstruct_pristine_workspace_identity(workspace)
+        git_workspace = (
+            workspace
+            if pristine_workspace == workspace
+            else normalize_projection_workspace(workspace)
         )
 
         layout.control_root.mkdir(parents=True, exist_ok=True)
@@ -1027,7 +1097,8 @@ class ProductionForegroundRunComponents:
             repository = GitWorktreeAdapter(
                 layout.repository,
                 layout.attempts_root,
-                workspace,
+                git_workspace,
+                projection_workspace_validator=normalize_projection_workspace,
             )
             process_start_id = capture_process_start_id()
             coordinator_seed = canonical_json_bytes(
@@ -1074,7 +1145,11 @@ class ProductionForegroundRunComponents:
                 lease_ttl_seconds=manifest.lease_ttl_seconds,
                 lease_clock_skew_seconds=manifest.lease_clock_skew_seconds,
             )
-            bridge_environment = _bridge_environment(layout)
+            bridge_environment = _bridge_environment(
+                layout,
+                trellis_core_root=trellis_core_root,
+                trellis_core_archive=trellis_core_archive,
+            )
             channel_factory_kwargs: dict[str, object] = {
                 "compatibility_cell": cell,
             }
@@ -1102,10 +1177,6 @@ class ProductionForegroundRunComponents:
                 environment=bridge_environment,
             )
             graph_admission = TrellisGraphAdmissionService(manifest, graph_port)
-            projection_target = TrellisAuthoritativeProjectionProvider(
-                layout.repository,
-                workspace,
-            )
             projection_port = TrellisCoreProjectionPort(
                 bridge_command=command,
                 working_directory=layout.repository,
@@ -1117,6 +1188,30 @@ class ProductionForegroundRunComponents:
                 projection_target,
                 projection_port,
             )
+
+            trellis_task_ids = {
+                item.task_id: item.trellis_task_id
+                for item in manifest.task_id_mapping
+            }
+
+            def lifecycle_factory(attempt: AttemptWorktree) -> TrellisCoreLifecyclePort:
+                trellis_task_id = trellis_task_ids.get(attempt.task_id)
+                if trellis_task_id is None:
+                    raise ValueError("attempt task is not mapped by the approved manifest")
+                worktree_id = (
+                    "worktree-"
+                    + attempt.worktree_root.identity_hash.removeprefix("sha256:")[:48]
+                )
+                return TrellisCoreLifecyclePort(
+                    bridge_command=command,
+                    checkout_root=layout.repository,
+                    working_directory=layout.repository,
+                    environment=bridge_environment,
+                    trellis_task_id=trellis_task_id,
+                    worktree_path=attempt.path,
+                    worktree_id=worktree_id,
+                )
+
             return cls(
                 config,
                 workspace,
@@ -1128,6 +1223,7 @@ class ProductionForegroundRunComponents:
                 lease_service,
                 graph_admission,
                 channel_factory,
+                lifecycle_factory=lifecycle_factory,
                 projection_service=projection_service,
                 coordinator_id=coordinator_id,
                 owner=owner,
@@ -1173,6 +1269,14 @@ class ProductionForegroundRunComponents:
             events,
             workspace_hash=self._workspace.workspace_hash,
         )
+        if admission.reason is ExecutionAdmissionReason.WORKSPACE_DRIFT:
+            reconstructed = self._projection_only_gate_workspace()
+            if reconstructed is not None:
+                admission = admit_execution_snapshot(
+                    manifest,
+                    events,
+                    workspace_hash=reconstructed.workspace_hash,
+                )
         if not admission.admitted or not self._live_graph_admitted():
             return (
                 admission
@@ -1183,6 +1287,25 @@ class ProductionForegroundRunComponents:
                 )
             )
         return admission
+
+    def _projection_only_gate_workspace(self) -> WorkspaceIdentity | None:
+        """Recover the Gate workspace hash across verified task projections."""
+
+        if self._projection_service is None:
+            return None
+        try:
+            provider = TrellisAuthoritativeProjectionProvider(
+                self._config.layout.repository,
+                self._workspace,
+            )
+            reconstructed = _reconstruct_projection_workspace(
+                provider,
+                self._manifest.run_id,
+                self._workspace,
+            )
+        except Exception:
+            return None
+        return reconstructed
 
     def protect_control_root(self) -> bool:
         return not self._closed and self._control_root.revalidate().ok
@@ -1300,6 +1423,20 @@ class ProductionForegroundRunComponents:
                 return None
 
         self._last_recovery = recovery
+        recovered_dispatch = self._recover_cancelled_dispatch(current)
+        if recovered_dispatch is None:
+            return None
+        if recovered_dispatch.head != current.head:
+            recovery = self._recover()
+            current = self._cursor_from_recovery(recovery)
+            if (
+                current is None
+                or recovery.pending_external_effects
+                or current != recovered_dispatch
+            ):
+                return None
+        else:
+            current = recovered_dispatch
         # M1 has no trustworthy parent backend dispatch receipt reconstruction.
         if recovery.pending_dispatch_requests:
             return None
@@ -1307,7 +1444,222 @@ class ProductionForegroundRunComponents:
             self._refresh_completed_lifecycle_commands()
         except (TypeError, ValueError):
             return None
-        return current
+        stale_reservations = tuple(
+            attempt
+            for attempt in current.snapshot.attempts
+            if attempt.coordinator_epoch < self._fencing_token
+            and (
+                attempt.state is RuntimeState.RESERVED
+                or (
+                    attempt.state is RuntimeState.TERMINATED
+                    and attempt.reason_code is RuntimeReasonCode.LEASE_LOST
+                )
+            )
+        )
+        if stale_reservations:
+            reclaimed = self.coordinator(current).reclaim_stale_reservations()
+            if (
+                reclaimed.status is not CoordinatorStatus.PROGRESSED
+                or len(reclaimed.reserved) != len(stale_reservations)
+            ):
+                return None
+            current = reclaimed.cursor
+        return self._recover_absent_preparation(current)
+
+    def _recover_cancelled_dispatch(
+        self,
+        cursor: CoordinatorCursor,
+    ) -> CoordinatorCursor | None:
+        """Re-fence one cancelled prior-epoch dispatch with untouched ownership."""
+
+        candidates = tuple(
+            attempt
+            for attempt in cursor.snapshot.attempts
+            if attempt.coordinator_epoch < self._fencing_token
+            and attempt.state is RuntimeState.RUNNING
+        )
+        if not candidates:
+            return cursor
+        if len(candidates) != 1 or cursor.snapshot.status is not RuntimeState.RUNNING:
+            return None
+        attempt = candidates[0]
+        task_state = dict(cursor.graph_index.task_states).get(attempt.task_id)
+        if task_state is not RuntimeState.DISPATCHED:
+            return None
+        identity = ExecutionIdentity(
+            self._manifest.run_id,
+            attempt.coordinator_epoch,
+            attempt.task_id,
+            attempt.attempt,
+            attempt.correlation_id,
+        )
+        try:
+            events = self._read_verified_events()
+            requests = tuple(
+                event
+                for event in events
+                if event.event_type is JournalEventType.DISPATCH_REQUESTED
+                and event.identity == identity
+                and type(event.payload) is EffectRequestPayload
+                and event.payload.adapter is AdapterKind.TASK
+                and event.payload.operation is EffectOperation.WORKER_DISPATCH
+                and event.payload.object_type is EffectObjectType.WORKER
+            )
+            observations = tuple(
+                event
+                for event in events
+                if event.event_type is JournalEventType.DISPATCH_OBSERVED
+                and event.identity == identity
+                and type(event.payload) is EffectObservationPayload
+                and event.payload.adapter is AdapterKind.TASK
+                and event.payload.receipt.identity == identity
+                and event.payload.receipt.operation
+                is EffectOperation.WORKER_DISPATCH
+                and event.payload.receipt.status is EffectStatus.APPLIED
+            )
+            if len(requests) != 1 or len(observations) != 1:
+                return None
+            task = next(item for item in self._manifest.tasks if item.id == attempt.task_id)
+            command = self._repository.plan_attempt(
+                identity,
+                owned_paths=task.owned_paths,
+                protected_paths=self._manifest.protected_paths,
+                allowed_auxiliary_paths=task.allowed_auxiliary_paths,
+                path_case_mode=self._manifest.path_case_mode,
+            )
+            inspected = self._repository.inspect_attempt(command)
+            if (
+                inspected.disposition is not AttemptEffectDisposition.APPLIED
+                or type(inspected.value) is not AttemptWorktree
+            ):
+                return None
+            owned_path_changes = self._repository.inspect_owned_path_changes(command)
+            if owned_path_changes != ():
+                return None
+            reclaimed = self.coordinator(cursor).reclaim_cancelled_dispatch(
+                requests[0],
+                observations[0],
+                owned_path_changes=owned_path_changes,
+            )
+        except Exception:
+            return None
+        if (
+            reclaimed.status is not CoordinatorStatus.PROGRESSED
+            or len(reclaimed.reserved) != 1
+            or reclaimed.reserved[0].attempt != attempt.attempt
+            or reclaimed.reserved[0].coordinator_epoch != self._fencing_token
+            or len(reclaimed.cursor.snapshot.attempts)
+            != len(cursor.snapshot.attempts)
+        ):
+            return None
+        return reclaimed.cursor
+
+    def _recover_absent_preparation(
+        self,
+        cursor: CoordinatorCursor,
+    ) -> CoordinatorCursor | None:
+        """Requeue one proven-absent pre-dispatch worktree attempt."""
+
+        if cursor.snapshot.status is not RuntimeState.BLOCKED:
+            return cursor
+        if cursor.snapshot.run_reason_code is not RuntimeReasonCode.GIT_STATE_CONFLICT:
+            return cursor
+        if not self._retry_admitted():
+            return None
+        try:
+            events = self._read_verified_events()
+            tasks = {task.task_id: task for task in cursor.snapshot.tasks}
+            attempts_by_task: dict[str, list[object]] = {}
+            for attempt in cursor.snapshot.attempts:
+                attempts_by_task.setdefault(attempt.task_id, []).append(attempt)
+            candidates: list[tuple[JournalEvent, JournalEvent]] = []
+            for request, observation in zip(events, events[1:], strict=False):
+                payload = request.payload
+                observed = observation.payload
+                if (
+                    request.event_type is not JournalEventType.EFFECT_REQUESTED
+                    or type(payload) is not EffectRequestPayload
+                    or payload.adapter is not AdapterKind.GIT
+                    or payload.operation is not EffectOperation.REPOSITORY_UPDATE
+                    or payload.object_type is not EffectObjectType.WORKTREE
+                    or observation.event_type is not JournalEventType.EFFECT_OBSERVED
+                    or type(observed) is not EffectObservationPayload
+                    or observed.adapter is not AdapterKind.GIT
+                    or observed.receipt.identity != request.identity
+                    or observed.receipt.operation is not EffectOperation.REPOSITORY_UPDATE
+                    or observed.receipt.status is not EffectStatus.ABSENT
+                    or request.identity.task_id is None
+                    or request.identity.attempt is None
+                ):
+                    continue
+                task = tasks.get(request.identity.task_id)
+                attempts = attempts_by_task.get(request.identity.task_id, [])
+                if task is None or not attempts:
+                    continue
+                latest_attempt = max(item.attempt for item in attempts)
+                current_attempt = next(
+                    (
+                        item
+                        for item in attempts
+                        if item.attempt == request.identity.attempt
+                        and item.correlation_id == request.identity.correlation_id
+                    ),
+                    None,
+                )
+                if (
+                    current_attempt is None
+                    or current_attempt.attempt != latest_attempt
+                    or current_attempt.state
+                    not in {RuntimeState.RESERVED, RuntimeState.TERMINATED}
+                    or task.state not in {RuntimeState.BLOCKED, RuntimeState.READY}
+                    or (
+                        task.state is RuntimeState.BLOCKED
+                        and task.reason_code is not RuntimeReasonCode.GIT_STATE_CONFLICT
+                    )
+                ):
+                    continue
+                candidates.append((request, observation))
+            if len(candidates) != 1:
+                return cursor
+            request, observation = candidates[0]
+            assert request.identity.task_id is not None
+            task = next(
+                item
+                for item in self._manifest.tasks
+                if item.id == request.identity.task_id
+            )
+            command = self._repository.plan_attempt(
+                request.identity,
+                owned_paths=task.owned_paths,
+                protected_paths=self._manifest.protected_paths,
+                allowed_auxiliary_paths=task.allowed_auxiliary_paths,
+                path_case_mode=self._manifest.path_case_mode,
+            )
+            payload = request.payload
+            assert type(payload) is EffectRequestPayload
+            if (
+                payload.normalized_target_hash != command.target_workspace_hash
+                or payload.request_payload_hash
+                != "sha256:" + canonical_sha256(command.to_primitive())
+            ):
+                return None
+            inspected = self._repository.inspect_attempt(command)
+            if inspected.disposition is not AttemptEffectDisposition.ABSENT:
+                return None
+            retried = self.coordinator(cursor).retry_absent_preparation(
+                request,
+                observation,
+            )
+        except Exception:
+            return None
+        if (
+            retried.status is not CoordinatorStatus.PROGRESSED
+            or retried.cursor.snapshot.status is not RuntimeState.RUNNING
+            or dict(retried.cursor.graph_index.task_states).get(request.identity.task_id)
+            is not RuntimeState.READY
+        ):
+            return None
+        return retried.cursor
 
     def coordinator(self, cursor: CoordinatorCursor) -> ForegroundCoordinator:
         self._require_active_cursor(cursor)
@@ -2250,6 +2602,11 @@ class ProductionForegroundRunComponents:
             return WorkerLeaseRenewalResult(True, renewed, event)
         except Exception:
             return WorkerLeaseRenewalResult(False)
+
+    def renew_lease(self, cursor: CoordinatorCursor) -> WorkerLeaseRenewalResult:
+        """Durably renew the coordinator lease before a foreground effect."""
+
+        return self._renew_worker_lease(cursor)
 
     def _retry_admitted(self) -> bool:
         try:

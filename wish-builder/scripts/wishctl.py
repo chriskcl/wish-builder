@@ -24,9 +24,12 @@ from wish_builder.adapters.git_identity import (
     ProtectedControlRoot,
     WorkspaceIdentity,
     capture_workspace_identity,
+    reconstruct_pristine_workspace_identity,
 )
 from wish_builder.adapters.storage import FilesystemJournalStorage
 from wish_builder.adapters.trellis import (
+    TrellisAuthoritativeProjectionProvider,
+    TrellisAuthoritativeProjectionTarget,
     TrellisCoreGraphPort,
     TrellisGraphAdapterError,
     TrellisGraphImportError,
@@ -96,7 +99,14 @@ from wish_builder.services.backend_admission import (
 )
 from wish_builder.services.decisions import commit_decision
 from wish_builder.services.checkpoints import CheckpointLoadStatus, CheckpointStore
-from wish_builder.services.execution_admission import admit_execution_snapshot
+from wish_builder.services.execution_admission import (
+    ExecutionAdmissionReason,
+    admit_execution_snapshot,
+)
+from wish_builder.services.gate_b_bootstrap import (
+    GateBBootstrapMaterial,
+    bootstrap_gate_b,
+)
 from wish_builder.services.journal import GENESIS_HEAD, DurableJournal, JournalHead
 from wish_builder.services.ports import PersistedEffectRequest, TrellisGraphSnapshot
 from wish_builder.services.recovery import (
@@ -153,6 +163,7 @@ HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 MAX_IMPORT_SETTINGS_BYTES = 1_048_576
 MAX_DECISION_REQUEST_BYTES = 1_048_576
 MAX_RECOVERY_PROOF_BYTES = 1_048_576
+MAX_GATE_B_ARTIFACT_BYTES = 8 * 1_048_576
 _SEGMENT_NAME_RE = re.compile(r"^segment-([0-9]{8})\.jsonl$")
 
 _IMPORT_SETTINGS_FIELDS = frozenset(
@@ -338,16 +349,10 @@ def _decode_import_settings(raw: bytes, source: Path) -> dict[str, object]:
     )
 
 
-def _load_trellis_import(
-    snapshot_path: str | Path,
+def _load_trellis_import_settings(
     settings_path: str | Path,
-) -> tuple[TrellisGraphSnapshot, TrellisImportSettings]:
-    snapshot_source = Path(snapshot_path)
+) -> tuple[dict[str, object], TrellisImportSettings]:
     settings_source = Path(settings_path)
-    try:
-        snapshot_bytes = snapshot_source.read_bytes()
-    except FileNotFoundError as exc:
-        raise ManifestError(f"snapshot not found: {snapshot_source}") from exc
     try:
         settings_bytes = settings_source.read_bytes()
     except FileNotFoundError as exc:
@@ -407,6 +412,26 @@ def _load_trellis_import(
             path_case_mode=PathCaseMode(root["path_case_mode"]),
             protected_paths=tuple(protected_paths),
         )
+    except (TypeError, ValueError) as exc:
+        raise _settings_error(
+            "settings.invalid_value",
+            "$",
+            str(exc),
+        ) from exc
+    return root, settings
+
+
+def _load_trellis_import(
+    snapshot_path: str | Path,
+    settings_path: str | Path,
+) -> tuple[TrellisGraphSnapshot, TrellisImportSettings]:
+    snapshot_source = Path(snapshot_path)
+    try:
+        snapshot_bytes = snapshot_source.read_bytes()
+    except FileNotFoundError as exc:
+        raise ManifestError(f"snapshot not found: {snapshot_source}") from exc
+    root, settings = _load_trellis_import_settings(settings_path)
+    try:
         snapshot = TrellisGraphSnapshot(
             export_version=root["export_version"],
             trellis_version=root["trellis_version"],
@@ -503,35 +528,7 @@ def _run_trellis_import(args: argparse.Namespace) -> int:
 
 def _run_trellis_snapshot(args: argparse.Namespace) -> int:
     checkout_root = Path(args.checkout_root).expanduser().absolute()
-    core_root = _required_trellis_path(
-        args.core_root,
-        "WISH_BUILDER_TRELLIS_CORE_ROOT",
-        directory=True,
-    )
-    core_archive = _required_trellis_path(
-        args.core_archive,
-        "WISH_BUILDER_TRELLIS_CORE_ARCHIVE",
-        directory=False,
-    )
-    node_value = args.node or shutil.which("node")
-    if not node_value:
-        raise ManifestError("Node.js is required to read official Trellis task records")
-    node = Path(node_value).expanduser().absolute()
-    bridge = (
-        Path(__file__).resolve().parents[1]
-        / "bridges"
-        / "trellis_core"
-        / "bridge.mjs"
-    )
-    port = TrellisCoreGraphPort(
-        bridge_command=(str(node), str(bridge)),
-        checkout_root=checkout_root,
-        working_directory=checkout_root,
-        environment={
-            "WISH_BUILDER_TRELLIS_CORE_ROOT": str(core_root),
-            "WISH_BUILDER_TRELLIS_CORE_ARCHIVE": str(core_archive),
-        },
-    )
+    port = _trellis_graph_port(args, checkout_root)
     snapshot = port.export_snapshot(args.parent_task_id)
     summary: dict[str, object] = {
         "byte_length": snapshot.byte_length,
@@ -555,6 +552,51 @@ def _run_trellis_snapshot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _trellis_graph_port(
+    args: argparse.Namespace,
+    checkout_root: Path,
+) -> TrellisCoreGraphPort:
+    core_root = _required_trellis_path(
+        args.core_root,
+        "WISH_BUILDER_TRELLIS_CORE_ROOT",
+        directory=True,
+    )
+    core_archive = _required_trellis_path(
+        args.core_archive,
+        "WISH_BUILDER_TRELLIS_CORE_ARCHIVE",
+        directory=False,
+    )
+    node_value = args.node or shutil.which("node")
+    if not node_value:
+        raise ManifestError("Node.js is required to read official Trellis task records")
+    node = Path(node_value).expanduser().absolute()
+    bridge = _trellis_bridge_path()
+    try:
+        return TrellisCoreGraphPort(
+            bridge_command=(str(node), str(bridge)),
+            checkout_root=checkout_root,
+            working_directory=checkout_root,
+            environment={
+                "WISH_BUILDER_TRELLIS_CORE_ROOT": str(core_root),
+                "WISH_BUILDER_TRELLIS_CORE_ARCHIVE": str(core_archive),
+            },
+        )
+    except (TypeError, ValueError) as exc:
+        raise ManifestError(f"Trellis bridge configuration rejected: {exc}") from exc
+
+
+def _trellis_bridge_path() -> Path:
+    source = Path(__file__).resolve()
+    candidates = (
+        source.parents[1] / "bridges" / "trellis_core" / "bridge.mjs",
+        source.parent / "wish_builder" / "bridges" / "trellis_core" / "bridge.mjs",
+    )
+    for candidate in candidates:
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate.resolve(strict=True)
+    raise ManifestError("verified Trellis bridge script is missing")
+
+
 def _required_trellis_path(
     argument: str | None,
     environment_name: str,
@@ -575,6 +617,202 @@ def _required_trellis_path(
     return path.resolve(strict=True)
 
 
+def _read_gate_b_artifact(
+    path: str | Path,
+    approved_hash: str,
+) -> tuple[Path, bytes]:
+    if type(approved_hash) is not str or HASH_RE.fullmatch(approved_hash) is None:
+        raise ManifestError("--approved-artifact-hash must be a full sha256 reference")
+    source = Path(path).expanduser().absolute()
+    if not source.is_file() or source.is_symlink():
+        raise ManifestError("Gate B artifact must be an existing non-link file")
+    expected_name = f"gate-b-{approved_hash.removeprefix('sha256:')}.md"
+    if source.name != expected_name:
+        raise ManifestError(
+            "Gate B artifact must use its immutable content-addressed snapshot name"
+        )
+    raw = source.read_bytes()
+    if not raw or len(raw) > MAX_GATE_B_ARTIFACT_BYTES:
+        raise ManifestError("Gate B artifact is empty or exceeds the byte limit")
+    observed = "sha256:" + hashlib.sha256(raw).hexdigest()
+    if observed != approved_hash:
+        raise ManifestError("Gate B artifact hash does not match the approved hash")
+    return source.resolve(strict=True), raw
+
+
+def _same_manifest_except_revision(
+    approved: ExecutionManifestV2,
+    observed: ExecutionManifestV2,
+) -> bool:
+    approved_value = approved.to_primitive()
+    observed_value = observed.to_primitive()
+    approved_value["trellis_revision"] = None
+    observed_value["trellis_revision"] = None
+    return approved_value == observed_value
+
+
+def _run_admit_gate_b(args: argparse.Namespace) -> int:
+    manifest_path = Path(args.manifest).expanduser().absolute()
+    manifest_bytes = manifest_path.read_bytes()
+    manifest = load_manifest(manifest_path)
+    if type(manifest) is not ExecutionManifestV2:
+        raise ManifestError("admit-gate-b requires an execution manifest v2")
+    if manifest_bytes != manifest.canonical_json_bytes():
+        raise ManifestError("Gate B manifest bytes are not the canonical immutable snapshot")
+
+    artifact_path, artifact_bytes = _read_gate_b_artifact(
+        args.gate_b_artifact,
+        args.approved_artifact_hash,
+    )
+    _, settings = _load_trellis_import_settings(args.import_settings)
+    checkout_root = Path(args.workspace_root).expanduser().absolute()
+    fresh_snapshot = _trellis_graph_port(args, checkout_root).export_snapshot(
+        manifest.trellis_parent_task_id
+    )
+    imported = import_trellis_snapshot(
+        fresh_snapshot,
+        settings,
+        approved_graph_digest=manifest.trellis_graph_digest,
+    )
+    if (
+        imported.gate_b_invalidated
+        or imported.trellis_graph_digest != manifest.trellis_graph_digest
+    ):
+        raise ManifestError("Gate B invalidated: the live material graph changed")
+    if not _same_manifest_except_revision(manifest, imported.manifest):
+        raise ManifestError(
+            "live Trellis import does not match the approved manifest outside revision provenance"
+        )
+
+    workspace = _capture_cli_workspace(
+        checkout_root,
+        _manifest_workspace_scopes(manifest),
+        label="Gate B workspace",
+        error_type=DecisionCliError,
+    )
+    if manifest_path.read_bytes() != manifest_bytes:
+        raise ManifestError("execution manifest changed during Gate B admission")
+    if artifact_path.read_bytes() != artifact_bytes:
+        raise ManifestError("Gate B artifact changed during admission")
+    confirmed_workspace = _capture_cli_workspace(
+        checkout_root,
+        workspace.scopes,
+        label="Gate B workspace",
+        error_type=DecisionCliError,
+    )
+    if confirmed_workspace != workspace:
+        raise ManifestError("Gate B workspace changed during admission")
+
+    from wish_builder.processes.production import ProductionRuntimeLayout
+
+    layout = ProductionRuntimeLayout.for_run(
+        checkout_root,
+        Path(args.runtime_root).expanduser().absolute(),
+        manifest.run_id,
+    )
+    layout.control_root.mkdir(parents=True, exist_ok=True)
+    timestamp = _utc_now()
+    host_id = _safe_token(args.host_id or platform.node(), fallback="localhost")
+    coordinator_id = _safe_token(
+        args.coordinator_id or "gate-b-bootstrap",
+        fallback="gate-b-bootstrap",
+    )
+    process_start_id = f"gate-b-start-{time.time_ns()}"
+    try:
+        material = GateBBootstrapMaterial(
+            manifest=manifest,
+            workspace_hash=workspace.workspace_hash,
+            gate_b_artifact_hash=args.approved_artifact_hash,
+            gate_b_artifact_byte_length=len(artifact_bytes),
+            trellis_snapshot_hash=fresh_snapshot.source_sha256,
+            trellis_snapshot_byte_length=fresh_snapshot.byte_length,
+            trellis_observed_at=fresh_snapshot.observed_at,
+            coordinator=ActorIdentity(
+                ActorType.COORDINATOR,
+                coordinator_id,
+                host_id,
+                os.getpid(),
+                process_start_id,
+            ),
+            approver=ActorIdentity(
+                ActorType.HUMAN,
+                args.actor_id,
+                host_id,
+                os.getpid(),
+                process_start_id,
+            ),
+            requested_at=timestamp,
+            decided_at=timestamp,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ManifestError(f"Gate B bootstrap material rejected: {exc}") from exc
+
+    try:
+        with ProtectedControlRoot.open(layout.control_root) as control_root:
+            events = _read_verified_journal(layout.journal_root, allow_empty=True)
+            result = bootstrap_gate_b(
+                material,
+                events,
+                DurableJournal(
+                    manifest.run_id,
+                    FilesystemJournalStorage(
+                        layout.journal_root,
+                        manifest.run_id,
+                        control_root=control_root,
+                    ),
+                ),
+            )
+            if not result.admitted:
+                raise ManifestError(f"Gate B bootstrap failed: {result.reason.value}")
+            verified_events = _read_verified_journal(layout.journal_root)
+            admission = admit_execution_snapshot(
+                manifest,
+                verified_events,
+                workspace_hash=workspace.workspace_hash,
+            )
+            if not admission.admitted:
+                raise ManifestError(
+                    "Gate B execution admission failed: " + admission.reason.value
+                )
+            if not control_root.revalidate().ok:
+                raise ManifestError("Gate B control root changed during admission")
+    except GitIdentityError as exc:
+        raise ManifestError(f"Gate B control root identity failed: {exc.reason}") from exc
+
+    final_workspace = _capture_cli_workspace(
+        checkout_root,
+        workspace.scopes,
+        label="Gate B workspace",
+        error_type=DecisionCliError,
+    )
+    if final_workspace != workspace:
+        raise ManifestError("Gate B workspace changed while Journal evidence was committed")
+    if manifest_path.read_bytes() != manifest_bytes:
+        raise ManifestError("execution manifest changed while Journal evidence was committed")
+    if artifact_path.read_bytes() != artifact_bytes:
+        raise ManifestError("Gate B artifact changed while Journal evidence was committed")
+
+    print(
+        json.dumps(
+            {
+                "appended_count": result.appended_count,
+                "artifact_hash": args.approved_artifact_hash,
+                "journal_root": str(layout.journal_root),
+                "manifest_digest": manifest.canonical_sha256(),
+                "reason": result.reason.value,
+                "run_id": manifest.run_id,
+                "trellis_graph_digest": imported.trellis_graph_digest,
+                "trellis_revision": fresh_snapshot.revision,
+                "trellis_source_sha256": fresh_snapshot.source_sha256,
+                "workspace_hash": workspace.workspace_hash,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    return 0
+
+
 def _run_foreground(args: argparse.Namespace) -> int:
     manifest = load_manifest(args.manifest)
     if type(manifest) is not ExecutionManifestV2:
@@ -592,6 +830,20 @@ def _run_foreground(args: argparse.Namespace) -> int:
         if not selected_sdk_root.is_absolute():
             raise RunCliError("--provider-sdk-root must be an absolute path")
         provider_sdk_root = selected_sdk_root.resolve(strict=False)
+    trellis_core_root = None
+    if args.core_root is not None:
+        trellis_core_root = _required_trellis_path(
+            args.core_root,
+            "WISH_BUILDER_TRELLIS_CORE_ROOT",
+            directory=True,
+        )
+    trellis_core_archive = None
+    if args.core_archive is not None:
+        trellis_core_archive = _required_trellis_path(
+            args.core_archive,
+            "WISH_BUILDER_TRELLIS_CORE_ARCHIVE",
+            directory=False,
+        )
 
     def components_factory() -> ForegroundRunComponents:
         kwargs: dict[str, object] = {
@@ -600,6 +852,12 @@ def _run_foreground(args: argparse.Namespace) -> int:
         }
         if provider_sdk_root is not None:
             kwargs["provider_sdk_root"] = provider_sdk_root
+        if trellis_core_root is not None:
+            kwargs["trellis_core_root"] = trellis_core_root
+        if trellis_core_archive is not None:
+            kwargs["trellis_core_archive"] = trellis_core_archive
+        if args.node is not None:
+            kwargs["node_executable"] = Path(args.node).expanduser().absolute()
         return _build_production_components(manifest, **kwargs)
 
     def backend_admitter(candidate: ExecutionManifestV2) -> BackendAdmissionResult:
@@ -690,6 +948,9 @@ def _build_production_components(
     runtime_root: Path | None,
     workspace_root: Path,
     provider_sdk_root: Path | None = None,
+    trellis_core_root: Path | None = None,
+    trellis_core_archive: Path | None = None,
+    node_executable: Path | None = None,
 ) -> ForegroundRunComponents:
     """Enter the effectful production composition only after backend admission."""
 
@@ -701,6 +962,12 @@ def _build_production_components(
     }
     if provider_sdk_root is not None:
         kwargs["provider_sdk_root"] = provider_sdk_root
+    if trellis_core_root is not None:
+        kwargs["trellis_core_root"] = trellis_core_root
+    if trellis_core_archive is not None:
+        kwargs["trellis_core_archive"] = trellis_core_archive
+    if node_executable is not None:
+        kwargs["node_executable"] = node_executable
     return ProductionForegroundRunComponents.from_runtime_inputs(manifest, **kwargs)
 
 
@@ -789,12 +1056,18 @@ def _load_decision_request(path: str | Path) -> DecisionRequest:
     return decoded.value
 
 
-def _read_verified_journal(journal_root: str | Path) -> tuple[JournalEvent, ...]:
+def _read_verified_journal(
+    journal_root: str | Path,
+    *,
+    allow_empty: bool = False,
+) -> tuple[JournalEvent, ...]:
     root = Path(journal_root)
     segments = root / "segments"
     try:
         entries = tuple(segments.iterdir())
     except FileNotFoundError as exc:
+        if allow_empty and not root.exists():
+            return ()
         raise DecisionCliError(f"journal segments not found: {segments}") from exc
     numbered: list[tuple[int, Path]] = []
     for entry in entries:
@@ -802,6 +1075,8 @@ def _read_verified_journal(journal_root: str | Path) -> tuple[JournalEvent, ...]
         if match is not None:
             numbered.append((int(match.group(1)), entry))
     numbered.sort(key=lambda item: item[0])
+    if not numbered and allow_empty and not entries:
+        return ()
     if not numbered or [item[0] for item in numbered] != list(
         range(1, numbered[-1][0] + 1)
     ):
@@ -1639,6 +1914,108 @@ def _validate_manifest_v2(
     return errors, warnings
 
 
+def _validate_execution_runtime(
+    manifest: ExecutionManifestV2,
+    journal_root: str | None,
+    workspace_root: str | None,
+) -> list[str]:
+    missing = tuple(
+        option
+        for option, value in (
+            ("--journal-root", journal_root),
+            ("--workspace-root", workspace_root),
+        )
+        if value is None
+    )
+    if missing:
+        return ["execution validation requires " + " and ".join(missing)]
+    assert journal_root is not None and workspace_root is not None
+    journal_path = Path(journal_root).expanduser().absolute()
+    try:
+        control_root = ProtectedControlRoot.open(journal_path.parent)
+    except Exception as exc:  # noqa: BLE001 - validation reports trust-boundary faults
+        return [
+            "execution control root could not be protected: "
+            + type(exc).__name__
+        ]
+
+    with control_root:
+        try:
+            before_workspace = capture_workspace_identity(
+                workspace_root,
+                _manifest_workspace_scopes(manifest),
+            )
+            before_events = _read_verified_journal(journal_path)
+            after_workspace = capture_workspace_identity(
+                workspace_root,
+                before_workspace.scopes,
+            )
+            after_events = _read_verified_journal(journal_path)
+        except Exception as exc:  # noqa: BLE001 - fail closed without a traceback
+            detail = str(exc).strip()
+            suffix = type(exc).__name__ if not detail else f"{type(exc).__name__}: {detail}"
+            return [f"execution runtime evidence could not be verified: {suffix}"]
+
+        errors: list[str] = []
+        if before_workspace != after_workspace:
+            errors.append("execution workspace changed during validation")
+        if before_events != after_events:
+            errors.append("execution Journal changed during validation")
+        if errors:
+            return errors
+        admission = admit_execution_snapshot(
+            manifest,
+            after_events,
+            workspace_hash=after_workspace.workspace_hash,
+        )
+        if admission.reason is ExecutionAdmissionReason.WORKSPACE_DRIFT:
+            try:
+                provider = TrellisAuthoritativeProjectionProvider(
+                    workspace_root,
+                    after_workspace,
+                )
+                before_projection = provider.ensure(manifest.run_id)
+                if (
+                    type(before_projection) is not TrellisAuthoritativeProjectionTarget
+                    or before_projection.workspace != after_workspace
+                ):
+                    raise ValueError("projection workspace changed before reconstruction")
+                reconstructed = reconstruct_pristine_workspace_identity(after_workspace)
+                after_projection = provider.ensure(manifest.run_id)
+                if (
+                    type(after_projection) is not TrellisAuthoritativeProjectionTarget
+                    or after_projection.workspace != after_workspace
+                ):
+                    raise ValueError("projection workspace changed during reconstruction")
+                projection_events = _read_verified_journal(journal_path)
+            except Exception as exc:  # noqa: BLE001 - fail closed at the trust boundary
+                detail = str(exc).strip()
+                suffix = (
+                    type(exc).__name__
+                    if not detail
+                    else f"{type(exc).__name__}: {detail}"
+                )
+                errors.append(
+                    "execution projection workspace could not be verified: " + suffix
+                )
+                return errors
+            if projection_events != after_events:
+                errors.append("execution Journal changed during projection validation")
+                return errors
+            admission = admit_execution_snapshot(
+                manifest,
+                projection_events,
+                workspace_hash=reconstructed.workspace_hash,
+            )
+        if not admission.admitted:
+            errors.append(
+                "Gate B execution admission failed: " + admission.reason.value
+            )
+        if not control_root.revalidate().ok:
+            errors.append("execution control root changed during validation")
+        return errors
+
+
 def _validate_finish_runtime(
     manifest: ExecutionManifestV2,
     journal_root: str | None,
@@ -2023,7 +2400,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_parser.add_argument(
         "--journal-root",
-        help="Journal directory required for finish validation",
+        help="Journal directory required for execution and finish validation",
+    )
+    validate_parser.add_argument(
+        "--workspace-root",
+        help="Git worktree required for execution validation",
     )
     validate_parser.add_argument(
         "--checkpoint-root",
@@ -2096,6 +2477,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="replace an existing output file",
     )
 
+    admit_gate_b_parser = subparsers.add_parser(
+        "admit-gate-b",
+        help="durably admit an approved Gate B snapshot into the Journal",
+    )
+    admit_gate_b_parser.add_argument("manifest", help="approved execution manifest v2")
+    admit_gate_b_parser.add_argument(
+        "gate_b_artifact",
+        help="immutable gate-b-<sha256>.md approval snapshot",
+    )
+    admit_gate_b_parser.add_argument(
+        "import_settings",
+        help="approved Trellis import settings used to compile the manifest",
+    )
+    admit_gate_b_parser.add_argument(
+        "--approved-artifact-hash",
+        required=True,
+        help="explicitly approved Gate B sha256 digest",
+    )
+    admit_gate_b_parser.add_argument(
+        "--runtime-root",
+        required=True,
+        help="state root used by the production foreground runner",
+    )
+    admit_gate_b_parser.add_argument(
+        "--workspace-root",
+        required=True,
+        help="Git worktree containing the approved Trellis task graph",
+    )
+    admit_gate_b_parser.add_argument("--actor-id", required=True)
+    admit_gate_b_parser.add_argument("--coordinator-id")
+    admit_gate_b_parser.add_argument("--host-id")
+    admit_gate_b_parser.add_argument(
+        "--core-root",
+        help="extracted @mindfoldhq/trellis-core 0.6.15 package root",
+    )
+    admit_gate_b_parser.add_argument(
+        "--core-archive",
+        help="official @mindfoldhq/trellis-core 0.6.15 npm tarball",
+    )
+    admit_gate_b_parser.add_argument("--node", help=argparse.SUPPRESS)
+
     run_parser = subparsers.add_parser(
         "run",
         help="run one qualified frozen execution manifest in the foreground",
@@ -2117,6 +2539,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Codex, Pi, or Oh My Pi SDK; no registry resolution is performed"
         ),
     )
+    run_parser.add_argument(
+        "--core-root",
+        help="extracted @mindfoldhq/trellis-core 0.6.15 package root",
+    )
+    run_parser.add_argument(
+        "--core-archive",
+        help="official @mindfoldhq/trellis-core 0.6.15 npm tarball",
+    )
+    run_parser.add_argument("--node", help=argparse.SUPPRESS)
 
     probe_parser = subparsers.add_parser(
         "backend-probe",
@@ -2196,6 +2627,8 @@ def main(argv: list[str] | None = None) -> int:
             return _run_trellis_import(args)
         if args.command == "snapshot-trellis":
             return _run_trellis_snapshot(args)
+        if args.command == "admit-gate-b":
+            return _run_admit_gate_b(args)
         if args.command == "run":
             return _run_foreground(args)
         if args.command == "backend-probe":
@@ -2212,7 +2645,26 @@ def main(argv: list[str] | None = None) -> int:
         primitive = manifest.to_primitive()
         if args.command == "validate":
             errors, warnings = _validate_admitted_manifest(manifest, args.stage)
-            if args.stage == "finish" and type(manifest) is ExecutionManifestV2:
+            if args.stage == "execution" and type(manifest) is ExecutionManifestV2:
+                # Manifest v2 keeps Gate B null. The immutable artifact,
+                # decision, graph import, and freeze live in the Journal.
+                errors = [
+                    error
+                    for error in errors
+                    if error != "Gate B approval evidence is incomplete."
+                ]
+                errors.extend(
+                    _validate_execution_runtime(
+                        manifest,
+                        args.journal_root,
+                        args.workspace_root,
+                    )
+                )
+                if args.checkpoint_root is not None:
+                    errors.append(
+                        "--checkpoint-root is only used by manifest v2 finish validation"
+                    )
+            elif args.stage == "finish" and type(manifest) is ExecutionManifestV2:
                 # Manifest v2 deliberately keeps Gate B null to avoid a
                 # self-referential digest. At finish, the supplied runtime
                 # evidence is the authority for post-Gate-B execution.
@@ -2228,10 +2680,21 @@ def main(argv: list[str] | None = None) -> int:
                         args.checkpoint_root,
                     )
                 )
-            elif args.journal_root is not None or args.checkpoint_root is not None:
+                if args.workspace_root is not None:
+                    errors.append(
+                        "--workspace-root is only used by manifest v2 execution validation"
+                    )
+            elif any(
+                value is not None
+                for value in (
+                    args.journal_root,
+                    args.workspace_root,
+                    args.checkpoint_root,
+                )
+            ):
                 errors.append(
-                    "--journal-root and --checkpoint-root are only used by "
-                    "manifest v2 finish validation"
+                    "runtime evidence options are only used by manifest v2 "
+                    "execution or finish validation"
                 )
             _print_validation(errors, warnings)
             return 1 if errors else 0

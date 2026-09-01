@@ -738,6 +738,44 @@ class CodexAppServerFailClosedBranchTests(unittest.TestCase):
             ],
         }
 
+    def test_restart_cancel_accepts_a_persisted_cancelled_turn(self) -> None:
+        config = self.config("cancelled-restart")
+        original = codex.CodexAppServerChannel(config, clock=lambda: OBSERVED_AT)
+        self._install_send(
+            original,
+            status=EffectStatus.APPLIED,
+            state=TurnState.CANCELLED,
+        )
+        original._state["active_send"] = "send-1"
+        original._save_state()
+        original.close()
+
+        restarted = codex.CodexAppServerChannel(config, clock=lambda: OBSERVED_AT)
+        self.addCleanup(restarted.close)
+        command = CancelTurn(
+            operation_id="CANCEL-RECOVERY",
+            attempt_id="attempt-1",
+            channel_id="channel-1",
+            turn_id="turn-1",
+            reason_code="lease_lost",
+        )
+        observed = restarted.cancel(
+            prepared_effect(
+                ExecutionIdentity("WISH-001", 8, "TASK-001", 3, "DISPATCH-001"),
+                command,
+                EffectOperation.CANCEL_TURN,
+                3,
+            )
+        )
+
+        self.assertEqual(EffectStatus.APPLIED, observed.status)
+        self.assertEqual(TurnState.CANCELLED, observed.state)
+        self.assertEqual("message-1", observed.message_id)
+        self.assertEqual("turn-1", observed.turn_id)
+        self.assertIsNone(observed.result_digest)
+        self.assertIn("codex_cancel_observed", observed.evidence)
+        self.assertIsNone(restarted._client)
+
     def test_reconciliation_fails_closed_for_missing_or_ambiguous_identity(self) -> None:
         terminal = self.channel()
         self._install_send(

@@ -15,7 +15,11 @@ from tests.processes.test_production import (
     one_task_graph_snapshot,
 )
 from tests.processes.test_workflow import PassingAcceptance
-from wish_builder.adapters.trellis import FakeTrellisGraphPort
+from wish_builder.adapters.git_identity import capture_workspace_identity
+from wish_builder.adapters.trellis import (
+    FakeTrellisGraphPort,
+    TrellisAuthoritativeProjectionTarget,
+)
 from wish_builder.compatibility import load_bundled_compatibility
 from wish_builder.contracts.compatibility import Provider
 from wish_builder.contracts.runtime import JournalEventType, RuntimeState
@@ -39,13 +43,17 @@ def _revision(value: int) -> str:
 
 
 class _ProjectionCheckout:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, scopes: tuple[str, ...]) -> None:
         self.path = path
+        self.scopes = scopes
         self.calls = 0
 
-    def ensure(self, run_id: str) -> Path:
+    def ensure(self, run_id: str) -> TrellisAuthoritativeProjectionTarget:
         self.calls += 1
-        return self.path
+        return TrellisAuthoritativeProjectionTarget(
+            self.path,
+            capture_workspace_identity(self.path, self.scopes),
+        )
 
 
 class _ProjectionPort:
@@ -147,7 +155,10 @@ class ProductionTrellisProjectionTests(unittest.TestCase):
         factory = lifecycle_tests._SeparatedTrellisFactories(
             production_module.channel_capabilities_from_compatibility(self.cell)
         )
-        checkout = _ProjectionCheckout(repository)
+        checkout = _ProjectionCheckout(
+            repository,
+            production_module._workspace_scopes(self.manifest),
+        )
         port = _ProjectionPort()
         built = self._build(repository, runtime_root, factory, checkout, port)
         lifecycle_tests.ProductionLifecycleIntegrationTests._seed_executing_graph(
