@@ -94,6 +94,9 @@ class GitIdentityTests(unittest.TestCase):
     def test_pristine_reconstruction_ignores_only_unstaged_worktree_bytes(
         self,
     ) -> None:
+        with self.assertRaises(TypeError):
+            reconstruct_pristine_workspace_identity(object())  # type: ignore[arg-type]
+
         baseline = capture_workspace_identity(self.root, ("src/**",))
         source = self.root / "src" / "owned.txt"
         source.write_text("derived projection\n", encoding="utf-8")

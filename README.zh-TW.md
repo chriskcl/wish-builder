@@ -358,7 +358,7 @@ python scripts\manage_backend_versions.py quarantine --help
 | 最新本地完整測試 | Windows／Python 3.13.14；1,589 項非效能測試加 16 項效能測試，0 failure、0 error，3 項平台條件式略過 |
 | Codex/Windows 證據獨立核對 | 52 項通過，1 項因 Windows symlink 權限略過；結論為 `PASS` |
 | 發布後資格與准入測試 | 68 項通過，1 項因 Windows symlink 權限略過，另有 59 個 subtests 通過 |
-| 官方 Trellis `0.6.15` 整合 | 本次 Windows 通過 24 項 Node bridge 測試與 11 項 Python 整合測試；固定的跨平台證據在各平台保留相同測試集 |
+| 官方 Trellis `0.6.15` 整合 | 本次 Windows 通過 24 項 Node bridge 測試與 14 項 Python 整合測試；固定的跨平台證據在各平台保留相同測試集 |
 | Skill 打包與已安裝 runtime | 完整套件中的 245 項打包與發布規則測試，以及 13 項 standalone runtime smoke tests 通過 |
 | Python 編譯與空白格式檢查 | 通過 |
 

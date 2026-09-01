@@ -66,19 +66,19 @@
     },
     {
       "destination": "scripts/wish_builder/adapters/git_identity.py",
-      "runtime_sha256": "a98bb84f0a56430e34107741e7f3a7cb6bce3392b180854c158a49eb00de6f65",
-      "runtime_size": 26325,
+      "runtime_sha256": "c9797ec51334391c999002b64bbba8e0fc98aa23481c4dbfb6c7a077d215170c",
+      "runtime_size": 26695,
       "source": "wish_builder/adapters/git_identity.py",
-      "source_sha256": "a98bb84f0a56430e34107741e7f3a7cb6bce3392b180854c158a49eb00de6f65",
-      "source_size": 26325
+      "source_sha256": "c9797ec51334391c999002b64bbba8e0fc98aa23481c4dbfb6c7a077d215170c",
+      "source_size": 26695
     },
     {
       "destination": "scripts/wish_builder/adapters/git_worktree.py",
-      "runtime_sha256": "852226306ed5268327a9bb0a55466d5f9f7c6659e7f046c22d34da0ff68b741c",
-      "runtime_size": 112057,
+      "runtime_sha256": "d08858695a192896c2081af5d2c300dd9cf7a14fd7641771abe206dbd3fd6970",
+      "runtime_size": 112114,
       "source": "wish_builder/adapters/git_worktree.py",
-      "source_sha256": "852226306ed5268327a9bb0a55466d5f9f7c6659e7f046c22d34da0ff68b741c",
-      "source_size": 112057
+      "source_sha256": "d08858695a192896c2081af5d2c300dd9cf7a14fd7641771abe206dbd3fd6970",
+      "source_size": 112114
     },
     {
       "destination": "scripts/wish_builder/adapters/process_identity.py",
@@ -98,11 +98,11 @@
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/codex_app_server.py",
-      "runtime_sha256": "e6ccc19577a8bb5cdf42ffde577fe06c8e987fb6efc87fe2f297599e9d9b1649",
-      "runtime_size": 69553,
+      "runtime_sha256": "07f3fc44ae06e0d30e501e2535ef81a631beb7472748a4aa8ac1afa9c4bf38a2",
+      "runtime_size": 70130,
       "source": "wish_builder/adapters/providers/codex_app_server.py",
-      "source_sha256": "e6ccc19577a8bb5cdf42ffde577fe06c8e987fb6efc87fe2f297599e9d9b1649",
-      "source_size": 69553
+      "source_sha256": "07f3fc44ae06e0d30e501e2535ef81a631beb7472748a4aa8ac1afa9c4bf38a2",
+      "source_size": 70130
     },
     {
       "destination": "scripts/wish_builder/adapters/providers/jsonl_rpc.py",
@@ -602,11 +602,11 @@
     },
     {
       "destination": "scripts/wish_builder/kernel/state.py",
-      "runtime_sha256": "2c50db7e5cc085ce9f985c13b659683d952c676da2cea51fee3a2ac942cc8cec",
-      "runtime_size": 38252,
+      "runtime_sha256": "0dd3f7f60d7b910b7ea3e8159b85bedb41ef62fa73ea31bda6e3b7f88f1ab0dd",
+      "runtime_size": 38514,
       "source": "wish_builder/kernel/state.py",
-      "source_sha256": "2c50db7e5cc085ce9f985c13b659683d952c676da2cea51fee3a2ac942cc8cec",
-      "source_size": 38252
+      "source_sha256": "0dd3f7f60d7b910b7ea3e8159b85bedb41ef62fa73ea31bda6e3b7f88f1ab0dd",
+      "source_size": 38514
     },
     {
       "destination": "scripts/wish_builder/kernel/validation.py",

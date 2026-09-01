@@ -725,22 +725,18 @@ def _run_git(
         "git",
         "--no-pager",
         "--no-replace-objects",
+        "-c",
+        f"core.hooksPath={hooks_path}",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "commit.gpgSign=false",
+        "-C",
+        str(repository),
+        *arguments,
     ]
     if os.name == "nt":
-        command.extend(("-c", "core.longpaths=true"))
-    command.extend(
-        (
-            "-c",
-            f"core.hooksPath={hooks_path}",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "commit.gpgSign=false",
-            "-C",
-            str(repository),
-            *arguments,
-        )
-    )
+        command[3:3] = ["-c", "core.longpaths=true"]
     try:
         completed = subprocess.run(
             command,
@@ -877,6 +873,13 @@ class _AttemptObservation:
     details: tuple[str, ...]
 
 
+def _validate_projection_workspace_validator(
+    validator: Callable[[WorkspaceIdentity], WorkspaceIdentity] | None,
+) -> None:
+    if validator is not None and not callable(validator):
+        raise TypeError("projection_workspace_validator must be callable or null")
+
+
 class GitWorktreeAdapter:
     """Real local repository port for active-M1 attempt effects."""
 
@@ -903,10 +906,7 @@ class GitWorktreeAdapter:
             raise ValueError("lock_timeout_seconds must be positive")
         if not callable(clock):
             raise TypeError("clock must be callable")
-        if projection_workspace_validator is not None and not callable(
-            projection_workspace_validator
-        ):
-            raise TypeError("projection_workspace_validator must be callable or null")
+        _validate_projection_workspace_validator(projection_workspace_validator)
         requested = Path(repository).expanduser().absolute()
         root = Path(expected_workspace.worktree_root.canonical_path)
         try:
@@ -2520,9 +2520,6 @@ class GitWorktreeAdapter:
                 head,
             )
             if merge_base == command.candidate_commit_sha:
-                normalized_workspace = self._normalize_projection_workspace(
-                    observed_workspace
-                )
                 target_status = _run_git(
                     self.repository,
                     (
@@ -2540,6 +2537,9 @@ class GitWorktreeAdapter:
                         "promoted_target_worktree_dirty",
                         reason_code=RuntimeReasonCode.WORKSPACE_DRIFT,
                     )
+                normalized_workspace = self._normalize_projection_workspace(
+                    observed_workspace
+                )
                 record = plan.candidate_record()
                 self._expected_workspace = normalized_workspace
                 receipt = self._receipt(

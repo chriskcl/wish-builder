@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -178,17 +179,19 @@ class TrellisLifecycleAdapterTests(unittest.TestCase):
         self.node.write_bytes(b"test executable placeholder")
         self.bridge.write_bytes(b"test bridge placeholder")
 
-    def port(self) -> lifecycle.TrellisCoreLifecyclePort:
-        return lifecycle.TrellisCoreLifecyclePort(
-            bridge_command=(str(self.node), str(self.bridge)),
-            checkout_root=self.checkout,
-            working_directory=self.working,
-            trellis_task_id=TRELLIS_TASK_ID,
-            worktree_path=self.worktree,
-            worktree_id=WORKTREE_ID,
-            environment={"WISH_BUILDER_TEST": "lifecycle"},
-            clock=lambda: FIXED_TIME,
-        )
+    def port(self, **changes: object) -> lifecycle.TrellisCoreLifecyclePort:
+        options: dict[str, object] = {
+            "bridge_command": (str(self.node), str(self.bridge)),
+            "checkout_root": self.checkout,
+            "working_directory": self.working,
+            "trellis_task_id": TRELLIS_TASK_ID,
+            "worktree_path": self.worktree,
+            "worktree_id": WORKTREE_ID,
+            "environment": {"WISH_BUILDER_TEST": "lifecycle"},
+            "clock": lambda: FIXED_TIME,
+        }
+        options.update(changes)
+        return lifecycle.TrellisCoreLifecyclePort(**options)  # type: ignore[arg-type]
 
     def test_apply_sends_exact_requests_and_decodes_typed_successes(self) -> None:
         prepare_effect = prepared(_prepare_command(), event_number=1)
@@ -397,6 +400,88 @@ class TrellisLifecycleAdapterTests(unittest.TestCase):
 
         self.assertIs(observed.status, EffectStatus.UNKNOWN)
         self.assertEqual(("trellis_task_identity_mismatch",), observed.evidence)
+
+    def test_constructor_rejects_invalid_lifecycle_boundaries(self) -> None:
+        invalid = (
+            ({"trellis_task_id": ""}, ValueError),
+            ({"worktree_path": "relative/path"}, ValueError),
+            ({"worktree_id": ""}, ValueError),
+            ({"timeout_seconds": True}, ValueError),
+            ({"clock": object()}, TypeError),
+        )
+        for changes, error_type in invalid:
+            with self.subTest(changes=changes), self.assertRaises(error_type):
+                self.port(**changes)
+
+    def test_check_finish_and_effect_type_guards_fail_before_transport(self) -> None:
+        port = self.port()
+        wrong_check = replace(_check_command(), trellis_task_id="OTHER-TASK")
+        wrong_finish = replace(_finish_command(), trellis_task_id="OTHER-TASK")
+        with mock.patch.object(lifecycle, "_invoke_bridge") as invoke:
+            checked = port.check_attempt(prepared(wrong_check))
+            finished = port.finish_attempt(prepared(wrong_finish))
+            with self.assertRaises(TypeError):
+                port.prepare_attempt(object())  # type: ignore[arg-type]
+            with self.assertRaises(TypeError):
+                port.prepare_attempt(prepared(_check_command()))  # type: ignore[arg-type]
+            invoke.assert_not_called()
+
+        self.assertIs(checked.status, EffectStatus.UNKNOWN)
+        self.assertIs(finished.status, EffectStatus.UNKNOWN)
+        self.assertEqual(("trellis_task_identity_mismatch",), checked.evidence)
+        self.assertEqual(("trellis_task_identity_mismatch",), finished.evidence)
+
+    def test_inspect_and_bridge_schema_failures_remain_typed_unknowns(self) -> None:
+        with mock.patch.object(
+            lifecycle,
+            "_invoke_bridge",
+            side_effect=lifecycle._BridgeTransportError("timeout"),
+        ):
+            inspected = self.port().inspect_attempt("OP-INSPECT-FAILURE")
+        self.assertIs(inspected.status, EffectStatus.UNKNOWN)
+        self.assertEqual(("lifecycle_timeout",), inspected.evidence)
+
+        effect = prepared(_prepare_command())
+        invalid_responses = (
+            (_success_response("lifecycle_prepare", _attempt_observation(effect.operation_id)), 1),
+            (_success_response("wrong_action", _attempt_observation(effect.operation_id)), 0),
+            (
+                _success_response(
+                    "lifecycle_prepare",
+                    _attempt_observation(effect.operation_id),
+                    bridge=object(),
+                ),
+                0,
+            ),
+            (
+                {
+                    "protocolVersion": 1,
+                    "ok": False,
+                    "action": "lifecycle_prepare",
+                    "error": {"code": "failed"},
+                },
+                0,
+            ),
+            (
+                {
+                    "protocolVersion": 1,
+                    "ok": False,
+                    "action": "lifecycle_prepare",
+                    "error": "failed",
+                },
+                1,
+            ),
+        )
+        for response in invalid_responses:
+            with self.subTest(response=response), mock.patch.object(
+                lifecycle,
+                "_invoke_bridge",
+                return_value=response,
+            ):
+                observed = self.port().prepare_attempt(effect)
+            self.assertIs(observed.status, EffectStatus.UNKNOWN)
+
+        self.assertEqual("lifecycle_unavailable", lifecycle._reason(None))
 
 
 if __name__ == "__main__":

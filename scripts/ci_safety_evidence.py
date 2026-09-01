@@ -71,15 +71,6 @@ class BranchProjection:
         """Identify the same control-flow slot across ordinary source edits."""
         return (self.kind, self.owner_key, self.ast_path)
 
-    @property
-    def allows_move_correspondence(self) -> bool:
-        """Only branches with a meaningful body can be proven after a move."""
-        return self.kind not in {
-            "BoolOpSlot",
-            "ComprehensionFilter",
-            "MatchGuard",
-        }
-
     def to_primitive(self) -> dict[str, object]:
         return {
             "ast_path": self.ast_path,
@@ -1276,31 +1267,34 @@ def _branch_projections(source: str) -> tuple[BranchProjection, ...]:
             )
         )
 
-    def walk(node: ast.AST, ast_path: str, owner_key: str) -> None:
+    def walk(
+        node: ast.AST,
+        ast_path: str,
+        owner_key: str,
+        owner_ordinal: int = 0,
+    ) -> None:
         current_owner = owner_key
+        current_path = ast_path
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            current_owner = (
-                f"{owner_key}/function:{node.name}:"
-                f"{_exact_ast_digest(node.args)}"
-            )
+            current_owner = f"{owner_key}/function:{node.name}[{owner_ordinal}]"
+            current_path = "owner"
         elif isinstance(node, ast.ClassDef):
-            current_owner = (
-                f"{owner_key}/class:{node.name}:"
-                f"{_ast_parts_digest(('bases', node.bases))}"
-            )
+            current_owner = f"{owner_key}/class:{node.name}[{owner_ordinal}]"
+            current_path = "owner"
         elif isinstance(node, ast.Lambda):
             current_owner = f"{owner_key}/lambda:{ast_path}"
+            current_path = "owner"
         if isinstance(node, (ast.If, ast.While)):
-            add(node, ast_path, node.lineno, node.test, owner_key=current_owner)
+            add(node, current_path, node.lineno, node.test, owner_key=current_owner)
         elif isinstance(node, (ast.For, ast.AsyncFor)):
-            add(node, ast_path, node.lineno, node.iter, owner_key=current_owner)
+            add(node, current_path, node.lineno, node.iter, owner_key=current_owner)
         elif isinstance(node, ast.BoolOp):
             span = _source_span(node)
             if span is not None:
                 for index in range(max(0, len(node.values) - 1)):
                     add(
                         node,
-                        f"{ast_path}.short_circuit[{index}]",
+                        f"{current_path}.short_circuit[{index}]",
                         span[0],
                         last=span[1],
                         kind="BoolOpSlot",
@@ -1309,13 +1303,13 @@ def _branch_projections(source: str) -> tuple[BranchProjection, ...]:
         elif isinstance(node, ast.IfExp):
             span = _source_span(node)
             if span is not None:
-                add(node, ast_path, span[0], last=span[1], owner_key=current_owner)
+                add(node, current_path, span[0], last=span[1], owner_key=current_owner)
         elif isinstance(node, ast.ExceptHandler):
-            add(node, ast_path, node.lineno, node.body[-1], owner_key=current_owner)
+            add(node, current_path, node.lineno, node.body[-1], owner_key=current_owner)
         elif isinstance(node, (ast.Try, ast.TryStar)):
-            add(node, ast_path, node.lineno, node.body[-1], owner_key=current_owner)
+            add(node, current_path, node.lineno, node.body[-1], owner_key=current_owner)
         elif isinstance(node, ast.Match):
-            add(node, ast_path, node.lineno, node.subject, owner_key=current_owner)
+            add(node, current_path, node.lineno, node.subject, owner_key=current_owner)
         elif isinstance(node, ast.match_case):
             pattern_span = _source_span(node.pattern)
             if pattern_span is not None:
@@ -1323,7 +1317,7 @@ def _branch_projections(source: str) -> tuple[BranchProjection, ...]:
                 tail = node.guard if node.guard is not None else node.pattern
                 add(
                     node,
-                    ast_path,
+                    current_path,
                     case_first,
                     tail,
                     kind="MatchCase",
@@ -1334,7 +1328,7 @@ def _branch_projections(source: str) -> tuple[BranchProjection, ...]:
                     if guard_span is not None:
                         add(
                             node,
-                            f"{ast_path}.guard_decision",
+                            f"{current_path}.guard_decision",
                             guard_span[0],
                             last=guard_span[1],
                             kind="MatchGuard",
@@ -1346,7 +1340,7 @@ def _branch_projections(source: str) -> tuple[BranchProjection, ...]:
             if part_spans:
                 add(
                     node,
-                    f"{ast_path}.generator_decision",
+                    f"{current_path}.generator_decision",
                     min(span[0] for span in part_spans),
                     last=max(span[1] for span in part_spans),
                     kind="ComprehensionGenerator",
@@ -1357,7 +1351,7 @@ def _branch_projections(source: str) -> tuple[BranchProjection, ...]:
                 if condition_span is not None:
                     add(
                         node,
-                        f"{ast_path}.filter_decision[{index}]",
+                        f"{current_path}.filter_decision[{index}]",
                         condition_span[0],
                         last=condition_span[1],
                         kind="ComprehensionFilter",
@@ -1366,11 +1360,37 @@ def _branch_projections(source: str) -> tuple[BranchProjection, ...]:
 
         for field, value in ast.iter_fields(node):
             if isinstance(value, ast.AST):
-                walk(value, f"{ast_path}.{field}", current_owner)
+                walk(value, f"{current_path}.{field}", current_owner)
             elif isinstance(value, list):
-                for index, item in enumerate(value):
+                type_ordinals: dict[type[ast.AST], int] = defaultdict(int)
+                owner_ordinals: dict[tuple[type[ast.AST], str], int] = defaultdict(int)
+                for item in value:
                     if isinstance(item, ast.AST):
-                        walk(item, f"{ast_path}.{field}[{index}]", current_owner)
+                        item_type = type(item)
+                        type_ordinal = type_ordinals[item_type]
+                        type_ordinals[item_type] += 1
+                        ordinal = 0
+                        if isinstance(
+                            item,
+                            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+                        ):
+                            owner_type = (
+                                ast.ClassDef
+                                if isinstance(item, ast.ClassDef)
+                                else ast.FunctionDef
+                            )
+                            owner_identity = (owner_type, item.name)
+                            ordinal = owner_ordinals[owner_identity]
+                            owner_ordinals[owner_identity] += 1
+                        walk(
+                            item,
+                            (
+                                f"{current_path}.{field}."
+                                f"{item_type.__name__}[{type_ordinal}]"
+                            ),
+                            current_owner,
+                            ordinal,
+                        )
 
     walk(tree, "module", "module")
     raw.sort(
@@ -1825,7 +1845,22 @@ def evaluate_safety_evidence(
             }
             branch_mapping: dict[str, str] = {}
             unmatched_projections: list[BranchProjection] = []
+            new_by_key: dict[
+                tuple[str, str, str, str], list[BranchProjection]
+            ] = defaultdict(list)
+            for projection in available_new.values():
+                new_by_key[projection.correspondence_key].append(projection)
             for projection in changed_file.old_control_flow:
+                candidates = new_by_key[projection.correspondence_key]
+                if len(candidates) == 1:
+                    candidate = candidates.pop()
+                    branch_mapping[projection.branch_id] = candidate.branch_id
+                    available_new.pop(candidate.branch_id)
+                else:
+                    unmatched_projections.append(projection)
+
+            unmatched_old: set[str] = set()
+            for projection in unmatched_projections:
                 candidates = [
                     candidate
                     for candidate in available_new.values()
@@ -1833,27 +1868,6 @@ def evaluate_safety_evidence(
                 ]
                 if len(candidates) == 1:
                     candidate = candidates[0]
-                    branch_mapping[projection.branch_id] = candidate.branch_id
-                    available_new.pop(candidate.branch_id)
-                else:
-                    unmatched_projections.append(projection)
-
-            new_by_key: dict[
-                tuple[str, str, str, str], list[BranchProjection]
-            ] = defaultdict(list)
-            for projection in available_new.values():
-                if projection.allows_move_correspondence:
-                    new_by_key[projection.correspondence_key].append(projection)
-
-            unmatched_old: set[str] = set()
-            for projection in unmatched_projections:
-                candidates = (
-                    new_by_key[projection.correspondence_key]
-                    if projection.allows_move_correspondence
-                    else []
-                )
-                if len(candidates) == 1:
-                    candidate = candidates.pop()
                     branch_mapping[projection.branch_id] = candidate.branch_id
                     available_new.pop(candidate.branch_id)
                 else:
@@ -2268,7 +2282,15 @@ def evaluate_safety_evidence(
                 )
                 for projection in proven_line_projections
             )
-            if not has_arc_evidence and not has_line_evidence:
+            has_mutation_evidence = any(
+                not (anchor_last < first or anchor_first > last)
+                for anchor_first, anchor_last, _spec in eligible_anchors.get(path, ())
+            )
+            if (
+                not has_arc_evidence
+                and not has_line_evidence
+                and not has_mutation_evidence
+            ):
                 errors.append(
                     _error(
                         "changed_safety_change_unmapped",

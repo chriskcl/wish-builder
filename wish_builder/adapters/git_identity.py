@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import unicodedata
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Self
 
@@ -491,7 +491,17 @@ def reconstruct_pristine_workspace_identity(
         raise TypeError("observed must be a WorkspaceIdentity")
     repository = Path(observed.worktree_root.canonical_path)
     fingerprint = _pristine_scope_fingerprint(repository, observed.scopes)
-    return replace(observed, index_dirty_fingerprint=fingerprint)
+    return WorkspaceIdentity(
+        local_repository_id=observed.local_repository_id,
+        local_worktree_id=observed.local_worktree_id,
+        common_dir=observed.common_dir,
+        worktree_root=observed.worktree_root,
+        git_dir=observed.git_dir,
+        target_full_ref=observed.target_full_ref,
+        base_commit_sha=observed.base_commit_sha,
+        scopes=observed.scopes,
+        index_dirty_fingerprint=fingerprint,
+    )
 
 
 @dataclass(frozen=True, slots=True)

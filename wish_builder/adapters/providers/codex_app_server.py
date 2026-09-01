@@ -1061,13 +1061,24 @@ class CodexAppServerChannel:
                 self._save_state()
                 return self._turn_observation(operation)
             source = self._turn_observation(send)
-            return self._complete_cancel_locked(
-                typed,
-                command,
-                send_id,
-                source,
-                evidence="codex_turn_completed_interrupted",
+            observation = TurnObservation(
+                operation_id=command.operation_id,
+                status=EffectStatus.APPLIED,
+                observed_at=self._clock(),
+                state=source.state,
+                effect_digest=_effect_digest("cancel_turn", typed.command_hash),
+                attempt_id=command.attempt_id,
+                channel_id=command.channel_id,
+                message_id=source.message_id,
+                turn_id=command.turn_id,
+                result_digest=source.result_digest,
+                evidence=("codex_turn_completed_interrupted",),
             )
+            self._operation(command.operation_id)["observation"] = (
+                observation.to_primitive()
+            )
+            self._save_state()
+            return observation
 
     def _complete_cancel_locked(
         self,
