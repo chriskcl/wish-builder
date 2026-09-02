@@ -7,6 +7,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -22,6 +23,7 @@ from wish_builder.contracts.qualification_evidence_decoder import (
 from wish_builder.services.backend_qualification_builder import (
     verify_backend_qualification_candidate,
 )
+from wish_builder.services.ports import TurnState
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -350,6 +352,25 @@ class LiveBackendQualificationTests(unittest.TestCase):
             ) as raised:
                 live_harness._validate_run_id(value)
             self.assertEqual("invalid_run_id", raised.exception.code)
+
+    def test_terminal_mismatch_names_scenario_and_states(self) -> None:
+        with self.assertRaises(live_harness.LiveQualificationError) as raised:
+            live_harness._finish_attempt(
+                None,
+                SimpleNamespace(
+                    scenario=QualificationEvidenceScenario.SIBLING_OVERLAP
+                ),
+                None,
+                SimpleNamespace(state=TurnState.FAILED),
+                "qualifier-main",
+                1.0,
+            )
+
+        self.assertEqual("turn_terminal_state_mismatch", raised.exception.code)
+        self.assertEqual(
+            "scenario=sibling_overlap expected=done observed=failed",
+            raised.exception.message,
+        )
 
     def test_windows_worktree_cleanup_retries_transient_sharing_locks(self) -> None:
         locked = PermissionError(13, "locked", str(self.root))

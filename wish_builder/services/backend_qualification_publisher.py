@@ -59,6 +59,8 @@ class BackendQualificationPublication:
     evidence_files: tuple[tuple[str, bytes], ...]
     evidence_relative: str
     pin_bytes: bytes
+    platform: Platform
+    provider: Provider
     receipt_bytes: bytes
     receipt_digest: str
     source_revision: str
@@ -70,11 +72,11 @@ class BackendQualificationPublication:
                 "bundleDigest": self.bundle.bundle_digest,
                 "enabledForDispatch": True,
                 "evidenceReference": self.evidence_relative,
-                "platform": Platform.WINDOWS.value,
+                "platform": self.platform.value,
                 "provenanceAssurance": (
                     "detached_provider_reference_human_accepted"
                 ),
-                "provider": Provider.CODEX.value,
+                "provider": self.provider.value,
                 "publicationMode": "local",
                 "published": True,
                 "receiptDigest": self.receipt_digest,
@@ -246,7 +248,7 @@ def prepare_backend_qualification_publication(
     trellis_version: str = "0.6.15",
     base_bundle: BackendQualificationBundle | None = None,
 ) -> BackendQualificationPublication:
-    """Reverify and prepare one exact Codex/Windows publication."""
+    """Reverify and prepare one exact backend/OS publication."""
 
     if not isinstance(candidate_root, Path):
         raise TypeError("candidate_root must be a Path")
@@ -278,13 +280,6 @@ def prepare_backend_qualification_publication(
     if candidate.artifact.artifact_digest != expected_artifact_digest:
         raise BackendQualificationPublicationError(
             "artifact_digest_mismatch", "Candidate artifact digest was not approved."
-        )
-    if (
-        candidate.inventory.provider is not Provider.CODEX
-        or candidate.inventory.platform is not Platform.WINDOWS
-    ):
-        raise BackendQualificationPublicationError(
-            "target_cell_mismatch", "Only the Codex/Windows cell is authorized."
         )
     harness = _decode_value(
         decode_qualification_harness_descriptor_bytes(files["evidence/harness.json"]),
@@ -330,6 +325,11 @@ def prepare_backend_qualification_publication(
     published_files["publication-receipt.json"] = receipt_bytes
 
     primitive = selected_bundle.to_primitive()
+    target_key = (
+        candidate.inventory.provider.value,
+        candidate.inventory.platform.value,
+    )
+    target_label = f"{target_key[0]}/{target_key[1]}"
     original_cells: dict[tuple[str, str], object] = {}
     target: dict[str, object] | None = None
     for provider in primitive["providers"]:
@@ -337,11 +337,11 @@ def prepare_backend_qualification_publication(
         for cell in provider["platforms"]:
             key = (provider_name, cell["platform"])
             original_cells[key] = canonical_json_bytes(cell)
-            if key == (Provider.CODEX.value, Platform.WINDOWS.value):
+            if key == target_key:
                 target = cell
     if target is None:
         raise BackendQualificationPublicationError(
-            "target_cell_missing", "Codex/Windows is absent from the base bundle."
+            "target_cell_missing", f"{target_label} is absent from the base bundle."
         )
     desired_qualification = {
         "artifact": candidate.artifact.to_primitive(),
@@ -359,9 +359,10 @@ def prepare_backend_qualification_publication(
         "evidenceScope": EvidenceScope.FULL_TURN_AND_CANCELLATION.value,
         "live": True,
         "note": (
-            "Locally published from independently reviewed live Codex 0.149.0 evidence. "
-            "Detached provider provenance was human-accepted; this is not an "
-            "OpenAI-signed attestation."
+            "Locally published from independently reviewed live "
+            f"{candidate.artifact.sdk.name}@{candidate.artifact.sdk.version} evidence. "
+            "Detached provider provenance was human-accepted; this is not a "
+            "provider-signed attestation."
         ),
         "status": QualificationStatus.PASSED.value,
     }
@@ -370,7 +371,7 @@ def prepare_backend_qualification_publication(
         if current_qualification != desired_qualification or primitive["published"] is not True:
             raise BackendQualificationPublicationError(
                 "cell_already_qualified",
-                "Codex/Windows is already qualified with different publication evidence.",
+                f"{target_label} is already qualified with different publication evidence.",
             )
     else:
         if current_qualification.get("artifact") is not None:
@@ -392,7 +393,7 @@ def prepare_backend_qualification_publication(
         provider_name = provider["provider"]
         for cell in provider["platforms"]:
             key = (provider_name, cell["platform"])
-            if key != (Provider.CODEX.value, Platform.WINDOWS.value):
+            if key != target_key:
                 if canonical_json_bytes(cell) != original_cells[key]:
                     raise BackendQualificationPublicationError(
                         "unapproved_cell_changed", f"Publication changed {key[0]}/{key[1]}.",
@@ -406,6 +407,8 @@ def prepare_backend_qualification_publication(
         evidence_files=tuple(sorted(published_files.items())),
         evidence_relative=evidence_relative,
         pin_bytes=pin_bytes,
+        platform=candidate.inventory.platform,
+        provider=candidate.inventory.provider,
         receipt_bytes=receipt_bytes,
         receipt_digest=receipt_digest,
         source_revision=expected_source_revision,

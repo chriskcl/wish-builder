@@ -1136,7 +1136,13 @@ def _finish_attempt(
         QualificationTurnTerminalState.FAILED: TurnState.FAILED,
     }[terminal_state]
     if terminal.state is not expected:
-        raise LiveQualificationError("turn_terminal_state_mismatch")
+        raise LiveQualificationError(
+            "turn_terminal_state_mismatch",
+            (
+                f"scenario={attempt.scenario.value} "
+                f"expected={expected.value} observed={terminal.state.value}"
+            ),
+        )
     attempt.result_digest = terminal.result_digest
     if terminal_state is QualificationTurnTerminalState.DONE and attempt.result_digest is None:
         raise LiveQualificationError("turn_result_missing")

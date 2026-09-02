@@ -12,6 +12,7 @@ from scripts import publish_backend_qualification as publication_cli
 
 from tests.services.test_backend_qualification_builder import (
     SOURCE_REVISION,
+    _EvidenceOptions,
     _write_evidence_root,
 )
 from wish_builder.compatibility import load_bundled_backend_qualification
@@ -207,6 +208,47 @@ class BackendQualificationPublisherTests(unittest.TestCase):
                 base_bundle=self.base_bundle,
             )
         )
+
+    def test_publication_accepts_a_valid_omp_linux_cell(self) -> None:
+        evidence = self.root / "omp-linux-raw"
+        _write_evidence_root(
+            evidence,
+            _EvidenceOptions(
+                target_provider=Provider.OMP,
+                target_platform=Platform.LINUX,
+                inventory_provider=Provider.OMP,
+                inventory_platform=Platform.LINUX,
+                event_provider=Provider.OMP,
+                event_platform=Platform.LINUX,
+            ),
+        )
+        _convert_to_provider_provenance(evidence)
+        candidate_root = self.root / "omp-linux-candidate"
+        candidate = build_backend_qualification_candidate(
+            evidence,
+            candidate_root,
+            bundle=self.base_bundle,
+        )
+
+        publication = prepare_backend_qualification_publication(
+            candidate_root,
+            expected_source_revision=SOURCE_REVISION,
+            expected_artifact_digest=candidate.artifact.artifact_digest,
+            reviewer="independent-test-reviewer",
+            review_reference="local-review:omp-linux-publisher-test",
+            human_approver="local-test-user",
+            human_approval_reference="local-approval:omp-linux-publisher-test",
+            review_test_count=1,
+            review_skip_count=0,
+            accept_detached_provider_provenance=True,
+            base_bundle=self.base_bundle,
+        )
+
+        self.assertIs(publication.provider, Provider.OMP)
+        self.assertIs(publication.platform, Platform.LINUX)
+        target = publication.bundle.platform(Provider.OMP, Platform.LINUX)
+        self.assertTrue(target.qualification.enabled_for_dispatch)
+        self.assertEqual(candidate.artifact, target.qualification.artifact)
 
     def test_detached_provenance_and_approved_identity_fail_closed(self) -> None:
         with self.assertRaises(BackendQualificationPublicationError) as detached:

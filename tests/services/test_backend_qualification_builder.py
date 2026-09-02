@@ -26,6 +26,7 @@ from wish_builder.compatibility import (
 )
 from wish_builder.contracts import (
     ExecutionIdentity,
+    WorkerProvider,
     canonical_json_bytes,
     canonical_sha256,
     generated_task_packet_bytes,
@@ -128,6 +129,8 @@ class _EvidenceOptions:
     bad_manifest_pin: bool = False
     bad_sdk_pin: bool = False
     bad_trellis_pin: bool = False
+    target_provider: Provider = Provider.CODEX
+    target_platform: Platform = Platform.WINDOWS
     inventory_provider: Provider = Provider.CODEX
     inventory_platform: Platform = Platform.WINDOWS
     inventory_run_id: str = RUN_ID
@@ -283,9 +286,11 @@ def _run_start_payload(
     manifest_digest: str,
     snapshot_digest: str,
     bundle: object,
+    provider: Provider,
+    platform: Platform,
 ) -> RunStartedPayload:
-    provider = next(item for item in bundle.providers if item.provider is Provider.CODEX)
-    cell = bundle.platform(Provider.CODEX, Platform.WINDOWS)
+    provider_entry = next(item for item in bundle.providers if item.provider is provider)
+    cell = bundle.platform(provider, platform)
     return RunStartedPayload(
         source_revision=SOURCE_REVISION,
         harness_digest=harness_digest,
@@ -297,9 +302,9 @@ def _run_start_payload(
         capability_digest=cell.capabilities.capability_digest,
         manifest_digest=manifest_digest,
         trellis_snapshot_digest=snapshot_digest,
-        sdk_name=provider.sdk.name,
-        sdk_version=provider.sdk.version,
-        sdk_shasum=provider.sdk.shasum,
+        sdk_name=provider_entry.sdk.name,
+        sdk_version=provider_entry.sdk.version,
+        sdk_shasum=provider_entry.sdk.shasum,
     )
 
 
@@ -707,7 +712,7 @@ def _artifact(
 def _write_evidence_root(root: Path, options: _EvidenceOptions = _EvidenceOptions()) -> None:
     root.mkdir(parents=True)
     bundle = load_bundled_compatibility()
-    cell = bundle.platform(Provider.CODEX, Platform.WINDOWS)
+    cell = bundle.platform(options.target_provider, options.target_platform)
 
     graph = copy.deepcopy(trellis_payload())
     graph["requirements"].append(
@@ -751,6 +756,11 @@ def _write_evidence_root(root: Path, options: _EvidenceOptions = _EvidenceOption
     settings = replace(
         trellis_settings(),
         policy_digest=bundle.policy_digest,
+        provider={
+            Provider.CODEX: WorkerProvider.CODEX,
+            Provider.OMP: WorkerProvider.OH_MY_PI,
+            Provider.PI: WorkerProvider.PI,
+        }[options.target_provider],
         launch_profile_digest=cell.launch_profile_digest,
         capability_digest=(
             _digest("9")
@@ -774,6 +784,8 @@ def _write_evidence_root(root: Path, options: _EvidenceOptions = _EvidenceOption
         manifest_digest=_bytes_digest(manifest_bytes),
         snapshot_digest=_bytes_digest(snapshot_bytes),
         bundle=bundle,
+        provider=options.target_provider,
+        platform=options.target_platform,
     )
     if options.bad_sdk_pin:
         run_start = replace(run_start, sdk_version="999.0.0")
