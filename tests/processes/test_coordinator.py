@@ -707,6 +707,7 @@ class ForegroundCoordinatorTests(unittest.TestCase):
             request,
             observation,
             owned_path_changes=(),
+            owned_path_recheck=lambda: (),
         )
 
         self.assertIs(CoordinatorStatus.PROGRESSED, reclaimed.status)
@@ -912,6 +913,7 @@ class ForegroundCoordinatorTests(unittest.TestCase):
             request,
             observation,
             owned_path_changes=(),
+            owned_path_recheck=lambda: (),
         )
         self.assertIs(CoordinatorStatus.BLOCKED, blocked.status)
         self.assertIs(CoordinatorReason.PORT_OUTCOME_INVALID, blocked.reason)
@@ -939,6 +941,66 @@ class ForegroundCoordinatorTests(unittest.TestCase):
         self.assertIs(CoordinatorStatus.REJECTED, mismatched.status)
         self.assertEqual((), unknown_paths.events)
         self.assertEqual((), mismatched.events)
+
+    def test_takeover_rejects_an_unavailable_final_owned_path_check(self) -> None:
+        missing, request, observation, _ = (
+            self._takeover_with_running_backend_attempt(
+                self.root / "missing-final-owned-path-check"
+            )
+        )
+        missing_recheck = missing.reclaim_cancelled_dispatch(
+            request,
+            observation,
+            owned_path_changes=(),
+        )
+
+        failed, request, observation, _ = (
+            self._takeover_with_running_backend_attempt(
+                self.root / "failed-final-owned-path-check"
+            )
+        )
+
+        def unavailable():
+            raise OSError("worktree inspection unavailable")
+
+        failed_recheck = failed.reclaim_cancelled_dispatch(
+            request,
+            observation,
+            owned_path_changes=(),
+            owned_path_recheck=unavailable,
+        )
+
+        invalid, request, observation, _ = (
+            self._takeover_with_running_backend_attempt(
+                self.root / "invalid-final-owned-path-check"
+            )
+        )
+        with self.assertRaises(TypeError):
+            invalid.reclaim_cancelled_dispatch(
+                request,
+                observation,
+                owned_path_changes=(),
+                owned_path_recheck=True,  # type: ignore[arg-type]
+            )
+
+        self.assertIs(CoordinatorStatus.REJECTED, missing_recheck.status)
+        self.assertIs(
+            CoordinatorReason.RECOVERY_PROOF_INVALID,
+            missing_recheck.reason,
+        )
+        self.assertEqual((), missing_recheck.events)
+        self.assertIs(CoordinatorStatus.REJECTED, failed_recheck.status)
+        self.assertIs(
+            CoordinatorReason.RECOVERY_PROOF_INVALID,
+            failed_recheck.reason,
+        )
+        self.assertEqual(
+            (
+                JournalEventType.EFFECT_REQUESTED,
+                JournalEventType.EFFECT_OBSERVED,
+            ),
+            tuple(event.event_type for event in failed_recheck.events),
+        )
 
     def test_takeover_reclaims_reserved_attempt_without_incrementing_attempt(self) -> None:
         _, takeover = self._takeover_with_reserved_attempt(self.root)

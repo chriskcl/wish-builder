@@ -142,13 +142,21 @@ class BackendDispatchEffectServiceTests(unittest.TestCase):
         )
         return PersistedEffectRequest.from_append_result(result)
 
-    def service(self, channel=None, *, failpoint=None, fencing_token=1):
+    def service(
+        self,
+        channel=None,
+        *,
+        effect_admitter=None,
+        failpoint=None,
+        fencing_token=1,
+    ):
         return BackendDispatchEffectService(
             self.journal,
             channel or FakeBackendChannelPort(capabilities()),
             self.evidence,
             coordinator_id="coordinator-001",
             fencing_token=fencing_token,
+            effect_admitter=effect_admitter,
             failpoint=failpoint,
         )
 
@@ -198,6 +206,45 @@ class BackendDispatchEffectServiceTests(unittest.TestCase):
             self.assertEqual(evidence.digest, "sha256:" + hashlib.sha256(
                 self.evidence.read(evidence.digest)
             ).hexdigest())
+
+    def test_effect_admission_rejection_blocks_before_the_adapter_call(self) -> None:
+        channel = FakeBackendChannelPort(capabilities())
+        result = self.service(
+            channel,
+            effect_admitter=lambda _head, _identity: False,
+        ).dispatch(self.parent, plan())
+
+        self.assertIs(result.status, BackendDispatchEffectStatus.BLOCKED)
+        self.assertIs(result.reason, BackendDispatchEffectReason.EFFECT_ABSENT)
+        self.assertEqual(
+            (JournalEventType.EFFECT_REQUESTED,),
+            tuple(event.event_type for event in result.events),
+        )
+        self.assertIsNone(result.receipt)
+        self.assertEqual(0, channel.effect_count)
+
+    def test_effect_admission_exception_fails_closed_before_the_adapter_call(
+        self,
+    ) -> None:
+        channel = FakeBackendChannelPort(capabilities())
+
+        def unavailable(_head, _identity):
+            raise OSError("lease authority unavailable")
+
+        result = self.service(
+            channel,
+            effect_admitter=unavailable,
+        ).dispatch(self.parent, plan())
+
+        self.assertIs(result.status, BackendDispatchEffectStatus.BLOCKED)
+        self.assertIs(result.reason, BackendDispatchEffectReason.EFFECT_ABSENT)
+        self.assertEqual(1, len(result.events))
+        self.assertIsNone(result.receipt)
+        self.assertEqual(0, channel.effect_count)
+
+    def test_constructor_rejects_non_callable_effect_admission(self) -> None:
+        with self.assertRaises(TypeError):
+            self.service(effect_admitter=True)
 
     def test_unknown_send_is_durable_and_never_reported_as_applied(self) -> None:
         dispatch_plan = plan()

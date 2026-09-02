@@ -690,11 +690,11 @@
     },
     {
       "destination": "scripts/wish_builder/processes/coordinator.py",
-      "runtime_sha256": "c7325ce7eaadf89155863d6c9cf54efbc5b56d740924977282234c7356220e93",
-      "runtime_size": 89530,
+      "runtime_sha256": "1e2ec50707016b17f4170aa01de7f19f9dc246e267bea6671a09bc3f0356ea66",
+      "runtime_size": 97365,
       "source": "wish_builder/processes/coordinator.py",
-      "source_sha256": "c7325ce7eaadf89155863d6c9cf54efbc5b56d740924977282234c7356220e93",
-      "source_size": 89530
+      "source_sha256": "1e2ec50707016b17f4170aa01de7f19f9dc246e267bea6671a09bc3f0356ea66",
+      "source_size": 97365
     },
     {
       "destination": "scripts/wish_builder/processes/foreground.py",
@@ -706,11 +706,11 @@
     },
     {
       "destination": "scripts/wish_builder/processes/production.py",
-      "runtime_sha256": "6328d8643aaad2ecbfc03ba1143fdd1bb2fba3e0a5ab1afde892515c31005f80",
-      "runtime_size": 113411,
+      "runtime_sha256": "6b53954f01b3264c0797783cb56cb9423f7a1f265916a08d5c7b6f87e47a0ec5",
+      "runtime_size": 115547,
       "source": "wish_builder/processes/production.py",
-      "source_sha256": "6328d8643aaad2ecbfc03ba1143fdd1bb2fba3e0a5ab1afde892515c31005f80",
-      "source_size": 113411
+      "source_sha256": "6b53954f01b3264c0797783cb56cb9423f7a1f265916a08d5c7b6f87e47a0ec5",
+      "source_size": 115547
     },
     {
       "destination": "scripts/wish_builder/processes/production_recovery.py",
@@ -778,11 +778,11 @@
     },
     {
       "destination": "scripts/wish_builder/services/backend_effects.py",
-      "runtime_sha256": "6547977f5b4eb1c3fb70ea247ede01cb5f3640d1c858e360dff08a8ff4711a34",
-      "runtime_size": 23543,
+      "runtime_sha256": "5ec96344424d0175456f4202faf3ff79c583380b180e0834b2a16e7366873858",
+      "runtime_size": 24528,
       "source": "wish_builder/services/backend_effects.py",
-      "source_sha256": "6547977f5b4eb1c3fb70ea247ede01cb5f3640d1c858e360dff08a8ff4711a34",
-      "source_size": 23543
+      "source_sha256": "5ec96344424d0175456f4202faf3ff79c583380b180e0834b2a16e7366873858",
+      "source_size": 24528
     },
     {
       "destination": "scripts/wish_builder/services/backend_qualification_builder.py",

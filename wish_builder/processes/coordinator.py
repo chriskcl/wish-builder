@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 
 from wish_builder.contracts import canonical_sha256
@@ -138,6 +138,146 @@ def _recovered_cancel_evidence_matches(
         and evidence.role is EvidenceRole.REQUIRED
         and evidence.structured_subject_hash == expected_subject_hash
     )
+
+
+def _recovered_cancel_authority_matches(
+    event: JournalEvent,
+    journal_prefix: tuple[JournalEvent, ...],
+    *,
+    manifest_digest: str,
+) -> bool:
+    """Prove a reconciled cancellation was written under its historical lease."""
+
+    if (
+        type(event) is not JournalEvent
+        or type(journal_prefix) is not tuple
+        or not journal_prefix
+        or not all(type(item) is JournalEvent for item in journal_prefix)
+        or journal_prefix[-1] != event
+        or event.event_type is not JournalEventType.EFFECT_RECONCILED
+        or event.actor_type is not ActorType.COORDINATOR
+        or type(event.payload) is not EffectObservationPayload
+        or event.payload.adapter is not AdapterKind.BACKEND
+        or event.payload.receipt.operation is not EffectOperation.CANCEL_TURN
+        or type(manifest_digest) is not str
+        or not manifest_digest
+    ):
+        return False
+    receipt = event.payload.receipt
+    matching_requests = tuple(
+        candidate
+        for candidate in journal_prefix[:-1]
+        if candidate.event_type is JournalEventType.EFFECT_REQUESTED
+        and candidate.identity == receipt.identity
+        and type(candidate.payload) is EffectRequestPayload
+        and candidate.payload.adapter is AdapterKind.BACKEND
+        and candidate.payload.operation is EffectOperation.CANCEL_TURN
+        and candidate.payload.object_type is EffectObjectType.TURN
+    )
+    if len(matching_requests) != 1:
+        return False
+    request_event = matching_requests[0]
+    try:
+        lease_state = CoordinatorLeaseState.initial()
+        for prior in journal_prefix[:-1]:
+            if prior.identity.run_id != event.identity.run_id:
+                return False
+            if prior == request_event:
+                lease = lease_state.lease
+                request_recorded_at = datetime.fromisoformat(
+                    prior.recorded_at[:-1] + "+00:00"
+                ).astimezone(timezone.utc)
+                if (
+                    lease is None
+                    or prior.actor_type is not ActorType.COORDINATOR
+                    or prior.payload.fencing_token
+                    != prior.identity.coordinator_epoch
+                    or not lease_state.allows_admission(
+                        authority_time=request_recorded_at,
+                        coordinator_id=prior.actor_id,
+                        owner=lease.owner,
+                        fencing_token=prior.identity.coordinator_epoch,
+                        manifest_digest=manifest_digest,
+                        scheduler_mode=SchedulerMode.WISH_BUILDER,
+                    )
+                ):
+                    return False
+            lease_state = lease_state.advance(prior)
+        lease = lease_state.lease
+        if lease is None:
+            return False
+        recorded_at = datetime.fromisoformat(
+            event.recorded_at[:-1] + "+00:00"
+        ).astimezone(timezone.utc)
+        if not lease_state.allows_admission(
+            authority_time=recorded_at,
+            coordinator_id=event.actor_id,
+            owner=lease.owner,
+            fencing_token=event.identity.coordinator_epoch,
+            manifest_digest=manifest_digest,
+            scheduler_mode=SchedulerMode.WISH_BUILDER,
+        ):
+            return False
+        lease_state.advance(event)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _recovered_cancel_request_matches(
+    journal_prefix: tuple[JournalEvent, ...],
+    *,
+    parent_identity: ExecutionIdentity,
+    command: CancelTurn,
+    cancel_epoch: int,
+) -> bool:
+    """Bind historical cancellation authority to the exact persisted command."""
+
+    if (
+        type(journal_prefix) is not tuple
+        or not all(type(event) is JournalEvent for event in journal_prefix)
+        or type(parent_identity) is not ExecutionIdentity
+        or type(command) is not CancelTurn
+        or type(cancel_epoch) is not int
+        or cancel_epoch <= parent_identity.coordinator_epoch
+        or parent_identity.correlation_id is None
+    ):
+        return False
+    expected_identity = replace(
+        parent_identity,
+        coordinator_epoch=cancel_epoch,
+        correlation_id=command.operation_id,
+    )
+    expected_target_hash = "sha256:" + canonical_sha256(
+        {
+            "adapter": AdapterKind.BACKEND.value,
+            "attempt_id": command.attempt_id,
+            "channel_id": command.channel_id,
+            "operation": EffectOperation.CANCEL_TURN.value,
+            "run_id": parent_identity.run_id,
+            "task_id": parent_identity.task_id,
+            "dispatch_id": parent_identity.correlation_id,
+            "turn_id": command.turn_id,
+        }
+    )
+    matching = tuple(
+        event
+        for event in journal_prefix
+        if event.event_type is JournalEventType.EFFECT_REQUESTED
+        and event.identity == expected_identity
+        and event.actor_type is ActorType.COORDINATOR
+        and type(event.payload) is EffectRequestPayload
+        and event.payload.adapter is AdapterKind.BACKEND
+        and event.payload.operation is EffectOperation.CANCEL_TURN
+        and event.payload.object_type is EffectObjectType.TURN
+        and event.payload.normalized_target_hash == expected_target_hash
+        and event.payload.request_payload_hash == command.canonical_sha256()
+        and event.payload.expected_sequence == event.sequence - 1
+        and event.payload.fencing_token == cancel_epoch
+        and event.payload.base_hash is None
+        and event.payload.head_hash is None
+    )
+    return len(matching) == 1
 
 
 def _admit_frozen_snapshot() -> bool:
@@ -1328,7 +1468,9 @@ class ForegroundCoordinator:
         observation_event: JournalEvent,
         *,
         owned_path_changes: tuple[str, ...] | None,
+        owned_path_recheck: Callable[[], tuple[str, ...] | None] | None = None,
         recovered_cancellation: tuple[JournalEvent, TurnObservation] | None = None,
+        recovered_cancellation_history: tuple[JournalEvent, ...] = (),
     ) -> CoordinatorReservationResult:
         """Cancel and re-fence one proven untouched prior-epoch dispatch."""
 
@@ -1341,6 +1483,8 @@ class ForegroundCoordinator:
             or not all(type(path) is str and path for path in owned_path_changes)
         ):
             raise TypeError("owned_path_changes must contain paths or be null")
+        if owned_path_recheck is not None and not callable(owned_path_recheck):
+            raise TypeError("owned_path_recheck must be callable or null")
         if recovered_cancellation is not None and (
             type(recovered_cancellation) is not tuple
             or len(recovered_cancellation) != 2
@@ -1349,6 +1493,14 @@ class ForegroundCoordinator:
         ):
             raise TypeError(
                 "recovered_cancellation must contain one event and turn or be null"
+            )
+        if type(recovered_cancellation_history) is not tuple or not all(
+            type(event) is JournalEvent for event in recovered_cancellation_history
+        ):
+            raise TypeError("recovered_cancellation_history must contain Journal events")
+        if recovered_cancellation is None and recovered_cancellation_history:
+            raise ValueError(
+                "recovered_cancellation_history requires recovered cancellation evidence"
             )
         admission = self._admission_reason(allow_recovery=True)
         if admission is not CoordinatorReason.NONE:
@@ -1441,6 +1593,11 @@ class ForegroundCoordinator:
         if recovered_cancellation is not None:
             recovered_event, recovered_turn = recovered_cancellation
             payload = recovered_event.payload
+            reconciler_authorized = _recovered_cancel_authority_matches(
+                recovered_event,
+                recovered_cancellation_history,
+                manifest_digest=self._manifest_digest,
+            )
             if (
                 recovered_event.event_type is not JournalEventType.EFFECT_RECONCILED
                 or type(payload) is not EffectObservationPayload
@@ -1461,10 +1618,11 @@ class ForegroundCoordinator:
                 or recovered_event.identity.correlation_id
                 != payload.receipt.identity.correlation_id
                 or recovered_event.identity.coordinator_epoch
-                != self._fencing_token
+                < payload.receipt.identity.coordinator_epoch
+                or recovered_event.identity.coordinator_epoch > self._fencing_token
                 or recovered_event.actor_type is not ActorType.COORDINATOR
-                or recovered_event.actor_id != self._coordinator_id
                 or recovered_event.sequence > self._cursor.head.sequence
+                or not reconciler_authorized
             ):
                 return self._reservation_result(
                     CoordinatorStatus.REJECTED,
@@ -1486,7 +1644,22 @@ class ForegroundCoordinator:
             turn_id=plan.send.turn_id,
             reason_code="lease_lost_takeover",
         )
+        if recovered_event is not None and not _recovered_cancel_request_matches(
+            recovered_cancellation_history,
+            parent_identity=identity,
+            command=command,
+            cancel_epoch=cancel_epoch,
+        ):
+            return self._reservation_result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
         if recovered_event is None or recovered_turn is None:
+            if owned_path_recheck is None:
+                return self._reservation_result(
+                    CoordinatorStatus.REJECTED,
+                    CoordinatorReason.RECOVERY_PROOF_INVALID,
+                )
             persisted = PersistedEffectRequest.from_append_result(
                 AppendResult(
                     AppendStatus.IDEMPOTENT,
@@ -1551,6 +1724,18 @@ class ForegroundCoordinator:
                 CoordinatorReason.PORT_OUTCOME_INVALID,
                 events=tuple(events),
             )
+
+        if owned_path_recheck is not None:
+            try:
+                final_owned_path_changes = owned_path_recheck()
+            except Exception:  # noqa: BLE001 - an unknown worktree state blocks reclaim
+                final_owned_path_changes = None
+            if final_owned_path_changes != ():
+                return self._reservation_result(
+                    CoordinatorStatus.REJECTED,
+                    CoordinatorReason.RECOVERY_PROOF_INVALID,
+                    events=tuple(events),
+                )
 
         transition_identity = replace(
             identity,

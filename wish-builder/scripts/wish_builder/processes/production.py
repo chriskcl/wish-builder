@@ -1448,6 +1448,13 @@ class ProductionForegroundRunComponents:
             current = self._cursor_from_recovery(recovery)
             if current is None or recovery.pending_external_effects:
                 return None
+            renewed = self._renew_worker_lease(current)
+            if not renewed.succeeded or renewed.cursor is None:
+                return None
+            current = renewed.cursor
+            recovery = self._recover()
+            if self._cursor_from_recovery(recovery) != current:
+                return None
 
         self._last_recovery = recovery
         recovered_dispatch = self._recover_cancelled_dispatch(current)
@@ -1577,6 +1584,7 @@ class ProductionForegroundRunComponents:
             if len(recovered_cancellations) > 1:
                 return None
             recovered_cancellation = None
+            recovered_cancellation_history: tuple[JournalEvent, ...] = ()
             if recovered_cancellations:
                 cancel_request, cancel_event = recovered_cancellations[0]
                 pending_cancel = PendingExternalEffect(cancel_request)
@@ -1594,6 +1602,8 @@ class ProductionForegroundRunComponents:
                 except Exception:
                     return None
                 recovered_cancellation = (cancel_event, cancel_turn)
+                cancel_event_index = events.index(cancel_event)
+                recovered_cancellation_history = events[: cancel_event_index + 1]
             task = next(item for item in self._manifest.tasks if item.id == attempt.task_id)
             command = self._repository.plan_attempt(
                 identity,
@@ -1615,7 +1625,11 @@ class ProductionForegroundRunComponents:
                 requests[0],
                 observations[0],
                 owned_path_changes=owned_path_changes,
+                owned_path_recheck=(
+                    lambda: self._repository.inspect_owned_path_changes(command)
+                ),
                 recovered_cancellation=recovered_cancellation,
+                recovered_cancellation_history=recovered_cancellation_history,
             )
         except Exception:
             return None
@@ -1746,6 +1760,7 @@ class ProductionForegroundRunComponents:
             self._evidence_store,
             coordinator_id=self._coordinator_id,
             fencing_token=self._fencing_token,
+            effect_admitter=self._external_effect_admitted,
         )
         return _ProductionForegroundCoordinator(
             self._manifest,
@@ -2524,6 +2539,40 @@ class ProductionForegroundRunComponents:
             repair_derived=True,
             control_root_validator=self.protect_control_root,
         )
+
+    def _external_effect_admitted(
+        self,
+        head: JournalHead,
+        identity: ExecutionIdentity,
+    ) -> bool:
+        """Recheck the durable lease after intent and before provider effects."""
+
+        if (
+            type(head) is not JournalHead
+            or type(identity) is not ExecutionIdentity
+            or identity.run_id != self._manifest.run_id
+            or identity.coordinator_epoch != self._fencing_token
+        ):
+            return False
+        try:
+            recovery = self._recover()
+            cursor = self._cursor_from_recovery(recovery)
+            authority_time = self._authority_clock()
+            lease = None if cursor is None else cursor.lease_state.lease
+            return bool(
+                cursor is not None
+                and cursor.head == head
+                and lease is not None
+                and cursor.lease_state.allows_admission(
+                    authority_time=authority_time,
+                    coordinator_id=self._coordinator_id,
+                    owner=self._owner,
+                    fencing_token=self._fencing_token,
+                    manifest_digest=self._manifest.canonical_sha256(),
+                )
+            )
+        except Exception:  # noqa: BLE001 - uncertainty forbids the external effect
+            return False
 
     def _cursor_from_recovery(
         self,
