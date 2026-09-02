@@ -74,6 +74,10 @@ from wish_builder.services.journal import (
     DurableJournal,
     JournalEventDraft,
 )
+from wish_builder.services.gate_b_bootstrap import (
+    gate_b_artifact_nonce,
+    graph_projection_bytes,
+)
 from wish_builder.services.recovery import (
     LeaseRecoveryStatus,
     recover_coordinator_lease,
@@ -82,6 +86,7 @@ from wish_builder.services.recovery import (
 BASE_TIME = datetime(2026, 8, 19, tzinfo=UTC)
 COORDINATOR_ID = "coordinator-e2e-001"
 HUMAN_ID = "local-account-e2e"
+GATE_B_ARTIFACT_HASH = "sha256:" + "e" * 64
 
 
 def digest(character: str) -> str:
@@ -328,11 +333,34 @@ class E2EHarness:
     def _next_timestamp(self) -> str:
         return self._next_time().isoformat(timespec="seconds").replace("+00:00", "Z")
 
+    def _contract_evidence(
+        self,
+        evidence_digest: str,
+        byte_length: int,
+        external_object_id: str,
+    ) -> EvidenceRef:
+        return EvidenceRef(
+            1,
+            evidence_digest,
+            byte_length,
+            EvidenceType.CONTRACT,
+            EvidenceProducer(
+                ExecutionIdentity(self.manifest.run_id, 1),
+                external_object_id=external_object_id,
+            ),
+            "2026-08-19T00:00:00Z",
+            EvidenceSensitivity.INTERNAL,
+            EvidenceRenderPolicy.METADATA_ONLY,
+            EvidenceRole.REQUIRED,
+            evidence_digest,
+        )
+
     def _append_transition(
         self,
         event_type: JournalEventType,
         from_state: RuntimeState,
         to_state: RuntimeState,
+        evidence: tuple[EvidenceRef, ...] = (),
     ) -> None:
         sequence = self.lease_state.head.sequence + 1
         appended = self.journal.append_draft(
@@ -346,6 +374,7 @@ class E2EHarness:
                     TransitionSubject.RUN,
                     from_state,
                     to_state,
+                    evidence,
                 ),
             ),
             expected_head=self.lease_state.head,
@@ -370,7 +399,11 @@ class E2EHarness:
                 f"REQUEST-{label}-001",
                 CommandKind.DECIDE,
                 sequence,
-                f"nonce-{decision_type.value}-001",
+                (
+                    gate_b_artifact_nonce(GATE_B_ARTIFACT_HASH)
+                    if decision_type is DecisionType.GATE_B
+                    else f"nonce-{decision_type.value}-001"
+                ),
                 self.owner.actor,
                 SourceChannel.COORDINATOR,
                 "2026-08-19T00:00:00Z",
@@ -475,6 +508,13 @@ class E2EHarness:
             JournalEventType.TRELLIS_GRAPH_IMPORTED,
             RuntimeState.TRELLIS_PREPARATION,
             RuntimeState.GATE_B_PENDING,
+            (
+                self._contract_evidence(
+                    self.manifest.trellis_graph_digest,
+                    len(graph_projection_bytes(self.manifest)),
+                    "trellis-material-graph",
+                ),
+            ),
         )
         self._approve_gate(
             DecisionType.GATE_B,
@@ -485,6 +525,23 @@ class E2EHarness:
             JournalEventType.TASK_GRAPH_FROZEN,
             RuntimeState.GATE_B_PENDING,
             RuntimeState.EXECUTING,
+            (
+                self._contract_evidence(
+                    GATE_B_ARTIFACT_HASH,
+                    1024,
+                    "gate-b-approved-artifact",
+                ),
+                self._contract_evidence(
+                    self.manifest.trellis_graph_digest,
+                    len(graph_projection_bytes(self.manifest)),
+                    "trellis-material-graph",
+                ),
+                self._contract_evidence(
+                    self.manifest.canonical_sha256(),
+                    len(self.manifest.canonical_json_bytes()),
+                    "execution-manifest-v2",
+                ),
+            ),
         )
         lease = self.journal.append_draft(
             JournalEventDraft(

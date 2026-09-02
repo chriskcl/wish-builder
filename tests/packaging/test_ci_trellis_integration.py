@@ -70,7 +70,16 @@ class TrellisIntegrationEvidenceTests(unittest.TestCase):
 
         self.assertEqual(EXPECTED_PYTHON_TEST_COUNT, len(test_ids))
         self.assertEqual(len(test_ids), len(set(test_ids)))
-        self.assertEqual(4, len(NODE_TEST_FILES))
+        self.assertEqual(3, len(PYTHON_TEST_MODULES))
+        self.assertIn(
+            "tests.adapters.test_trellis_lifecycle",
+            PYTHON_TEST_MODULES,
+        )
+        self.assertEqual(5, len(NODE_TEST_FILES))
+        self.assertIn(
+            "tests/node/trellis-lifecycle-bridge.test.mjs",
+            NODE_TEST_FILES,
+        )
         self.assertRegex(integration_source_digest(), r"^sha256:[0-9a-f]{64}$")
 
     def test_source_digest_binds_runtime_bridges_pins_and_compatibility(self) -> None:
@@ -81,13 +90,17 @@ class TrellisIntegrationEvidenceTests(unittest.TestCase):
             "scripts/ci_trellis_integration.py",
             "scripts/ci_evidence_packet.py",
             "wish_builder/adapters/trellis/graph_snapshot.py",
+            "wish_builder/adapters/trellis/lifecycle.py",
             "wish_builder/adapters/trellis/projection.py",
             "wish_builder/bridges/trellis_core/graph-snapshot.mjs",
+            "wish_builder/bridges/trellis_core/lifecycle.mjs",
             "wish_builder/bridges/trellis_core/projection.mjs",
             "wish_builder/bridges/trellis_core/cli-pins.json",
             "wish_builder/bridges/trellis_core/pins.json",
             "wish_builder/compatibility/trellis-0.6.15.json",
             "tests/packaging/test_ci_evidence_packet.py",
+            "tests/node/trellis-lifecycle-bridge.test.mjs",
+            "tests/adapters/test_trellis_lifecycle.py",
         }
         self.assertTrue(required.issubset(source_paths))
 

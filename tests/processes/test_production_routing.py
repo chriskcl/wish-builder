@@ -347,9 +347,11 @@ class _ChannelFactory:
         *,
         states: dict[str, FakeExternalState] | None = None,
         selected_capabilities: BackendCapabilities | None = None,
+        send_state: TurnState = TurnState.DONE,
     ) -> None:
         self.states = {} if states is None else states
         self.capabilities = selected_capabilities or capabilities()
+        self.send_state = send_state
         self.created_for: list[str] = []
         self.calls: list[tuple[str, str]] = []
 
@@ -357,7 +359,11 @@ class _ChannelFactory:
         self.created_for.append(attempt.path)
         state = self.states.setdefault(attempt.path, FakeExternalState())
         return _RecordingChannel(
-            FakeBackendChannelPort(self.capabilities, state=state),
+            FakeBackendChannelPort(
+                self.capabilities,
+                state=state,
+                send_state=self.send_state,
+            ),
             attempt.path,
             self.calls,
         )
@@ -793,6 +799,103 @@ class AttemptBackendChannelRouterTests(unittest.TestCase):
         self.assertEqual(cancel.operation_id, inspected.operation_id)
         self.assertEqual(plan.send.turn_id, inspected.turn_id)
         self.assertEqual([self.attempts[0].path], restarted_factory.created_for)
+
+    def test_takeover_cancel_routes_current_epoch_to_the_old_attempt_state(self) -> None:
+        factory = _ChannelFactory(send_state=TurnState.RUNNING)
+        router = self.router(factory, (self.routes[0],))
+        identity = self.identities[0]
+        plan = self.plans[0]
+        router.reserve(
+            prepared_effect(
+                identity,
+                plan.reserve,
+                EffectOperation.RESERVE_CHANNEL,
+                event_number=1,
+            )
+        )
+        router.send(
+            prepared_effect(
+                identity,
+                plan.send,
+                EffectOperation.SEND_TASK_PACKET,
+                event_number=2,
+            )
+        )
+        cancel = CancelTurn(
+            operation_id="CANCEL-TAKEOVER-001",
+            attempt_id=plan.send.attempt_id,
+            channel_id=plan.send.channel_id,
+            turn_id=plan.send.turn_id,
+            reason_code="lease_lost_takeover",
+        )
+
+        cancel_effect = prepared_effect(
+            replace(identity, coordinator_epoch=8),
+            cancel,
+            EffectOperation.CANCEL_TURN,
+            event_number=3,
+        )
+        pending = PendingExternalEffect(cancel_effect.request.event)
+        recovered_route = AttemptChannelRoute(
+            self.attempts[0],
+            plan,
+            (AttemptOperationRoute.from_pending(pending),),
+        )
+        restarted = self.router(factory, (recovered_route,))
+
+        observation = restarted.cancel(cancel_effect)
+
+        self.assertIs(observation.status, EffectStatus.APPLIED)
+        self.assertIs(observation.state, TurnState.CANCELLED)
+        self.assertEqual(plan.send.turn_id, observation.turn_id)
+        self.assertEqual(
+            [self.attempts[0].path, self.attempts[0].path],
+            factory.created_for,
+        )
+        self.assertEqual(
+            1,
+            sum(name == "cancel" for name, _path in factory.calls),
+        )
+
+    def test_recovery_metadata_allows_only_a_later_epoch_takeover_cancel(self) -> None:
+        identity = self.identities[0]
+        attempt = self.attempts[0]
+        plan = self.plans[0]
+        takeover = AttemptOperationRoute(
+            replace(
+                identity,
+                coordinator_epoch=identity.coordinator_epoch + 1,
+                correlation_id="CANCEL-TAKEOVER-RECOVERY",
+            ),
+            EffectOperation.CANCEL_TURN,
+            HASH_A,
+        )
+
+        route = AttemptChannelRoute(attempt, plan, (takeover,))
+
+        self.assertEqual((takeover,), route.recovery_operations)
+        invalid = (
+            replace(
+                takeover,
+                identity=replace(
+                    takeover.identity,
+                    coordinator_epoch=identity.coordinator_epoch - 1,
+                ),
+            ),
+            replace(takeover, operation=EffectOperation.CHECK_ATTEMPT),
+            replace(
+                takeover,
+                identity=replace(takeover.identity, task_id=self.identities[1].task_id),
+            ),
+            replace(
+                takeover,
+                identity=replace(takeover.identity, attempt=identity.attempt + 1),
+            ),
+        )
+        for recovery in invalid:
+            with self.subTest(recovery=recovery):
+                with self.assertRaisesRegex(ValueError, "does not match"):
+                    AttemptChannelRoute(attempt, plan, (recovery,))
 
     def test_unknown_or_inconsistent_identity_never_reaches_a_channel(self) -> None:
         factory = _ChannelFactory()

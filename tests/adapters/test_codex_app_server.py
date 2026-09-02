@@ -39,6 +39,7 @@ from wish_builder.services.ports import (
     PreparedEffect,
     ReserveChannel,
     SendTaskPacket,
+    TurnObservation,
     TurnState,
 )
 
@@ -461,8 +462,32 @@ class CodexAppServerChannelTests(unittest.TestCase):
                 )
                 self.assertEqual(EffectStatus.APPLIED, cancelled.status)
                 self.assertEqual(TurnState.CANCELLED, cancelled.state)
+                self.assertIsNone(cancelled.result_digest)
                 methods = [frame["method"] for frame in fixture.wire()]
                 self.assertIn("turn/interrupt", methods)
+            finally:
+                channel.close()
+
+    def test_cancel_after_terminal_completion_preserves_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = CodexFixture(Path(directory))
+            channel, _, sent = self.reserve_and_send(fixture)
+            try:
+                deadline = time.monotonic() + 3
+                while sent.state is TurnState.RUNNING and time.monotonic() < deadline:
+                    sent = channel.inspect_turn("SEND-001")
+                    time.sleep(0.01)
+                self.assertEqual(TurnState.DONE, sent.state)
+                self.assertIsNotNone(sent.result_digest)
+
+                _, _, cancel = self.commands()
+                cancelled = channel.cancel(
+                    prepared_effect(self.identity, cancel, EffectOperation.CANCEL_TURN, 3)
+                )
+
+                self.assertEqual(EffectStatus.APPLIED, cancelled.status)
+                self.assertEqual(sent.state, cancelled.state)
+                self.assertEqual(sent.result_digest, cancelled.result_digest)
             finally:
                 channel.close()
 
@@ -513,6 +538,52 @@ class CodexAppServerChannelTests(unittest.TestCase):
                 )
             finally:
                 channel.close()
+
+    def test_cancel_reconciliation_rejects_incomplete_saved_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = CodexFixture(Path(directory))
+            channel = CodexAppServerChannel(fixture.config(), clock=lambda: OBSERVED_AT)
+            unknown = TurnObservation(
+                operation_id="CANCEL-001",
+                status=EffectStatus.UNKNOWN,
+                observed_at=OBSERVED_AT,
+                state=TurnState.UNKNOWN,
+                evidence=("pending_cancel",),
+            ).to_primitive()
+            cancel = {
+                "kind": "cancel",
+                "command_hash": HASH_A,
+                "command": {"send_operation_id": "SEND-001"},
+                "observation": unknown,
+            }
+            try:
+                absent = channel._reconcile_cancel_locked("CANCEL-001", cancel)
+
+                channel._state["operations"]["SEND-001"] = {
+                    "kind": "send",
+                    "command": None,
+                }
+                malformed = channel._reconcile_cancel_locked("CANCEL-001", cancel)
+
+                source = TurnObservation(
+                    operation_id="SEND-001",
+                    status=EffectStatus.UNKNOWN,
+                    observed_at=OBSERVED_AT,
+                    state=TurnState.UNKNOWN,
+                    evidence=("pending_send",),
+                ).to_primitive()
+                channel._state["operations"]["SEND-001"] = {
+                    "kind": "send",
+                    "command": {},
+                    "observation": source,
+                }
+                nonterminal = channel._reconcile_cancel_locked("CANCEL-001", cancel)
+            finally:
+                channel.close()
+
+            for observation in (absent, malformed, nonterminal):
+                self.assertIs(observation.status, EffectStatus.UNKNOWN)
+                self.assertIs(observation.state, TurnState.UNKNOWN)
 
     def test_crash_reconciles_with_thread_read_without_second_turn(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

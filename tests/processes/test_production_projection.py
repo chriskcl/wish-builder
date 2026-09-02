@@ -15,7 +15,11 @@ from tests.processes.test_production import (
     one_task_graph_snapshot,
 )
 from tests.processes.test_workflow import PassingAcceptance
-from wish_builder.adapters.trellis import FakeTrellisGraphPort
+from wish_builder.adapters.git_identity import capture_workspace_identity
+from wish_builder.adapters.trellis import (
+    FakeTrellisGraphPort,
+    TrellisAuthoritativeProjectionTarget,
+)
 from wish_builder.compatibility import load_bundled_compatibility
 from wish_builder.contracts.compatibility import Provider
 from wish_builder.contracts.runtime import JournalEventType, RuntimeState
@@ -39,13 +43,18 @@ def _revision(value: int) -> str:
 
 
 class _ProjectionCheckout:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, scopes: tuple[str, ...]) -> None:
         self.path = path
+        self.scopes = scopes
         self.calls = 0
 
-    def ensure(self, run_id: str) -> Path:
+    def ensure(self, run_id: str) -> TrellisAuthoritativeProjectionTarget:
         self.calls += 1
-        return self.path
+        workspace = capture_workspace_identity(self.path, self.scopes)
+        return TrellisAuthoritativeProjectionTarget(
+            Path(workspace.worktree_root.canonical_path),
+            workspace,
+        )
 
 
 class _ProjectionPort:
@@ -147,7 +156,10 @@ class ProductionTrellisProjectionTests(unittest.TestCase):
         factory = lifecycle_tests._SeparatedTrellisFactories(
             production_module.channel_capabilities_from_compatibility(self.cell)
         )
-        checkout = _ProjectionCheckout(repository)
+        checkout = _ProjectionCheckout(
+            repository,
+            production_module._workspace_scopes(self.manifest),
+        )
         port = _ProjectionPort()
         built = self._build(repository, runtime_root, factory, checkout, port)
         lifecycle_tests.ProductionLifecycleIntegrationTests._seed_executing_graph(
@@ -230,7 +242,8 @@ class ProductionTrellisProjectionTests(unittest.TestCase):
         git(attempt_root, "commit", "-m", "implement projected task")
 
     def test_durable_dispatch_projects_in_progress_through_production(self) -> None:
-        built, _factory, _checkout, port, repository, _runtime = self._new_runtime()
+        built, _factory, _checkout, port, _repository, _runtime = self._new_runtime()
+        checkout_root = Path(built._workspace.worktree_root.canonical_path)
 
         _identity, _prepared, dispatched = self._dispatch(built)
 
@@ -250,10 +263,10 @@ class ProductionTrellisProjectionTests(unittest.TestCase):
             TrellisProjectionSyncStatus.APPLIED,
         )
         self.assertTrue(
-            all(root == repository for root, _task_id in port.inspect_calls)
+            all(root == checkout_root for root, _task_id in port.inspect_calls)
         )
         self.assertTrue(
-            all(request.checkout_root == repository for request in port.apply_calls)
+            all(request.checkout_root == checkout_root for request in port.apply_calls)
         )
         built._journal.current_position(expected_head=dispatched.cursor.head)
 

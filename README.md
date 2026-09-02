@@ -165,8 +165,12 @@ The repository currently includes:
 - single-writer lifecycle projection into the authoritative Trellis repository through official Core `loadTaskRecord` and `writeTaskRecord`, with stable reads, pre/post-write digest checks, and no automatic retry after a pre-write digest conflict;
 - dependency, owned-path, ready-set, and requirement-trace checks;
 - Gate decisions tied to content hashes, so later edits invalidate old approval;
+- durable Gate B admission that can be rerun safely even after later runtime events were written;
 - an append-only Journal, leases, epochs, fencing, checkpoints, replay, and `GraphIndex` rebuilds;
-- coordinator components with isolated attempt worktrees, stable promotion order, and fixture subprocess E2E coverage;
+- a foreground coordinator with renewable scheduler leases, isolated attempt worktrees, stable
+  promotion order, and fixture subprocess E2E coverage;
+- restart recovery that recognizes already finished Codex turns, preserves worktree identity, and
+  resumes only when the previous worker is proven gone;
 - ordinary project acceptance commands run inside the materialized promotion candidate before the target branch advances;
 - subprocess containment, output limits, timeout handling, and fail-closed recovery;
 - Git staging, promotion, cleanup, quarantine, and trace/export services;
@@ -229,7 +233,7 @@ The installed file should appear at:
 Repository ZIP SHA-256 (the prerelease asset has its own value in `SHA256SUMS`):
 
 ```text
-d1f3496a1058c7064189efce9291553b3378da802cacd92bb7f1031e3fb4bc88
+adcda3a2a2aaa26785e3def244a45a37d5df2e9d506c72b374ea86d7fd6bd58f
 ```
 
 The repository is public. Codex's Skill installer can also install the repository's `wish-builder/` directory directly from GitHub.
@@ -248,7 +252,11 @@ Stop only if the work leaves the approved plan, needs a high-risk action,
 or is ready for production deployment.
 ```
 
-You do not need a full specification at the start. The early reviews identify the user, problem, success criteria, boundaries, and architecture. In the current preview, use this flow to evaluate planning and manifest preparation; do not treat it as a promise of unattended production dispatch.
+You do not need a full specification at the start. The early reviews identify the user, problem,
+success criteria, boundaries, and architecture. The current preview can admit an approved Gate B
+snapshot and run a qualified manifest in the foreground. It is not an unattended background
+service: keep the command attached, and rerun the same manifest to invoke the guarded recovery path
+after an interruption.
 
 ## Decisions that still need a person
 
@@ -289,6 +297,8 @@ Normal implementation choices and ordinary test failures stay with the coordinat
 | `hash` | Calculate a Gate artifact SHA-256 |
 | `snapshot-trellis` | Derive a Wish Builder graph snapshot from official Trellis `0.6.15` task records |
 | `import-trellis` | Convert a Wish Builder-derived Trellis graph snapshot into manifest v2 |
+| `admit-gate-b` | Verify and durably record the approved Gate B snapshot before execution |
+| `run` | Execute one admitted, qualified manifest in the foreground and recover it safely after restart |
 | `backend-probe` | Inspect an installed backend's exact version, integrity, profile, OS status, and concurrency limit without launching it |
 | `decide` | Record a direct CLI Gate decision in the Journal |
 | `resume` | Resume one unknown dispatch from a verified recovery proof |
@@ -301,6 +311,8 @@ python scripts/wishctl.py backend-probe --provider codex --provider-sdk-root C:/
 python scripts/wishctl.py validate path/to/execution-manifest.json --stage planning
 python scripts/wishctl.py snapshot-trellis <parent-task-id> --core-archive path/to/mindfoldhq-trellis-core-0.6.15.tgz --output trellis-graph.json
 python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/import-settings.json --output execution-manifest.json
+python scripts/wishctl.py admit-gate-b execution-manifest.json gate-b-<sha256>.md import-settings.json --approved-artifact-hash <sha256> --runtime-root path/to/run --workspace-root . --actor-id <actor>
+python scripts/wishctl.py run execution-manifest.json --runtime-root path/to/run --workspace-root . --provider-sdk-root C:/path/to/pinned-sdk-root --core-root C:/path/to/trellis-core
 ```
 
 The installed Skill exposes the same runtime at `wish-builder/scripts/wishctl.py`. `backend-probe`
@@ -351,11 +363,11 @@ The full operating rules live in [`wish-builder/SKILL.md`](wish-builder/SKILL.md
 | Check | Result |
 | --- | --- |
 | Earlier local non-performance matrix | Windows and Linux on Python 3.11/3.12/3.13; 1,498 run per cell, 0 failures or errors; 9 allowed skips on Windows and 13 on Linux |
-| Fresh full local suites | Windows on Python 3.13; 1,534 non-performance tests plus 16 performance tests, 0 failures or errors, 3 platform-specific skips |
+| Fresh full local suites | Windows on Python 3.13.14; 1,601 non-performance tests plus 16 performance tests, 0 failures or errors, 3 platform-specific skips |
 | Independent Codex/Windows evidence audit | 52 passed, 1 Windows symlink-permission skip; verdict `PASS` |
 | Post-publication qualification and admission tests | 68 passed, 1 Windows symlink-permission skip, 59 subtests passed |
-| Official Trellis `0.6.15` integration | Windows and Linux each passed 22 Node and 7 Python tests |
-| Skill packaging and installed runtime | 15 package-content and runtime-packaging tests plus 13 installed-Skill tests passed |
+| Official Trellis `0.6.15` integration | Current Windows run passed 25 Node bridge tests and 14 Python integration tests; the pinned cross-platform evidence retains the same set per platform |
+| Skill packaging and installed runtime | 245 packaging and release-policy tests inside the full suite plus 13 standalone runtime smoke tests passed |
 | Python compilation and whitespace checks | Passed |
 
 These are local results. GitHub Actions was not run because its budget is exhausted, so this project does not claim a CI pass or failure for the candidate. The `Codex / Windows` qualification is also a local publication, not an official provider certification.
@@ -363,9 +375,9 @@ These are local results. GitHub Actions was not run because its budget is exhaus
 Run the main local suites with:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\ci_test_suite.py --exclude-package performance
-.\.venv\Scripts\python.exe scripts\ci_test_suite.py --only-package performance
-.\.venv\Scripts\python.exe wish-builder\scripts\test_wishctl.py
+uv run --python 3.13.14 --no-project python scripts\ci_test_suite.py --exclude-package performance
+uv run --python 3.13.14 --no-project python scripts\ci_test_suite.py --only-package performance
+uv run --python 3.13.14 --no-project python wish-builder\scripts\test_wishctl.py
 ```
 
 For a stricter, reproducible release packet, the optional local evidence tools can still bind raw results and release files to one committed revision:

@@ -4,6 +4,24 @@ This file records user-visible changes to Wish Builder.
 
 ## Unreleased
 
+- Added a guarded foreground run command that keeps one coordinator in charge, renews its lease,
+  and records task progress back to Trellis without letting workers edit Trellis directly.
+- Added a Gate B admission command that verifies the approved files before the first run and can be
+  repeated safely after later Journal events already exist.
+- Fixed restart recovery so a Codex turn already saved as finished is not mistaken for an unknown
+  result. This lets a new coordinator take over without sending the same task again.
+- Preserved and checked each attempt worktree's identity across restarts, including the full set of
+  paths that task is allowed to change, so useful partial work is not mistaken for an empty attempt.
+- Added automatic lease renewal and stopped stale coordinators from continuing after ownership has
+  moved to a newer run.
+- Added the production Trellis lifecycle bridge and its Python adapter to the official integration
+  evidence, with 25 Node tests and 14 Python tests on each supported CI platform.
+- Fixed lifecycle recovery so an interrupted bridge cannot leave a lock file that permanently
+  blocks later Trellis progress updates or makes the checkout look dirty.
+- Fixed cancellation takeover so losing the coordinator lease halfway through recovery resumes
+  the same attempt, reuses a cancellation the provider already completed, and accepts the
+  original dispatch receipt after a later coordinator epoch without leaving the task stuck. If
+  two approved turns were interrupted together, both are now recovered one at a time.
 - Added an exact backend/OS/version qualification registry with protocol profiles, local SDK
   probing, candidate and quarantine states, and fail-closed admission before runtime setup.
 - Locally published the independently reviewed Codex/Windows backend qualification with a

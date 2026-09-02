@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 
 from wish_builder.contracts import canonical_sha256
@@ -21,6 +21,10 @@ from wish_builder.contracts.runtime import (
     EffectRequestPayload,
     EffectStatus,
     EvidenceRef,
+    EvidenceRenderPolicy,
+    EvidenceRole,
+    EvidenceSensitivity,
+    EvidenceType,
     ExecutionIdentity,
     JournalEvent,
     JournalEventType,
@@ -52,7 +56,13 @@ from wish_builder.services.journal import (
     JournalEventDraft,
     JournalHead,
 )
-from wish_builder.services.ports import PersistedEffectRequest, TaskPort
+from wish_builder.services.ports import (
+    CancelTurn,
+    PersistedEffectRequest,
+    TaskPort,
+    TurnObservation,
+    TurnState,
+)
 from wish_builder.services.backend_effects import (
     BackendDispatchPort,
     BackendDispatchResult,
@@ -97,6 +107,206 @@ CorrelationIdFactory = Callable[[str, int, int], str]
 BackendDispatchPlanFactory = Callable[[ExecutionIdentity], BackendDispatchPlan]
 AuthorityClock = Callable[[], datetime]
 ExecutionSnapshotAdmitter = Callable[[], bool]
+
+
+def _recovered_cancel_evidence_matches(
+    receipt: EffectReceipt,
+    turn: TurnObservation,
+) -> bool:
+    if len(receipt.evidence) != 1:
+        return False
+    evidence = receipt.evidence[0]
+    expected_subject_hash = "sha256:" + canonical_sha256(
+        {
+            "adapter": AdapterKind.BACKEND.value,
+            "identity": receipt.identity.to_primitive(),
+            "operation": EffectOperation.CANCEL_TURN.value,
+        }
+    )
+    return (
+        receipt.observed_at == turn.observed_at
+        and receipt.effect_hash == turn.effect_digest
+        and evidence.digest == turn.canonical_sha256()
+        and evidence.byte_length == len(turn.canonical_json_bytes())
+        and evidence.evidence_type is EvidenceType.EFFECT_RECEIPT
+        and evidence.producer.identity == receipt.identity
+        and evidence.producer.event_id is None
+        and evidence.producer.external_object_id == "external-observation-store"
+        and evidence.created_at == turn.observed_at
+        and evidence.sensitivity is EvidenceSensitivity.INTERNAL
+        and evidence.render_policy is EvidenceRenderPolicy.METADATA_ONLY
+        and evidence.role is EvidenceRole.REQUIRED
+        and evidence.structured_subject_hash == expected_subject_hash
+    )
+
+
+def _recovered_cancel_authority_matches(
+    event: JournalEvent,
+    journal_prefix: tuple[JournalEvent, ...],
+    *,
+    manifest_digest: str,
+) -> bool:
+    """Prove an observed or reconciled cancellation used historical authority."""
+
+    normal_observation = (
+        type(event) is JournalEvent
+        and event.event_type is JournalEventType.EFFECT_OBSERVED
+    )
+    reconciled_observation = (
+        type(event) is JournalEvent
+        and event.event_type is JournalEventType.EFFECT_RECONCILED
+    )
+    if (
+        type(event) is not JournalEvent
+        or type(journal_prefix) is not tuple
+        or not journal_prefix
+        or not all(type(item) is JournalEvent for item in journal_prefix)
+        or journal_prefix[-1] != event
+        or not (normal_observation or reconciled_observation)
+        or type(event.payload) is not EffectObservationPayload
+        or event.payload.adapter is not AdapterKind.BACKEND
+        or event.payload.receipt.operation is not EffectOperation.CANCEL_TURN
+        or event.payload.receipt.status is not EffectStatus.APPLIED
+        or type(manifest_digest) is not str
+        or not manifest_digest
+    ):
+        return False
+    receipt = event.payload.receipt
+    if normal_observation:
+        if (
+            event.actor_type is not ActorType.ADAPTER
+            or event.actor_id != "backend-channel-adapter"
+            or event.identity != receipt.identity
+        ):
+            return False
+    elif event.actor_type is not ActorType.COORDINATOR:
+        return False
+    matching_requests = tuple(
+        candidate
+        for candidate in journal_prefix[:-1]
+        if candidate.event_type is JournalEventType.EFFECT_REQUESTED
+        and candidate.identity == receipt.identity
+        and type(candidate.payload) is EffectRequestPayload
+        and candidate.payload.adapter is AdapterKind.BACKEND
+        and candidate.payload.operation is EffectOperation.CANCEL_TURN
+        and candidate.payload.object_type is EffectObjectType.TURN
+    )
+    if len(matching_requests) != 1:
+        return False
+    request_event = matching_requests[0]
+    try:
+        lease_state = CoordinatorLeaseState.initial()
+        for prior in journal_prefix[:-1]:
+            if prior.identity.run_id != event.identity.run_id:
+                return False
+            if prior == request_event:
+                lease = lease_state.lease
+                request_recorded_at = datetime.fromisoformat(
+                    prior.recorded_at[:-1] + "+00:00"
+                ).astimezone(timezone.utc)
+                if (
+                    lease is None
+                    or prior.actor_type is not ActorType.COORDINATOR
+                    or prior.payload.fencing_token
+                    != prior.identity.coordinator_epoch
+                    or not lease_state.allows_admission(
+                        authority_time=request_recorded_at,
+                        coordinator_id=prior.actor_id,
+                        owner=lease.owner,
+                        fencing_token=prior.identity.coordinator_epoch,
+                        manifest_digest=manifest_digest,
+                        scheduler_mode=SchedulerMode.WISH_BUILDER,
+                    )
+                ):
+                    return False
+            lease_state = lease_state.advance(prior)
+        lease = lease_state.lease
+        if lease is None:
+            return False
+        if normal_observation:
+            if (
+                not lease_state.active
+                or lease.coordinator_id != request_event.actor_id
+                or lease.fencing_token
+                != request_event.identity.coordinator_epoch
+                or lease.manifest_digest != manifest_digest
+                or lease.scheduler_mode is not SchedulerMode.WISH_BUILDER
+            ):
+                return False
+            lease_state.advance(event)
+            return True
+        recorded_at = datetime.fromisoformat(
+            event.recorded_at[:-1] + "+00:00"
+        ).astimezone(timezone.utc)
+        if not lease_state.allows_admission(
+            authority_time=recorded_at,
+            coordinator_id=event.actor_id,
+            owner=lease.owner,
+            fencing_token=event.identity.coordinator_epoch,
+            manifest_digest=manifest_digest,
+            scheduler_mode=SchedulerMode.WISH_BUILDER,
+        ):
+            return False
+        lease_state.advance(event)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _recovered_cancel_request_matches(
+    journal_prefix: tuple[JournalEvent, ...],
+    *,
+    parent_identity: ExecutionIdentity,
+    command: CancelTurn,
+    cancel_epoch: int,
+) -> bool:
+    """Bind historical cancellation authority to the exact persisted command."""
+
+    if (
+        type(journal_prefix) is not tuple
+        or not all(type(event) is JournalEvent for event in journal_prefix)
+        or type(parent_identity) is not ExecutionIdentity
+        or type(command) is not CancelTurn
+        or type(cancel_epoch) is not int
+        or cancel_epoch <= parent_identity.coordinator_epoch
+        or parent_identity.correlation_id is None
+    ):
+        return False
+    expected_identity = replace(
+        parent_identity,
+        coordinator_epoch=cancel_epoch,
+        correlation_id=command.operation_id,
+    )
+    expected_target_hash = "sha256:" + canonical_sha256(
+        {
+            "adapter": AdapterKind.BACKEND.value,
+            "attempt_id": command.attempt_id,
+            "channel_id": command.channel_id,
+            "operation": EffectOperation.CANCEL_TURN.value,
+            "run_id": parent_identity.run_id,
+            "task_id": parent_identity.task_id,
+            "dispatch_id": parent_identity.correlation_id,
+            "turn_id": command.turn_id,
+        }
+    )
+    matching = tuple(
+        event
+        for event in journal_prefix
+        if event.event_type is JournalEventType.EFFECT_REQUESTED
+        and event.identity == expected_identity
+        and event.actor_type is ActorType.COORDINATOR
+        and type(event.payload) is EffectRequestPayload
+        and event.payload.adapter is AdapterKind.BACKEND
+        and event.payload.operation is EffectOperation.CANCEL_TURN
+        and event.payload.object_type is EffectObjectType.TURN
+        and event.payload.normalized_target_hash == expected_target_hash
+        and event.payload.request_payload_hash == command.canonical_sha256()
+        and event.payload.expected_sequence == event.sequence - 1
+        and event.payload.fencing_token == cancel_epoch
+        and event.payload.base_hash is None
+        and event.payload.head_hash is None
+    )
+    return len(matching) == 1
 
 
 def _admit_frozen_snapshot() -> bool:
@@ -1008,6 +1218,723 @@ class ForegroundCoordinator:
             receipt=proof.receipt,
         )
 
+    def retry_absent_preparation(
+        self,
+        request_event: JournalEvent,
+        observation_event: JournalEvent,
+    ) -> CoordinatorStepResult:
+        """Requeue one pre-dispatch attempt whose worktree is durably absent."""
+
+        if type(request_event) is not JournalEvent:
+            raise TypeError("request_event must be a JournalEvent")
+        if type(observation_event) is not JournalEvent:
+            raise TypeError("observation_event must be a JournalEvent")
+        admission = self._admission_reason(allow_recovery=True)
+        if admission is not CoordinatorReason.NONE:
+            return self._result(CoordinatorStatus.BLOCKED, admission)
+        if any(not record.complete for record in self._cursor.dispatch_recoveries):
+            return self._result(
+                CoordinatorStatus.BLOCKED,
+                CoordinatorReason.RECOVERY_IN_PROGRESS,
+            )
+        identity = request_event.identity
+        if not self._absent_preparation_events_match(
+            request_event,
+            observation_event,
+        ):
+            return self._result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
+        assert identity.task_id is not None and identity.attempt is not None
+        attempts = tuple(
+            attempt
+            for attempt in self._cursor.snapshot.attempts
+            if attempt.task_id == identity.task_id
+        )
+        current = next(
+            (
+                attempt
+                for attempt in attempts
+                if attempt.attempt == identity.attempt
+                and attempt.correlation_id == identity.correlation_id
+            ),
+            None,
+        )
+        task = next(
+            item
+            for item in self._cursor.snapshot.tasks
+            if item.task_id == identity.task_id
+        )
+        state = (
+            None if current is None else current.state,
+            task.state,
+            self._cursor.snapshot.status,
+        )
+        valid_states = {
+            (RuntimeState.RESERVED, RuntimeState.BLOCKED, RuntimeState.BLOCKED),
+            (RuntimeState.TERMINATED, RuntimeState.BLOCKED, RuntimeState.BLOCKED),
+            (RuntimeState.TERMINATED, RuntimeState.READY, RuntimeState.BLOCKED),
+            (RuntimeState.TERMINATED, RuntimeState.READY, RuntimeState.RUNNING),
+        }
+        if state not in valid_states:
+            return self._result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
+        if (
+            task.state is RuntimeState.BLOCKED
+            and task.reason_code is not RuntimeReasonCode.GIT_STATE_CONFLICT
+        ) or (
+            self._cursor.snapshot.status is RuntimeState.BLOCKED
+            and self._cursor.snapshot.run_reason_code
+            is not RuntimeReasonCode.GIT_STATE_CONFLICT
+        ):
+            return self._result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
+        if (
+            len(attempts) >= self._manifest.execution_budget.max_attempts_per_task
+            or len(self._cursor.snapshot.attempts)
+            >= self._manifest.execution_budget.max_attempts_per_run
+        ):
+            return self._result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
+
+        receipt = observation_event.payload.receipt
+        assert type(receipt) is EffectReceipt
+        events: list[JournalEvent] = []
+        if state[0] is RuntimeState.RESERVED:
+            released = self._append_transition(
+                JournalEventType.ATTEMPT_RELEASED,
+                ExecutionIdentity(
+                    identity.run_id,
+                    self._fencing_token,
+                    identity.task_id,
+                    identity.attempt,
+                    identity.correlation_id,
+                ),
+                TransitionSubject.ATTEMPT,
+                RuntimeState.RESERVED,
+                RuntimeState.TERMINATED,
+                evidence=receipt.evidence,
+                allow_recovery=True,
+            )
+            if released.event is None:
+                return self._result(
+                    CoordinatorStatus.BLOCKED,
+                    released.reason,
+                    events=tuple(events),
+                    receipt=receipt,
+                )
+            events.append(released.event)
+
+        if task.state is RuntimeState.BLOCKED:
+            retried = self._append_transition(
+                JournalEventType.TASK_RETRY_SCHEDULED,
+                ExecutionIdentity(
+                    identity.run_id,
+                    self._fencing_token,
+                    identity.task_id,
+                ),
+                TransitionSubject.TASK,
+                RuntimeState.BLOCKED,
+                RuntimeState.READY,
+                evidence=receipt.evidence,
+                allow_recovery=True,
+            )
+            if retried.event is None:
+                return self._result(
+                    CoordinatorStatus.BLOCKED,
+                    retried.reason,
+                    events=tuple(events),
+                    receipt=receipt,
+                )
+            events.append(retried.event)
+
+        if self._cursor.snapshot.status is RuntimeState.BLOCKED:
+            resumed = self._append_transition(
+                JournalEventType.RUN_RESUMED,
+                ExecutionIdentity(identity.run_id, self._fencing_token),
+                TransitionSubject.RUN,
+                RuntimeState.BLOCKED,
+                RuntimeState.RUNNING,
+                evidence=receipt.evidence,
+                allow_recovery=True,
+            )
+            if resumed.event is None:
+                return self._result(
+                    CoordinatorStatus.BLOCKED,
+                    resumed.reason,
+                    events=tuple(events),
+                    receipt=receipt,
+                )
+            events.append(resumed.event)
+        return self._result(
+            CoordinatorStatus.PROGRESSED,
+            CoordinatorReason.NONE,
+            events=tuple(events),
+            receipt=receipt,
+        )
+
+    def reclaim_stale_reservations(self) -> CoordinatorReservationResult:
+        """Re-fence reserved attempts that never reached worker dispatch."""
+
+        admission = self._admission_reason(allow_recovery=True)
+        if admission is not CoordinatorReason.NONE:
+            return self._reservation_result(CoordinatorStatus.BLOCKED, admission)
+        if any(not record.complete for record in self._cursor.dispatch_recoveries):
+            return self._reservation_result(
+                CoordinatorStatus.BLOCKED,
+                CoordinatorReason.RECOVERY_IN_PROGRESS,
+            )
+
+        task_states = dict(self._cursor.graph_index.task_states)
+        positions = {
+            task_id: position
+            for position, task_id in enumerate(self._cursor.graph_index.topological_order)
+        }
+        stale = sorted(
+            (
+                attempt
+                for attempt in self._cursor.snapshot.attempts
+                if attempt.coordinator_epoch < self._fencing_token
+                and (
+                    attempt.state is RuntimeState.RESERVED
+                    or (
+                        attempt.state is RuntimeState.TERMINATED
+                        and attempt.reason_code is RuntimeReasonCode.LEASE_LOST
+                    )
+                )
+            ),
+            key=lambda attempt: positions[attempt.task_id],
+        )
+        if not stale:
+            return self._reservation_result(
+                CoordinatorStatus.IDLE,
+                CoordinatorReason.NO_READY_TASKS,
+            )
+        if any(
+            task_states.get(attempt.task_id) is not RuntimeState.LEASED
+            for attempt in stale
+        ):
+            return self._reservation_result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
+
+        events: list[JournalEvent] = []
+        reclaimed: list[ExecutionIdentity] = []
+        for attempt in stale:
+            if attempt.state is RuntimeState.RESERVED:
+                released = self._append_transition(
+                    JournalEventType.ATTEMPT_RELEASED,
+                    ExecutionIdentity(
+                        self._manifest.run_id,
+                        self._fencing_token,
+                        attempt.task_id,
+                        attempt.attempt,
+                        attempt.correlation_id,
+                    ),
+                    TransitionSubject.ATTEMPT,
+                    RuntimeState.RESERVED,
+                    RuntimeState.TERMINATED,
+                    reason_code=RuntimeReasonCode.LEASE_LOST,
+                    allow_recovery=True,
+                )
+                if released.event is None:
+                    return self._reservation_result(
+                        CoordinatorStatus.BLOCKED,
+                        released.reason,
+                        events=tuple(events),
+                        reserved=tuple(reclaimed),
+                    )
+                events.append(released.event)
+
+            correlation_id = self._correlation_id_factory(
+                attempt.task_id,
+                attempt.attempt,
+                self._fencing_token,
+            )
+            identity = ExecutionIdentity(
+                self._manifest.run_id,
+                self._fencing_token,
+                attempt.task_id,
+                attempt.attempt,
+                correlation_id,
+            )
+            reserved = self._append_transition(
+                JournalEventType.ATTEMPT_RESERVED,
+                identity,
+                TransitionSubject.ATTEMPT,
+                RuntimeState.TERMINATED,
+                RuntimeState.RESERVED,
+                allow_recovery=True,
+            )
+            if reserved.event is None:
+                return self._reservation_result(
+                    CoordinatorStatus.BLOCKED,
+                    reserved.reason,
+                    events=tuple(events),
+                    reserved=tuple(reclaimed),
+                )
+            events.append(reserved.event)
+            reclaimed.append(identity)
+
+        return self._reservation_result(
+            CoordinatorStatus.PROGRESSED,
+            CoordinatorReason.NONE,
+            events=tuple(events),
+            reserved=tuple(reclaimed),
+        )
+
+    def reclaim_cancelled_dispatch(
+        self,
+        request_event: JournalEvent,
+        observation_event: JournalEvent,
+        *,
+        owned_path_changes: tuple[str, ...] | None,
+        owned_path_recheck: Callable[[], tuple[str, ...] | None] | None = None,
+        recovered_cancellation: tuple[JournalEvent, TurnObservation] | None = None,
+        recovered_cancellation_history: tuple[JournalEvent, ...] = (),
+    ) -> CoordinatorReservationResult:
+        """Cancel and re-fence one proven untouched prior-epoch dispatch."""
+
+        if type(request_event) is not JournalEvent:
+            raise TypeError("request_event must be a JournalEvent")
+        if type(observation_event) is not JournalEvent:
+            raise TypeError("observation_event must be a JournalEvent")
+        if owned_path_changes is not None and (
+            type(owned_path_changes) is not tuple
+            or not all(type(path) is str and path for path in owned_path_changes)
+        ):
+            raise TypeError("owned_path_changes must contain paths or be null")
+        if owned_path_recheck is not None and not callable(owned_path_recheck):
+            raise TypeError("owned_path_recheck must be callable or null")
+        if recovered_cancellation is not None and (
+            type(recovered_cancellation) is not tuple
+            or len(recovered_cancellation) != 2
+            or type(recovered_cancellation[0]) is not JournalEvent
+            or type(recovered_cancellation[1]) is not TurnObservation
+        ):
+            raise TypeError(
+                "recovered_cancellation must contain one event and turn or be null"
+            )
+        if type(recovered_cancellation_history) is not tuple or not all(
+            type(event) is JournalEvent for event in recovered_cancellation_history
+        ):
+            raise TypeError("recovered_cancellation_history must contain Journal events")
+        if recovered_cancellation is None and recovered_cancellation_history:
+            raise ValueError(
+                "recovered_cancellation_history requires recovered cancellation evidence"
+            )
+        admission = self._admission_reason(allow_recovery=True)
+        if admission is not CoordinatorReason.NONE:
+            return self._reservation_result(CoordinatorStatus.BLOCKED, admission)
+        if any(not record.complete for record in self._cursor.dispatch_recoveries):
+            return self._reservation_result(
+                CoordinatorStatus.BLOCKED,
+                CoordinatorReason.RECOVERY_IN_PROGRESS,
+            )
+        if not self._applied_dispatch_events_match(
+            request_event,
+            observation_event,
+        ):
+            return self._reservation_result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
+        identity = request_event.identity
+        assert identity.task_id is not None and identity.attempt is not None
+        if identity.coordinator_epoch >= self._fencing_token:
+            return self._reservation_result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
+        attempts = tuple(
+            attempt
+            for attempt in self._cursor.snapshot.attempts
+            if attempt.task_id == identity.task_id
+            and attempt.attempt == identity.attempt
+        )
+        task_state = dict(self._cursor.graph_index.task_states).get(identity.task_id)
+        if len(attempts) != 1 or identity.attempt != max(
+            attempt.attempt
+            for attempt in self._cursor.snapshot.attempts
+            if attempt.task_id == identity.task_id
+        ):
+            return self._reservation_result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
+        attempt = attempts[0]
+        correlation_id = self._correlation_id_factory(
+            identity.task_id,
+            identity.attempt,
+            self._fencing_token,
+        )
+        reclaimed_identity = ExecutionIdentity(
+            identity.run_id,
+            self._fencing_token,
+            identity.task_id,
+            identity.attempt,
+            correlation_id,
+        )
+        if (
+            attempt.state is RuntimeState.RESERVED
+            and attempt.coordinator_epoch == self._fencing_token
+            and attempt.correlation_id == correlation_id
+            and task_state is RuntimeState.LEASED
+            and owned_path_changes == ()
+        ):
+            return self._reservation_result(
+                CoordinatorStatus.PROGRESSED,
+                CoordinatorReason.NONE,
+                reserved=(reclaimed_identity,),
+            )
+
+        recovery_step: int | None = None
+        if (
+            attempt.coordinator_epoch == identity.coordinator_epoch
+            and attempt.correlation_id == identity.correlation_id
+        ):
+            if (
+                attempt.state is RuntimeState.RUNNING
+                and task_state is RuntimeState.DISPATCHED
+            ):
+                recovery_step = 0
+            elif (
+                attempt.state is RuntimeState.CANCEL_REQUESTED
+                and attempt.reason_code is RuntimeReasonCode.LEASE_LOST
+                and task_state is RuntimeState.DISPATCHED
+            ):
+                recovery_step = 1
+            elif (
+                attempt.state is RuntimeState.TERMINATED
+                and attempt.reason_code is RuntimeReasonCode.LEASE_LOST
+            ):
+                recovery_step = {
+                    RuntimeState.DISPATCHED: 2,
+                    RuntimeState.BLOCKED: 3,
+                    RuntimeState.READY: 4,
+                    RuntimeState.LEASED: 5,
+                }.get(task_state)
+        if (
+            owned_path_changes is None
+            or owned_path_changes
+            or recovery_step is None
+            or self._backend_effects is None
+            or self._backend_plan_factory is None
+        ):
+            return self._reservation_result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
+
+        plan = self._backend_plan_factory(identity)
+        if type(plan) is not BackendDispatchPlan:
+            return self._reservation_result(
+                CoordinatorStatus.BLOCKED,
+                CoordinatorReason.PORT_OUTCOME_INVALID,
+            )
+        cancel_epoch = self._fencing_token
+        recovered_event: JournalEvent | None = None
+        recovered_turn: TurnObservation | None = None
+        if recovered_cancellation is not None:
+            recovered_event, recovered_turn = recovered_cancellation
+            payload = recovered_event.payload
+            reconciler_authorized = _recovered_cancel_authority_matches(
+                recovered_event,
+                recovered_cancellation_history,
+                manifest_digest=self._manifest_digest,
+            )
+            if (
+                recovered_event.event_type
+                not in {
+                    JournalEventType.EFFECT_OBSERVED,
+                    JournalEventType.EFFECT_RECONCILED,
+                }
+                or type(payload) is not EffectObservationPayload
+                or payload.adapter is not AdapterKind.BACKEND
+                or payload.receipt.operation is not EffectOperation.CANCEL_TURN
+                or payload.receipt.status is not EffectStatus.APPLIED
+                or payload.receipt.identity.run_id != identity.run_id
+                or payload.receipt.identity.task_id != identity.task_id
+                or payload.receipt.identity.attempt != identity.attempt
+                or not (
+                    identity.coordinator_epoch
+                    < payload.receipt.identity.coordinator_epoch
+                    < self._fencing_token
+                )
+                or recovered_event.identity.run_id != identity.run_id
+                or recovered_event.identity.task_id != identity.task_id
+                or recovered_event.identity.attempt != identity.attempt
+                or recovered_event.identity.correlation_id
+                != payload.receipt.identity.correlation_id
+                or recovered_event.identity.coordinator_epoch
+                < payload.receipt.identity.coordinator_epoch
+                or recovered_event.identity.coordinator_epoch > self._fencing_token
+                or recovered_event.sequence > self._cursor.head.sequence
+                or not reconciler_authorized
+            ):
+                return self._reservation_result(
+                    CoordinatorStatus.REJECTED,
+                    CoordinatorReason.RECOVERY_PROOF_INVALID,
+                )
+            cancel_epoch = payload.receipt.identity.coordinator_epoch
+
+        cancel_suffix = canonical_sha256(
+            {
+                "fencing_token": cancel_epoch,
+                "identity": identity.to_primitive(),
+                "operation": EffectOperation.CANCEL_TURN.value,
+            }
+        )[:48].upper()
+        command = CancelTurn(
+            operation_id=f"CANCEL-{cancel_suffix}",
+            attempt_id=plan.send.attempt_id,
+            channel_id=plan.send.channel_id,
+            turn_id=plan.send.turn_id,
+            reason_code="lease_lost_takeover",
+        )
+        if recovered_event is not None and not _recovered_cancel_request_matches(
+            recovered_cancellation_history,
+            parent_identity=identity,
+            command=command,
+            cancel_epoch=cancel_epoch,
+        ):
+            return self._reservation_result(
+                CoordinatorStatus.REJECTED,
+                CoordinatorReason.RECOVERY_PROOF_INVALID,
+            )
+        if recovered_event is None or recovered_turn is None:
+            if owned_path_recheck is None:
+                return self._reservation_result(
+                    CoordinatorStatus.REJECTED,
+                    CoordinatorReason.RECOVERY_PROOF_INVALID,
+                )
+            persisted = PersistedEffectRequest.from_append_result(
+                AppendResult(
+                    AppendStatus.IDEMPOTENT,
+                    JournalHead(request_event.sequence, request_event.event_hash),
+                    request_event,
+                )
+            )
+            cancelled = self._backend_effects.cancel(
+                persisted,
+                command,
+                expected_head=self._cursor.head,
+            )
+            if type(cancelled) is not BackendDispatchResult:
+                return self._reservation_result(
+                    CoordinatorStatus.BLOCKED,
+                    CoordinatorReason.PORT_OUTCOME_INVALID,
+                )
+            adopted = self._adopt_committed_events(cancelled.events)
+            if adopted is not CoordinatorReason.NONE:
+                return self._reservation_result(
+                    CoordinatorStatus.BLOCKED,
+                    adopted,
+                    events=cancelled.events,
+                )
+            events = list(cancelled.events)
+            cancelled_status = cancelled.status
+            turn = cancelled.turn
+            receipt = cancelled.receipt
+        else:
+            events = []
+            cancelled_status = BackendDispatchEffectStatus.APPLIED
+            turn = recovered_turn
+            payload = recovered_event.payload
+            assert type(payload) is EffectObservationPayload
+            receipt = payload.receipt
+        cancel_identity = replace(
+            identity,
+            coordinator_epoch=cancel_epoch,
+            correlation_id=command.operation_id,
+        )
+        if (
+            cancelled_status is not BackendDispatchEffectStatus.APPLIED
+            or receipt is None
+            or receipt.identity != cancel_identity
+            or receipt.operation is not EffectOperation.CANCEL_TURN
+            or receipt.status is not EffectStatus.APPLIED
+            or receipt.external_object_id != command.turn_id
+            or not receipt.evidence
+            or turn is None
+            or turn.operation_id != command.operation_id
+            or turn.status is not EffectStatus.APPLIED
+            or turn.state is not TurnState.CANCELLED
+            or turn.attempt_id != command.attempt_id
+            or turn.channel_id != command.channel_id
+            or turn.message_id != plan.send.message_id
+            or turn.turn_id != command.turn_id
+            or turn.result_digest is not None
+            or not _recovered_cancel_evidence_matches(receipt, turn)
+        ):
+            return self._reservation_result(
+                CoordinatorStatus.BLOCKED,
+                CoordinatorReason.PORT_OUTCOME_INVALID,
+                events=tuple(events),
+            )
+
+        if owned_path_recheck is not None:
+            try:
+                final_owned_path_changes = owned_path_recheck()
+            except Exception:  # noqa: BLE001 - an unknown worktree state blocks reclaim
+                final_owned_path_changes = None
+            if final_owned_path_changes != ():
+                return self._reservation_result(
+                    CoordinatorStatus.REJECTED,
+                    CoordinatorReason.RECOVERY_PROOF_INVALID,
+                    events=tuple(events),
+                )
+
+        transition_identity = replace(
+            identity,
+            coordinator_epoch=self._fencing_token,
+        )
+        steps = (
+            (
+                JournalEventType.CANCEL_REQUESTED,
+                transition_identity,
+                TransitionSubject.ATTEMPT,
+                RuntimeState.RUNNING,
+                RuntimeState.CANCEL_REQUESTED,
+                RuntimeReasonCode.LEASE_LOST,
+            ),
+            (
+                JournalEventType.ATTEMPT_TERMINATED,
+                transition_identity,
+                TransitionSubject.ATTEMPT,
+                RuntimeState.CANCEL_REQUESTED,
+                RuntimeState.TERMINATED,
+                RuntimeReasonCode.LEASE_LOST,
+            ),
+            (
+                JournalEventType.TASK_BLOCKED,
+                ExecutionIdentity(identity.run_id, self._fencing_token, identity.task_id),
+                TransitionSubject.TASK,
+                RuntimeState.DISPATCHED,
+                RuntimeState.BLOCKED,
+                RuntimeReasonCode.LEASE_LOST,
+            ),
+            (
+                JournalEventType.TASK_RETRY_SCHEDULED,
+                ExecutionIdentity(identity.run_id, self._fencing_token, identity.task_id),
+                TransitionSubject.TASK,
+                RuntimeState.BLOCKED,
+                RuntimeState.READY,
+                None,
+            ),
+            (
+                JournalEventType.LEASE_ACQUIRED,
+                ExecutionIdentity(identity.run_id, self._fencing_token, identity.task_id),
+                TransitionSubject.TASK,
+                RuntimeState.READY,
+                RuntimeState.LEASED,
+                None,
+            ),
+            (
+                JournalEventType.ATTEMPT_RESERVED,
+                reclaimed_identity,
+                TransitionSubject.ATTEMPT,
+                RuntimeState.TERMINATED,
+                RuntimeState.RESERVED,
+                None,
+            ),
+        )
+        for event_type, event_identity, subject, from_state, to_state, reason in steps[
+            recovery_step:
+        ]:
+            appended = self._append_transition(
+                event_type,
+                event_identity,
+                subject,
+                from_state,
+                to_state,
+                reason_code=reason,
+                evidence=receipt.evidence,
+                allow_recovery=True,
+            )
+            if appended.event is None:
+                return self._reservation_result(
+                    CoordinatorStatus.BLOCKED,
+                    appended.reason,
+                    events=tuple(events),
+                )
+            events.append(appended.event)
+        return self._reservation_result(
+            CoordinatorStatus.PROGRESSED,
+            CoordinatorReason.NONE,
+            events=tuple(events),
+            reserved=(reclaimed_identity,),
+        )
+
+    @staticmethod
+    def _applied_dispatch_events_match(
+        request_event: JournalEvent,
+        observation_event: JournalEvent,
+    ) -> bool:
+        request = request_event.payload
+        observation = observation_event.payload
+        return (
+            request_event.event_type is JournalEventType.DISPATCH_REQUESTED
+            and type(request) is EffectRequestPayload
+            and request.adapter is AdapterKind.TASK
+            and request.operation is EffectOperation.WORKER_DISPATCH
+            and request.object_type is EffectObjectType.WORKER
+            and request.fencing_token == request_event.identity.coordinator_epoch
+            and request_event.identity.is_attempt
+            and observation_event.event_type is JournalEventType.DISPATCH_OBSERVED
+            and type(observation) is EffectObservationPayload
+            and observation.adapter is AdapterKind.TASK
+            and observation.receipt.identity == request_event.identity
+            and observation.receipt.operation is EffectOperation.WORKER_DISPATCH
+            and observation.receipt.status is EffectStatus.APPLIED
+            and bool(observation.receipt.evidence)
+            and observation_event.actor_type is ActorType.ADAPTER
+            and observation_event.actor_id == "task-adapter"
+            and observation_event.identity.run_id == request_event.identity.run_id
+            and observation_event.identity.task_id == request_event.identity.task_id
+            and observation_event.identity.attempt == request_event.identity.attempt
+            and observation_event.identity.correlation_id
+            == request_event.identity.correlation_id
+            and observation_event.identity.coordinator_epoch
+            >= request_event.identity.coordinator_epoch
+            and observation_event.sequence > request_event.sequence
+        )
+
+    @staticmethod
+    def _absent_preparation_events_match(
+        request_event: JournalEvent,
+        observation_event: JournalEvent,
+    ) -> bool:
+        request = request_event.payload
+        observation = observation_event.payload
+        return (
+            request_event.event_type is JournalEventType.EFFECT_REQUESTED
+            and type(request) is EffectRequestPayload
+            and request.adapter is AdapterKind.GIT
+            and request.operation is EffectOperation.REPOSITORY_UPDATE
+            and request.object_type is EffectObjectType.WORKTREE
+            and request.expected_sequence == request_event.sequence - 1
+            and request.fencing_token == request_event.identity.coordinator_epoch
+            and request_event.identity.is_attempt
+            and observation_event.event_type is JournalEventType.EFFECT_OBSERVED
+            and type(observation) is EffectObservationPayload
+            and observation.adapter is AdapterKind.GIT
+            and observation.receipt.identity == request_event.identity
+            and observation.receipt.operation is EffectOperation.REPOSITORY_UPDATE
+            and observation.receipt.status is EffectStatus.ABSENT
+            and observation_event.identity == request_event.identity
+            and observation_event.sequence == request_event.sequence + 1
+            and observation_event.previous_event_hash == request_event.event_hash
+        )
+
     def accept_worker_result(
         self,
         proposal: WorkerResultProposal,
@@ -1394,6 +2321,12 @@ class ForegroundCoordinator:
             not record.complete for record in self._cursor.dispatch_recoveries
         ):
             return CoordinatorReason.RECOVERY_IN_PROGRESS
+        try:
+            graph_admitted = self._execution_snapshot_admitter()
+        except Exception:  # noqa: BLE001 - external admission failures stop dispatch
+            graph_admitted = False
+        if graph_admitted is not True:
+            return CoordinatorReason.GRAPH_SNAPSHOT_NOT_ADMITTED
         authority_time = self._authority_clock()
         if type(authority_time) is not datetime or authority_time.tzinfo is None:
             raise ValueError("authority_clock must return a timezone-aware datetime")
@@ -1406,12 +2339,6 @@ class ForegroundCoordinator:
             scheduler_mode=SchedulerMode.WISH_BUILDER,
         ):
             return CoordinatorReason.LEASE_NOT_ADMITTED
-        try:
-            graph_admitted = self._execution_snapshot_admitter()
-        except Exception:  # noqa: BLE001 - external admission failures stop dispatch
-            graph_admitted = False
-        if graph_admitted is not True:
-            return CoordinatorReason.GRAPH_SNAPSHOT_NOT_ADMITTED
         return CoordinatorReason.NONE
 
     def _proof_matches_request(

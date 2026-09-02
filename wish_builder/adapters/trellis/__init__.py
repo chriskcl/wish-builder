@@ -35,6 +35,14 @@ from .projection_checkout import (
     TrellisAuthoritativeProjectionTarget,
     TrellisProjectionCheckoutError,
 )
+from .lifecycle import (
+    DEFAULT_LIFECYCLE_OUTPUT_BYTES,
+    DEFAULT_LIFECYCLE_REQUEST_BYTES,
+    DEFAULT_LIFECYCLE_STDERR_BYTES,
+    DEFAULT_LIFECYCLE_TIMEOUT_SECONDS,
+    TrellisCoreLifecyclePort,
+    TrellisLifecycleAdapterError,
+)
 
 __all__ = [
     "FakeTrellisGraphPort",
@@ -62,4 +70,10 @@ __all__ = [
     "TrellisAuthoritativeProjectionProvider",
     "TrellisAuthoritativeProjectionTarget",
     "TrellisProjectionCheckoutError",
+    "DEFAULT_LIFECYCLE_OUTPUT_BYTES",
+    "DEFAULT_LIFECYCLE_REQUEST_BYTES",
+    "DEFAULT_LIFECYCLE_STDERR_BYTES",
+    "DEFAULT_LIFECYCLE_TIMEOUT_SECONDS",
+    "TrellisCoreLifecyclePort",
+    "TrellisLifecycleAdapterError",
 ]

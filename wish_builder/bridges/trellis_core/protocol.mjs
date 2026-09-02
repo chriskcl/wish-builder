@@ -8,6 +8,11 @@ import {
   applyTrellisTaskProjection,
   inspectTrellisTaskProjection,
 } from "./projection.mjs";
+import {
+  TrellisLifecycleError,
+  applyTrellisLifecycle,
+  inspectTrellisLifecycle,
+} from "./lifecycle.mjs";
 
 export const BRIDGE_PROTOCOL_VERSION = 1;
 export const MAX_STDIN_BYTES = 2 * 1024 * 1024;
@@ -18,6 +23,10 @@ const ACTIONS = Object.freeze([
   "graph_snapshot",
   "projection_inspect",
   "projection_apply",
+  "lifecycle_prepare",
+  "lifecycle_check",
+  "lifecycle_finish",
+  "lifecycle_inspect",
 ]);
 const PROJECT_KEY = /^(?!\.{1,2}$)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -50,7 +59,13 @@ export async function handleBridgeRequest(value, dependencies = {}) {
   if (request.action === "projection_inspect") {
     return inspectProjection(request, coreContext);
   }
-  return applyProjection(request, coreContext);
+  if (request.action === "projection_apply") {
+    return applyProjection(request, coreContext);
+  }
+  if (request.action === "lifecycle_inspect") {
+    return inspectLifecycle(request, coreContext);
+  }
+  return applyLifecycle(request, coreContext);
 }
 
 export function failureResponse(error, action = null) {
@@ -93,7 +108,7 @@ function validateEnvelope(value) {
   if (typeof value.action !== "string" || !ACTIONS.includes(value.action)) {
     throw new BridgeRequestError(
       "INVALID_REQUEST",
-      "action must be probe, execute, inspect, graph_snapshot, projection_inspect, or projection_apply",
+      "action is not supported by this bridge",
     );
   }
   if (value.action === "probe") {
@@ -140,7 +155,7 @@ function validateEnvelope(value) {
       ["protocolVersion", "action", "checkoutRoot", "trellisTaskId"],
       "projection_inspect request",
     );
-  } else {
+  } else if (value.action === "projection_apply") {
     exactFields(
       value,
       [
@@ -154,6 +169,22 @@ function validateEnvelope(value) {
       "projection_apply request",
     );
     requirePlainObject(value.projection, "projection");
+  } else if (["lifecycle_prepare", "lifecycle_check", "lifecycle_finish"].includes(value.action)) {
+    exactFields(
+      value,
+      ["protocolVersion", "action", "operationKind", "commandHash", "command", "checkoutRoot", "worktreePath", "worktreeId"],
+      "lifecycle request",
+    );
+    requirePlainObject(value.command, "command");
+    if (value.operationKind !== `${value.action.replace("lifecycle_", "")}_attempt`) {
+      throw new BridgeRequestError("INVALID_REQUEST", "lifecycle operation kind does not match action");
+    }
+  } else {
+    exactFields(
+      value,
+      ["protocolVersion", "action", "checkoutRoot", "trellisTaskId", "operationKind", "operationId", "expectedRequestPayloadHash"],
+      "lifecycle inspect request",
+    );
   }
   return value;
 }
@@ -249,6 +280,49 @@ async function applyProjection(request, coreContext) {
   }
 }
 
+async function applyLifecycle(request, coreContext) {
+  try {
+    const observation = await applyTrellisLifecycle(coreContext.taskApi, {
+      checkoutRoot: request.checkoutRoot,
+      operationKind: request.operationKind,
+      commandHash: request.commandHash,
+      command: request.command,
+      worktreePath: request.worktreePath,
+      worktreeId: request.worktreeId,
+    });
+    return Object.freeze({
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      ok: true,
+      action: request.action,
+      observation,
+      bridge: bridgeMetadata(coreContext.metadata),
+    });
+  } catch (error) {
+    throw lifecycleFailure(error);
+  }
+}
+
+async function inspectLifecycle(request, coreContext) {
+  try {
+    const observation = await inspectTrellisLifecycle(coreContext.taskApi, {
+      checkoutRoot: request.checkoutRoot,
+      trellisTaskId: request.trellisTaskId,
+      operationKind: request.operationKind,
+      operationId: request.operationId,
+      expectedRequestPayloadHash: request.expectedRequestPayloadHash,
+    });
+    return Object.freeze({
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      ok: true,
+      action: "lifecycle_inspect",
+      observation,
+      bridge: bridgeMetadata(coreContext.metadata),
+    });
+  } catch (error) {
+    throw lifecycleFailure(error);
+  }
+}
+
 function operationApiUnavailable(coreContext) {
   return new BridgeRequestError(
     "CORE_OPERATION_UNAVAILABLE",
@@ -277,6 +351,21 @@ function projectionFailure(error) {
   return new BridgeRequestError(
     "PROJECTION_FAILURE",
     "Trellis projection failed closed",
+    { exitCode: 5 },
+  );
+}
+
+function lifecycleFailure(error) {
+  if (error instanceof TrellisLifecycleError) {
+    return new BridgeRequestError(
+      "LIFECYCLE_FAILURE",
+      "Trellis lifecycle failed closed",
+      { exitCode: 5, details: Object.freeze({ reason: error.code }) },
+    );
+  }
+  return new BridgeRequestError(
+    "LIFECYCLE_FAILURE",
+    "Trellis lifecycle failed closed",
     { exitCode: 5 },
   );
 }

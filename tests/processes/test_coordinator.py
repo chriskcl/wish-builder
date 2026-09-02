@@ -19,13 +19,16 @@ from tests.adapters.test_trellis_graph_import import (
 from tests.adapters.test_trellis_graph_import import (
     task as trellis_task,
 )
+from wish_builder.adapters import FilesystemExternalEvidenceStore
 from wish_builder.adapters.fake import FakeEffectCrash, FakeTaskPort
+from wish_builder.adapters.fakes import FakeBackendChannelPort
 from wish_builder.adapters.storage import FilesystemJournalStorage
 from wish_builder.adapters.trellis import import_trellis_snapshot
 from wish_builder.contracts import SchedulerMode
 from wish_builder.contracts.runtime import (
     ActorIdentity,
     ActorType,
+    AdapterKind,
     CommandIdentity,
     CommandKind,
     DecisionChoice,
@@ -34,6 +37,17 @@ from wish_builder.contracts.runtime import (
     DecisionRequest,
     DecisionRequestPayload,
     DecisionType,
+    EvidenceProducer,
+    EvidenceRef,
+    EvidenceRenderPolicy,
+    EvidenceRole,
+    EvidenceSensitivity,
+    EvidenceType,
+    EffectObjectType,
+    EffectObservationPayload,
+    EffectOperation,
+    EffectReceipt,
+    EffectRequestPayload,
     EffectStatus,
     ExecutionIdentity,
     JournalEventType,
@@ -54,6 +68,7 @@ from wish_builder.processes.coordinator import (
     CoordinatorStatus,
     ForegroundCoordinator,
     WorkerResultProposal,
+    _recovered_cancel_evidence_matches,
 )
 from wish_builder.services.journal import (
     AppendStatus,
@@ -61,13 +76,29 @@ from wish_builder.services.journal import (
     DurableJournal,
     JournalEventDraft,
 )
+from wish_builder.services.backend_effects import (
+    BackendDispatchEffectService,
+    BackendDispatchPlan,
+)
+from wish_builder.services.gate_b_bootstrap import (
+    gate_b_artifact_nonce,
+    graph_projection_bytes,
+)
 from wish_builder.services.recovery import (
     LeaseRecoveryStatus,
     recover_coordinator_lease,
 )
+from wish_builder.services.ports import (
+    BackendCapabilities,
+    ReserveChannel,
+    SendTaskPacket,
+    TurnObservation,
+    TurnState,
+)
 
 BASE_TIME = datetime(2026, 8, 19, tzinfo=UTC)
 COORDINATOR_ID = "coordinator-001"
+GATE_B_ARTIFACT_HASH = "sha256:" + "e" * 64
 
 
 def digest(character: str) -> str:
@@ -87,6 +118,29 @@ def lease_owner(actor_id: str = COORDINATOR_ID) -> LeaseOwner:
         digest("2"),
         digest("3"),
         digest("4"),
+    )
+
+
+def contract_evidence(
+    manifest,
+    evidence_digest: str,
+    byte_length: int,
+    external_object_id: str,
+) -> EvidenceRef:
+    return EvidenceRef(
+        1,
+        evidence_digest,
+        byte_length,
+        EvidenceType.CONTRACT,
+        EvidenceProducer(
+            ExecutionIdentity(manifest.run_id, 1),
+            external_object_id=external_object_id,
+        ),
+        "2026-08-19T00:00:00Z",
+        EvidenceSensitivity.INTERNAL,
+        EvidenceRenderPolicy.METADATA_ONLY,
+        EvidenceRole.REQUIRED,
+        evidence_digest,
     )
 
 
@@ -195,7 +249,7 @@ class CoordinatorHarness:
                         "REQUEST-GATE-B-FINISH-001",
                         CommandKind.DECIDE,
                         request_sequence,
-                        "nonce-gate-b-finish-001",
+                        gate_b_artifact_nonce(GATE_B_ARTIFACT_HASH),
                         self.owner.actor,
                         SourceChannel.COORDINATOR,
                         "2026-08-19T00:00:00Z",
@@ -275,6 +329,37 @@ class CoordinatorHarness:
                     last_event_hash=observed.event.event_hash,
                 )
                 lease_state = lease_state.advance(observed.event)
+            evidence = ()
+            if event_type is JournalEventType.TRELLIS_GRAPH_IMPORTED:
+                evidence = (
+                    contract_evidence(
+                        self.manifest,
+                        self.manifest.trellis_graph_digest,
+                        len(graph_projection_bytes(self.manifest)),
+                        "trellis-material-graph",
+                    ),
+                )
+            elif event_type is JournalEventType.TASK_GRAPH_FROZEN:
+                evidence = (
+                    contract_evidence(
+                        self.manifest,
+                        GATE_B_ARTIFACT_HASH,
+                        1024,
+                        "gate-b-approved-artifact",
+                    ),
+                    contract_evidence(
+                        self.manifest,
+                        self.manifest.trellis_graph_digest,
+                        len(graph_projection_bytes(self.manifest)),
+                        "trellis-material-graph",
+                    ),
+                    contract_evidence(
+                        self.manifest,
+                        self.manifest.canonical_sha256(),
+                        len(self.manifest.canonical_json_bytes()),
+                        "execution-manifest-v2",
+                    ),
+                )
             sequence = lease_state.head.sequence + 1
             appended = self.journal.append_draft(
                 JournalEventDraft(
@@ -287,6 +372,7 @@ class CoordinatorHarness:
                         TransitionSubject.RUN,
                         from_state,
                         to_state,
+                        evidence,
                     ),
                 ),
                 expected_head=lease_state.head,
@@ -386,6 +472,593 @@ class ForegroundCoordinatorTests(unittest.TestCase):
             dispatched.cursor.snapshot.attempts[0].state,
         )
 
+    def test_admission_samples_lease_clock_after_slow_graph_check(self) -> None:
+        authority_time = [BASE_TIME + timedelta(seconds=10)]
+
+        def slow_graph_admission():
+            authority_time[0] = BASE_TIME + timedelta(seconds=400)
+            return True
+
+        harness = CoordinatorHarness(
+            self.root,
+            coordinator_clock=lambda: authority_time[0],
+            execution_snapshot_admitter=slow_graph_admission,
+        )
+
+        result = harness.coordinator.reserve_ready()
+
+        self.assertIs(CoordinatorStatus.BLOCKED, result.status)
+        self.assertIs(CoordinatorReason.LEASE_NOT_ADMITTED, result.reason)
+        self.assertEqual((), result.events)
+
+    def _takeover_with_reserved_attempt(
+        self,
+        root: Path,
+    ) -> tuple[CoordinatorHarness, ForegroundCoordinator]:
+        harness = CoordinatorHarness(root)
+        reserved = harness.coordinator.reserve_ready()
+        cursor = reserved.cursor
+        lease = cursor.lease_state.lease
+        self.assertIsNotNone(lease)
+        assert lease is not None
+
+        def append_lease(event_type, event_id, token):
+            nonlocal cursor
+            appended = harness.journal.append_draft(
+                JournalEventDraft(
+                    event_id,
+                    event_type,
+                    ExecutionIdentity(harness.manifest.run_id, token),
+                    ActorType.COORDINATOR,
+                    COORDINATOR_ID,
+                    LeaseDraftPayload(
+                        "LEASE-001" if token == 1 else "LEASE-002",
+                        COORDINATOR_ID,
+                        harness.owner,
+                        SchedulerMode.WISH_BUILDER,
+                        token,
+                        harness.manifest.canonical_sha256(),
+                        300,
+                        10,
+                    ),
+                ),
+                expected_head=cursor.head,
+                lease_state=cursor.lease_state,
+            )
+            self.assertIs(AppendStatus.COMMITTED, appended.status)
+            self.assertIsNotNone(appended.event)
+            assert appended.event is not None
+            applied = apply_journal_event(cursor.snapshot, appended.event)
+            self.assertTrue(applied.accepted)
+            cursor = CoordinatorCursor(
+                applied.snapshot,
+                cursor.graph_index.advance(cursor.snapshot, applied.snapshot),
+                cursor.lease_state.advance(appended.event),
+                cursor.dispatch_recoveries,
+            )
+
+        append_lease(
+            JournalEventType.LEASE_RELEASED,
+            "EVENT-LEASE-RELEASED-TAKEOVER",
+            1,
+        )
+        append_lease(
+            JournalEventType.LEASE_ACQUIRED,
+            "EVENT-LEASE-ACQUIRED-TAKEOVER",
+            2,
+        )
+        return harness, ForegroundCoordinator(
+            harness.manifest,
+            cursor,
+            harness.journal,
+            harness.port,
+            coordinator_id=COORDINATOR_ID,
+            owner=harness.owner,
+            fencing_token=2,
+            authority_clock=lambda: BASE_TIME + timedelta(seconds=10),
+            execution_snapshot_admitter=lambda: True,
+        )
+
+    def _takeover_with_running_backend_attempt(
+        self,
+        root: Path,
+        *,
+        send_state: TurnState = TurnState.RUNNING,
+    ):
+        harness = CoordinatorHarness(root)
+        capabilities = BackendCapabilities(
+            provider=harness.manifest.provider,
+            platform="windows",
+            capability_digest=harness.manifest.capability_digest,
+            launch_profile_digest=harness.manifest.launch_profile_digest,
+            policy_digest=harness.manifest.policy_digest,
+            max_task_packet_bytes=4096,
+        )
+        channel = FakeBackendChannelPort(capabilities, send_state=send_state)
+        evidence = FilesystemExternalEvidenceStore(root / "backend-evidence")
+
+        def plan_factory(identity: ExecutionIdentity) -> BackendDispatchPlan:
+            assert identity.correlation_id is not None
+            suffix = hashlib.sha256(
+                repr(identity.to_primitive()).encode("utf-8")
+            ).hexdigest()[:24].upper()
+            packet = '{"task_id":"%s"}' % identity.task_id
+            return BackendDispatchPlan(
+                ReserveChannel(
+                    f"RESERVE-{suffix}",
+                    f"ATTEMPT-{suffix}",
+                    identity.correlation_id,
+                    f"CHANNEL-{suffix}",
+                    harness.manifest.provider,
+                    capabilities.capability_digest,
+                    capabilities.launch_profile_digest,
+                    capabilities.policy_digest,
+                ),
+                SendTaskPacket(
+                    f"SEND-{suffix}",
+                    f"ATTEMPT-{suffix}",
+                    identity.correlation_id,
+                    f"CHANNEL-{suffix}",
+                    f"MESSAGE-{suffix}",
+                    f"TURN-{suffix}",
+                    packet,
+                    "sha256:" + hashlib.sha256(packet.encode("utf-8")).hexdigest(),
+                ),
+            )
+
+        old_effects = BackendDispatchEffectService(
+            harness.journal,
+            channel,
+            evidence,
+            coordinator_id=COORDINATOR_ID,
+            fencing_token=1,
+        )
+        old = ForegroundCoordinator(
+            harness.manifest,
+            harness.coordinator.cursor,
+            harness.journal,
+            None,
+            backend_effects=old_effects,
+            backend_plan_factory=plan_factory,
+            coordinator_id=COORDINATOR_ID,
+            owner=harness.owner,
+            fencing_token=1,
+            authority_clock=lambda: BASE_TIME + timedelta(seconds=10),
+            execution_snapshot_admitter=lambda: True,
+        )
+        reserved = old.reserve_ready()
+        dispatched = old.dispatch_reserved(reserved.reserved[0])
+        request = next(
+            event
+            for event in dispatched.events
+            if event.event_type is JournalEventType.DISPATCH_REQUESTED
+        )
+        observation = next(
+            event
+            for event in dispatched.events
+            if event.event_type is JournalEventType.DISPATCH_OBSERVED
+        )
+        cursor = dispatched.cursor
+
+        for event_type, event_id, token in (
+            (JournalEventType.LEASE_RELEASED, "EVENT-LEASE-RELEASED-RUNNING", 1),
+            (JournalEventType.LEASE_ACQUIRED, "EVENT-LEASE-ACQUIRED-RUNNING", 2),
+        ):
+            appended = harness.journal.append_draft(
+                JournalEventDraft(
+                    event_id,
+                    event_type,
+                    ExecutionIdentity(harness.manifest.run_id, token),
+                    ActorType.COORDINATOR,
+                    COORDINATOR_ID,
+                    LeaseDraftPayload(
+                        "LEASE-001" if token == 1 else "LEASE-002",
+                        COORDINATOR_ID,
+                        harness.owner,
+                        SchedulerMode.WISH_BUILDER,
+                        token,
+                        harness.manifest.canonical_sha256(),
+                        300,
+                        10,
+                    ),
+                ),
+                expected_head=cursor.head,
+                lease_state=cursor.lease_state,
+            )
+            self.assertIs(AppendStatus.COMMITTED, appended.status)
+            assert appended.event is not None
+            applied = apply_journal_event(cursor.snapshot, appended.event)
+            self.assertTrue(applied.accepted, applied.reason)
+            cursor = CoordinatorCursor(
+                applied.snapshot,
+                cursor.graph_index.advance(cursor.snapshot, applied.snapshot),
+                cursor.lease_state.advance(appended.event),
+                cursor.dispatch_recoveries,
+            )
+
+        takeover_effects = BackendDispatchEffectService(
+            harness.journal,
+            channel,
+            evidence,
+            coordinator_id=COORDINATOR_ID,
+            fencing_token=2,
+        )
+        takeover = ForegroundCoordinator(
+            harness.manifest,
+            cursor,
+            harness.journal,
+            None,
+            backend_effects=takeover_effects,
+            backend_plan_factory=plan_factory,
+            coordinator_id=COORDINATOR_ID,
+            owner=harness.owner,
+            fencing_token=2,
+            authority_clock=lambda: BASE_TIME + timedelta(seconds=10),
+            execution_snapshot_admitter=lambda: True,
+        )
+        return takeover, request, observation, reserved.reserved[0]
+
+    def test_takeover_cancels_and_refences_the_same_running_attempt(self) -> None:
+        takeover, request, observation, old_identity = (
+            self._takeover_with_running_backend_attempt(self.root / "running")
+        )
+
+        reclaimed = takeover.reclaim_cancelled_dispatch(
+            request,
+            observation,
+            owned_path_changes=(),
+            owned_path_recheck=lambda: (),
+        )
+
+        self.assertIs(CoordinatorStatus.PROGRESSED, reclaimed.status)
+        self.assertEqual(
+            (
+                JournalEventType.EFFECT_REQUESTED,
+                JournalEventType.EFFECT_OBSERVED,
+                JournalEventType.CANCEL_REQUESTED,
+                JournalEventType.ATTEMPT_TERMINATED,
+                JournalEventType.TASK_BLOCKED,
+                JournalEventType.TASK_RETRY_SCHEDULED,
+                JournalEventType.LEASE_ACQUIRED,
+                JournalEventType.ATTEMPT_RESERVED,
+            ),
+            tuple(event.event_type for event in reclaimed.events),
+        )
+        self.assertEqual(1, len(reclaimed.cursor.snapshot.attempts))
+        self.assertEqual(old_identity.attempt, reclaimed.reserved[0].attempt)
+        self.assertEqual(2, reclaimed.reserved[0].coordinator_epoch)
+        self.assertIs(
+            RuntimeState.RESERVED,
+            reclaimed.cursor.snapshot.attempts[0].state,
+        )
+        stale = takeover.accept_worker_result(
+            WorkerResultProposal(old_identity, "old-worker", True)
+        )
+        self.assertIs(CoordinatorStatus.REJECTED, stale.status)
+        self.assertIs(CoordinatorReason.STALE_RESULT, stale.reason)
+
+        replayed = takeover.reclaim_cancelled_dispatch(
+            request,
+            observation,
+            owned_path_changes=(),
+        )
+        self.assertIs(CoordinatorStatus.PROGRESSED, replayed.status)
+        self.assertEqual(reclaimed.reserved, replayed.reserved)
+        self.assertEqual((), replayed.events)
+
+    def test_recovered_cancel_evidence_rejects_each_tampered_binding(self) -> None:
+        identity = ExecutionIdentity(
+            "RUN-2026-001",
+            2,
+            "TASK-001",
+            1,
+            "CANCEL-" + "A" * 48,
+        )
+        turn = TurnObservation(
+            identity.correlation_id,
+            EffectStatus.APPLIED,
+            "2026-08-19T00:00:00Z",
+            TurnState.CANCELLED,
+            effect_digest=digest("a"),
+            attempt_id="ATTEMPT-001",
+            channel_id="CHANNEL-001",
+            message_id="MESSAGE-001",
+            turn_id="TURN-001",
+        )
+        store = FilesystemExternalEvidenceStore(self.root / "recovered-evidence")
+        evidence = store.put(
+            turn,
+            identity=identity,
+            operation=EffectOperation.CANCEL_TURN,
+        )
+        receipt = EffectReceipt(
+            1,
+            identity,
+            EffectOperation.CANCEL_TURN,
+            EffectStatus.APPLIED,
+            turn.observed_at,
+            turn.effect_digest,
+            turn.turn_id,
+            (evidence,),
+        )
+        self.assertTrue(_recovered_cancel_evidence_matches(receipt, turn))
+
+        cases = {
+            "receipt-time": (
+                replace(receipt, observed_at="2099-01-01T00:00:00Z"),
+                turn,
+            ),
+            "receipt-effect-hash": (replace(receipt, effect_hash=digest("b")), turn),
+            "turn-time": (
+                receipt,
+                replace(turn, observed_at="2099-01-01T00:00:00Z"),
+            ),
+            "turn-effect-digest": (
+                receipt,
+                replace(turn, effect_digest=digest("b")),
+            ),
+            "evidence-digest": (
+                replace(receipt, evidence=(replace(evidence, digest=digest("b")),)),
+                turn,
+            ),
+            "evidence-length": (
+                replace(
+                    receipt,
+                    evidence=(replace(evidence, byte_length=evidence.byte_length + 1),),
+                ),
+                turn,
+            ),
+            "evidence-type": (
+                replace(
+                    receipt,
+                    evidence=(replace(evidence, evidence_type=EvidenceType.RESULT),),
+                ),
+                turn,
+            ),
+            "evidence-producer": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(
+                            evidence,
+                            producer=replace(
+                                evidence.producer,
+                                external_object_id="different-store",
+                            ),
+                        ),
+                    ),
+                ),
+                turn,
+            ),
+            "evidence-producer-event": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(
+                            evidence,
+                            producer=replace(
+                                evidence.producer,
+                                event_id="EVENT-TAMPERED-001",
+                            ),
+                        ),
+                    ),
+                ),
+                turn,
+            ),
+            "evidence-created-at": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(evidence, created_at="2099-01-01T00:00:00Z"),
+                    ),
+                ),
+                turn,
+            ),
+            "evidence-sensitivity": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(evidence, sensitivity=EvidenceSensitivity.PUBLIC),
+                    ),
+                ),
+                turn,
+            ),
+            "evidence-render-policy": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(evidence, render_policy=EvidenceRenderPolicy.TEXT),
+                    ),
+                ),
+                turn,
+            ),
+            "evidence-role": (
+                replace(
+                    receipt,
+                    evidence=(replace(evidence, role=EvidenceRole.OPTIONAL),),
+                ),
+                turn,
+            ),
+            "evidence-subject": (
+                replace(
+                    receipt,
+                    evidence=(
+                        replace(evidence, structured_subject_hash=digest("b")),
+                    ),
+                ),
+                turn,
+            ),
+        }
+        for label, candidate in cases.items():
+            with self.subTest(label=label):
+                self.assertFalse(_recovered_cancel_evidence_matches(*candidate))
+
+    def test_takeover_blocks_owned_changes_and_non_cancelled_provider_results(self) -> None:
+        changed, request, observation, _ = self._takeover_with_running_backend_attempt(
+            self.root / "owned-change"
+        )
+        rejected = changed.reclaim_cancelled_dispatch(
+            request,
+            observation,
+            owned_path_changes=("src/owned.txt",),
+        )
+        self.assertIs(CoordinatorStatus.REJECTED, rejected.status)
+        self.assertEqual((), rejected.events)
+
+        completed, request, observation, _ = self._takeover_with_running_backend_attempt(
+            self.root / "completed-provider",
+            send_state=TurnState.DONE,
+        )
+        blocked = completed.reclaim_cancelled_dispatch(
+            request,
+            observation,
+            owned_path_changes=(),
+            owned_path_recheck=lambda: (),
+        )
+        self.assertIs(CoordinatorStatus.BLOCKED, blocked.status)
+        self.assertIs(CoordinatorReason.PORT_OUTCOME_INVALID, blocked.reason)
+        self.assertEqual(
+            (JournalEventType.EFFECT_REQUESTED, JournalEventType.EFFECT_OBSERVED),
+            tuple(event.event_type for event in blocked.events),
+        )
+
+    def test_takeover_rejects_missing_or_mismatched_evidence(self) -> None:
+        takeover, request, observation, _ = self._takeover_with_running_backend_attempt(
+            self.root / "invalid-evidence"
+        )
+        unknown_paths = takeover.reclaim_cancelled_dispatch(
+            request,
+            observation,
+            owned_path_changes=None,
+        )
+        mismatched = takeover.reclaim_cancelled_dispatch(
+            request,
+            request,
+            owned_path_changes=(),
+        )
+
+        self.assertIs(CoordinatorStatus.REJECTED, unknown_paths.status)
+        self.assertIs(CoordinatorStatus.REJECTED, mismatched.status)
+        self.assertEqual((), unknown_paths.events)
+        self.assertEqual((), mismatched.events)
+
+    def test_takeover_rejects_an_unavailable_final_owned_path_check(self) -> None:
+        missing, request, observation, _ = (
+            self._takeover_with_running_backend_attempt(
+                self.root / "missing-final-owned-path-check"
+            )
+        )
+        missing_recheck = missing.reclaim_cancelled_dispatch(
+            request,
+            observation,
+            owned_path_changes=(),
+        )
+
+        failed, request, observation, _ = (
+            self._takeover_with_running_backend_attempt(
+                self.root / "failed-final-owned-path-check"
+            )
+        )
+
+        def unavailable():
+            raise OSError("worktree inspection unavailable")
+
+        failed_recheck = failed.reclaim_cancelled_dispatch(
+            request,
+            observation,
+            owned_path_changes=(),
+            owned_path_recheck=unavailable,
+        )
+
+        invalid, request, observation, _ = (
+            self._takeover_with_running_backend_attempt(
+                self.root / "invalid-final-owned-path-check"
+            )
+        )
+        with self.assertRaises(TypeError):
+            invalid.reclaim_cancelled_dispatch(
+                request,
+                observation,
+                owned_path_changes=(),
+                owned_path_recheck=True,  # type: ignore[arg-type]
+            )
+
+        self.assertIs(CoordinatorStatus.REJECTED, missing_recheck.status)
+        self.assertIs(
+            CoordinatorReason.RECOVERY_PROOF_INVALID,
+            missing_recheck.reason,
+        )
+        self.assertEqual((), missing_recheck.events)
+        self.assertIs(CoordinatorStatus.REJECTED, failed_recheck.status)
+        self.assertIs(
+            CoordinatorReason.RECOVERY_PROOF_INVALID,
+            failed_recheck.reason,
+        )
+        self.assertEqual(
+            (
+                JournalEventType.EFFECT_REQUESTED,
+                JournalEventType.EFFECT_OBSERVED,
+            ),
+            tuple(event.event_type for event in failed_recheck.events),
+        )
+
+    def test_takeover_reclaims_reserved_attempt_without_incrementing_attempt(self) -> None:
+        _, takeover = self._takeover_with_reserved_attempt(self.root)
+
+        reclaimed = takeover.reclaim_stale_reservations()
+
+        self.assertIs(CoordinatorStatus.PROGRESSED, reclaimed.status)
+        self.assertEqual(1, len(reclaimed.reserved))
+        self.assertEqual(1, reclaimed.reserved[0].attempt)
+        self.assertEqual(2, reclaimed.reserved[0].coordinator_epoch)
+        self.assertEqual(
+            (
+                JournalEventType.ATTEMPT_RELEASED,
+                JournalEventType.ATTEMPT_RESERVED,
+            ),
+            tuple(event.event_type for event in reclaimed.events),
+        )
+        self.assertEqual(1, len(reclaimed.cursor.snapshot.attempts))
+        replayed = takeover.reserve_ready()
+        self.assertEqual(reclaimed.reserved, replayed.reserved)
+        self.assertEqual((), replayed.events)
+
+    def test_takeover_resumes_after_crash_between_release_and_reservation(self) -> None:
+        _, takeover = self._takeover_with_reserved_attempt(
+            self.root / "partial-reclaim"
+        )
+        attempt = takeover.cursor.snapshot.attempts[0]
+        released = takeover._append_transition(
+            JournalEventType.ATTEMPT_RELEASED,
+            ExecutionIdentity(
+                takeover.cursor.snapshot.run_id,
+                takeover.cursor.snapshot.coordinator_epoch,
+                attempt.task_id,
+                attempt.attempt,
+                attempt.correlation_id,
+            ),
+            TransitionSubject.ATTEMPT,
+            RuntimeState.RESERVED,
+            RuntimeState.TERMINATED,
+            reason_code=RuntimeReasonCode.LEASE_LOST,
+            allow_recovery=True,
+        )
+        self.assertIsNotNone(released.event)
+
+        reclaimed = takeover.reclaim_stale_reservations()
+
+        self.assertIs(CoordinatorStatus.PROGRESSED, reclaimed.status)
+        self.assertEqual((JournalEventType.ATTEMPT_RESERVED,), tuple(
+            event.event_type for event in reclaimed.events
+        ))
+        self.assertEqual(1, len(reclaimed.reserved))
+        self.assertEqual(1, reclaimed.reserved[0].attempt)
+        self.assertEqual(2, reclaimed.reserved[0].coordinator_epoch)
+        self.assertIs(
+            RuntimeState.RESERVED,
+            reclaimed.cursor.snapshot.attempts[0].state,
+        )
+
     def test_reserve_ready_reuses_current_reserved_attempt_after_restart_boundary(
         self,
     ) -> None:
@@ -400,6 +1073,140 @@ class ForegroundCoordinatorTests(unittest.TestCase):
         self.assertEqual((), resumed.events)
         self.assertEqual(head, resumed.cursor.head)
         self.assertFalse(harness.port.effects.exists())
+
+    def test_absent_preparation_retry_releases_attempt_and_reopens_run(self) -> None:
+        harness = CoordinatorHarness(self.root)
+        request, observation = self._block_absent_preparation(harness)
+
+        retried = harness.coordinator.retry_absent_preparation(
+            request,
+            observation,
+        )
+
+        self.assertEqual(CoordinatorStatus.PROGRESSED, retried.status)
+        self.assertEqual(
+            [
+                JournalEventType.ATTEMPT_RELEASED,
+                JournalEventType.TASK_RETRY_SCHEDULED,
+                JournalEventType.RUN_RESUMED,
+            ],
+            [event.event_type for event in retried.events],
+        )
+        self.assertEqual(RuntimeState.TERMINATED, retried.cursor.snapshot.attempts[0].state)
+        self.assertEqual(RuntimeState.READY, retried.cursor.snapshot.tasks[0].state)
+        self.assertEqual(RuntimeState.RUNNING, retried.cursor.snapshot.status)
+
+        idempotent = harness.coordinator.retry_absent_preparation(
+            request,
+            observation,
+        )
+        self.assertEqual(CoordinatorStatus.PROGRESSED, idempotent.status)
+        self.assertEqual((), idempotent.events)
+        next_attempt = harness.coordinator.reserve_ready()
+        self.assertEqual(CoordinatorStatus.PROGRESSED, next_attempt.status)
+        self.assertEqual(2, next_attempt.reserved[0].attempt)
+
+    def test_absent_preparation_retry_continues_crash_prefixes(self) -> None:
+        for prefix in ("released", "retried"):
+            with self.subTest(prefix=prefix):
+                harness = CoordinatorHarness(self.root / prefix)
+                request, observation = self._block_absent_preparation(harness)
+                identity = request.identity
+                released = harness.coordinator._append_transition(
+                    JournalEventType.ATTEMPT_RELEASED,
+                    ExecutionIdentity(
+                        identity.run_id,
+                        identity.coordinator_epoch,
+                        identity.task_id,
+                        identity.attempt,
+                        identity.correlation_id,
+                    ),
+                    TransitionSubject.ATTEMPT,
+                    RuntimeState.RESERVED,
+                    RuntimeState.TERMINATED,
+                    allow_recovery=True,
+                )
+                self.assertIsNotNone(released.event)
+                if prefix == "retried":
+                    task = harness.coordinator._append_transition(
+                        JournalEventType.TASK_RETRY_SCHEDULED,
+                        ExecutionIdentity(
+                            identity.run_id,
+                            identity.coordinator_epoch,
+                            identity.task_id,
+                        ),
+                        TransitionSubject.TASK,
+                        RuntimeState.BLOCKED,
+                        RuntimeState.READY,
+                        allow_recovery=True,
+                    )
+                    self.assertIsNotNone(task.event)
+
+                resumed = harness.coordinator.retry_absent_preparation(
+                    request,
+                    observation,
+                )
+
+                expected = (
+                    [JournalEventType.RUN_RESUMED]
+                    if prefix == "retried"
+                    else [
+                        JournalEventType.TASK_RETRY_SCHEDULED,
+                        JournalEventType.RUN_RESUMED,
+                    ]
+                )
+                self.assertEqual(expected, [event.event_type for event in resumed.events])
+
+    def test_absent_preparation_retry_rejects_wrong_observation_event(self) -> None:
+        harness = CoordinatorHarness(self.root)
+        request, _observation = self._block_absent_preparation(harness)
+
+        result = harness.coordinator.retry_absent_preparation(request, request)
+
+        self.assertEqual(CoordinatorStatus.REJECTED, result.status)
+        self.assertEqual(CoordinatorReason.RECOVERY_PROOF_INVALID, result.reason)
+        self.assertEqual((), result.events)
+
+    def test_absent_preparation_retry_rejects_exhausted_attempt_budget(self) -> None:
+        manifest = one_task_manifest()
+        manifest = replace(
+            manifest,
+            execution_budget=replace(
+                manifest.execution_budget,
+                max_attempts_per_task=1,
+                max_attempts_per_run=1,
+            ),
+        )
+        harness = CoordinatorHarness(self.root, manifest=manifest)
+        request, observation = self._block_absent_preparation(harness)
+
+        result = harness.coordinator.retry_absent_preparation(
+            request,
+            observation,
+        )
+
+        self.assertEqual(CoordinatorStatus.REJECTED, result.status)
+        self.assertEqual(CoordinatorReason.RECOVERY_PROOF_INVALID, result.reason)
+        self.assertEqual((), result.events)
+
+        released = harness.coordinator._append_transition(
+            JournalEventType.ATTEMPT_RELEASED,
+            request.identity,
+            TransitionSubject.ATTEMPT,
+            RuntimeState.RESERVED,
+            RuntimeState.TERMINATED,
+            allow_recovery=True,
+        )
+        self.assertIsNotNone(released.event)
+
+        resumed = harness.coordinator.retry_absent_preparation(
+            request,
+            observation,
+        )
+
+        self.assertEqual(CoordinatorStatus.REJECTED, resumed.status)
+        self.assertEqual(CoordinatorReason.RECOVERY_PROOF_INVALID, resumed.reason)
+        self.assertEqual((), resumed.events)
 
     def test_dispatch_persists_request_before_effect_and_observation_after(
         self,
@@ -918,6 +1725,60 @@ class ForegroundCoordinatorTests(unittest.TestCase):
         self.assertTrue(decoded.ok, decoded.issues)
         assert decoded.value is not None
         return decoded.value
+
+    def _block_absent_preparation(self, harness: CoordinatorHarness):
+        reserved = harness.coordinator.reserve_ready(limit=1)
+        self.assertEqual(CoordinatorStatus.PROGRESSED, reserved.status)
+        identity = reserved.reserved[0]
+        request = harness.coordinator._append_payload(
+            JournalEventType.EFFECT_REQUESTED,
+            identity,
+            EffectRequestPayload(
+                EffectOperation.REPOSITORY_UPDATE,
+                AdapterKind.GIT,
+                EffectObjectType.WORKTREE,
+                digest("7"),
+                digest("8"),
+                harness.coordinator.cursor.head.sequence,
+                identity.coordinator_epoch,
+            ),
+        )
+        self.assertIsNotNone(request.event)
+        receipt = EffectReceipt(
+            1,
+            identity,
+            EffectOperation.REPOSITORY_UPDATE,
+            EffectStatus.ABSENT,
+            "2026-08-19T00:00:10Z",
+        )
+        observed = harness.coordinator._append_payload(
+            JournalEventType.EFFECT_OBSERVED,
+            identity,
+            EffectObservationPayload(AdapterKind.GIT, receipt),
+            actor_type=ActorType.ADAPTER,
+            actor_id="git-worktree-adapter",
+        )
+        self.assertIsNotNone(observed.event)
+        task = harness.coordinator._append_transition(
+            JournalEventType.TASK_BLOCKED,
+            ExecutionIdentity(identity.run_id, identity.coordinator_epoch, identity.task_id),
+            TransitionSubject.TASK,
+            RuntimeState.LEASED,
+            RuntimeState.BLOCKED,
+            reason_code=RuntimeReasonCode.GIT_STATE_CONFLICT,
+        )
+        self.assertIsNotNone(task.event)
+        run = harness.coordinator._append_transition(
+            JournalEventType.RUN_BLOCKED,
+            ExecutionIdentity(identity.run_id, identity.coordinator_epoch),
+            TransitionSubject.RUN,
+            RuntimeState.RUNNING,
+            RuntimeState.BLOCKED,
+            reason_code=RuntimeReasonCode.GIT_STATE_CONFLICT,
+        )
+        self.assertIsNotNone(run.event)
+        assert request.event is not None and observed.event is not None
+        return request.event, observed.event
 
 
 if __name__ == "__main__":

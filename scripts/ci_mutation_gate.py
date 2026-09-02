@@ -364,6 +364,22 @@ DEFAULT_MUTATIONS = (
         ),
     ),
     MutationSpec(
+        "STATE-TERMINATED-ATTEMPT-RECLAIM",
+        "A terminated attempt can be reserved again only through fenced reclaim.",
+        "wish_builder/kernel/state.py",
+        (
+            "        (RuntimeState.PLANNED, RuntimeState.RESERVED),\n"
+            "        (RuntimeState.TERMINATED, RuntimeState.RESERVED),\n"
+        ),
+        "        (RuntimeState.PLANNED, RuntimeState.RESERVED),\n",
+        (
+            _test_id(
+                "tests.kernel.test_state.StateKernelTests.",
+                "test_terminated_reservation_can_only_be_reclaimed_by_a_higher_epoch",
+            ),
+        ),
+    ),
+    MutationSpec(
         "STATE-CONTIGUOUS-SEQUENCE",
         "State transitions cannot skip a Journal sequence.",
         "wish_builder/kernel/state.py",
@@ -492,6 +508,45 @@ DEFAULT_MUTATIONS = (
             _test_id(
                 "tests.services.test_recovery.CoordinatorLeaseRecoveryTests.",
                 "test_pid_reuse_and_workspace_mismatch_cannot_renew_or_release",
+            ),
+        ),
+    ),
+    MutationSpec(
+        "CODEX-CANCEL-PRESERVES-TERMINAL-RESULT",
+        "Cancelling a completed Codex turn preserves its terminal state and result.",
+        "wish_builder/adapters/providers/codex_app_server.py",
+        (
+            "                state=source.state,\n"
+            "                effect_digest=_effect_digest(\"cancel_turn\", typed.command_hash),\n"
+            "                attempt_id=command.attempt_id,\n"
+            "                channel_id=command.channel_id,\n"
+            "                message_id=source.message_id,\n"
+            "                turn_id=command.turn_id,\n"
+            "                result_digest=source.result_digest,\n"
+            "                evidence=(\"codex_turn_completed_interrupted\",),\n"
+            "            )\n"
+            "            self._operation(command.operation_id)[\"observation\"] = (\n"
+            "                observation.to_primitive()\n"
+            "            )\n"
+        ),
+        (
+            "                state=TurnState.DONE,\n"
+            "                effect_digest=_effect_digest(\"cancel_turn\", typed.command_hash),\n"
+            "                attempt_id=command.attempt_id,\n"
+            "                channel_id=command.channel_id,\n"
+            "                message_id=source.message_id,\n"
+            "                turn_id=command.turn_id,\n"
+            "                result_digest=_effect_digest(\"cancel_turn\", typed.command_hash),\n"
+            "                evidence=(\"codex_turn_completed_interrupted\",),\n"
+            "            )\n"
+            "            self._operation(command.operation_id)[\"observation\"] = (\n"
+            "                observation.to_primitive()\n"
+            "            )\n"
+        ),
+        (
+            _test_id(
+                "tests.adapters.test_codex_app_server.CodexAppServerChannelTests.",
+                "test_cancel_waits_for_terminal_interrupted_notification",
             ),
         ),
     ),

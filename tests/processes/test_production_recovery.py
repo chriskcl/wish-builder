@@ -644,6 +644,40 @@ class ProductionExternalRecoveryTests(unittest.TestCase):
             self.backend.calls,
         )
 
+    def test_verified_takeover_cancel_retries_after_a_later_lease(self) -> None:
+        plan = self.plan()
+        command = CancelTurn(
+            operation_id="CANCEL-TAKEOVER-001",
+            attempt_id=plan.send.attempt_id,
+            channel_id=plan.send.channel_id,
+            turn_id=plan.send.turn_id,
+            reason_code="lease_lost_takeover",
+        )
+        pending, cursor = self.append_pending(
+            self.cursor,
+            command,
+            EffectOperation.CANCEL_TURN,
+        )
+        cursor = self.take_over(cursor)
+
+        result = self.recover(
+            (pending,),
+            cursor,
+            plan_factory=lambda item: plan,
+            command_resolver=lambda item, selected_plan: command,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual((command.operation_id,), result.completed_operation_ids)
+        self.assertEqual(
+            [
+                ("inspect_turn", command.operation_id),
+                ("inspect_turn", command.operation_id),
+                ("cancel", command.operation_id),
+            ],
+            self.backend.calls,
+        )
+
     def test_cursor_journal_mismatch_blocks_before_inspection(self) -> None:
         plan = self.plan()
         pending, cursor = self.append_pending(

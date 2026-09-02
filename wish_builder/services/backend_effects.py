@@ -75,6 +75,10 @@ class BackendDispatchEffectFailpoint(Protocol):
     def __call__(self, point: str, operation_id: str) -> None: ...
 
 
+class BackendDispatchEffectAdmitter(Protocol):
+    def __call__(self, head: JournalHead, identity: ExecutionIdentity) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class BackendDispatchPlan:
     reserve: ReserveChannel
@@ -193,6 +197,7 @@ class BackendDispatchEffectService:
         *,
         coordinator_id: str,
         fencing_token: int,
+        effect_admitter: BackendDispatchEffectAdmitter | None = None,
         failpoint: BackendDispatchEffectFailpoint | None = None,
     ) -> None:
         if type(journal) is not DurableJournal:
@@ -205,6 +210,8 @@ class BackendDispatchEffectService:
             raise ValueError("coordinator_id must be non-empty")
         if type(fencing_token) is not int or fencing_token <= 0:
             raise ValueError("fencing_token must be positive")
+        if effect_admitter is not None and not callable(effect_admitter):
+            raise TypeError("effect_admitter must be callable or null")
         if failpoint is not None and not callable(failpoint):
             raise TypeError("failpoint must be callable or null")
         self._journal = journal
@@ -212,6 +219,7 @@ class BackendDispatchEffectService:
         self._evidence_store = evidence_store
         self._coordinator_id = coordinator_id
         self._fencing_token = fencing_token
+        self._effect_admitter = effect_admitter
         self._failpoint = failpoint
 
     def dispatch(
@@ -318,7 +326,7 @@ class BackendDispatchEffectService:
         if type(expected_head) is not JournalHead:
             raise TypeError("expected_head must be a JournalHead")
         if (
-            not self._valid_parent_request(parent)
+            not self._valid_cancel_parent(parent)
             or command.operation_id == parent.identity.correlation_id
             or expected_head.sequence < parent.event.sequence
         ):
@@ -334,6 +342,11 @@ class BackendDispatchEffectService:
             EffectOperation.CANCEL_TURN,
             EffectObjectType.TURN,
             expected_head,
+            request_identity=replace(
+                parent.identity,
+                coordinator_epoch=self._fencing_token,
+                correlation_id=command.operation_id,
+            ),
         )
         turn = (
             cancelled.observation
@@ -374,8 +387,13 @@ class BackendDispatchEffectService:
         operation: EffectOperation,
         object_type: EffectObjectType,
         expected_head: JournalHead,
+        *,
+        request_identity: ExecutionIdentity | None = None,
     ) -> _ChildResult:
-        identity = replace(parent_identity, correlation_id=command.operation_id)
+        identity = request_identity or replace(
+            parent_identity,
+            correlation_id=command.operation_id,
+        )
         request = EffectRequestPayload(
             operation,
             AdapterKind.BACKEND,
@@ -399,6 +417,19 @@ class BackendDispatchEffectService:
             )
         events = [appended.event]
         self._trigger("after_request_append", command.operation_id)
+        if self._effect_admitter is not None:
+            try:
+                effect_admitted = self._effect_admitter(appended.head, identity)
+            except Exception:  # noqa: BLE001 - admission failures stop the effect
+                effect_admitted = False
+            if effect_admitted is not True:
+                return _ChildResult(
+                    appended.head,
+                    tuple(events),
+                    None,
+                    None,
+                    BackendDispatchEffectReason.EFFECT_ABSENT,
+                )
         effect = PreparedEffect.from_append_result(appended, command)
         observation: ChannelObservation | TurnObservation
         if type(command) is ReserveChannel:
@@ -507,6 +538,20 @@ class BackendDispatchEffectService:
             and payload.object_type is EffectObjectType.WORKER
             and identity.is_attempt
             and identity.coordinator_epoch == self._fencing_token
+            and identity.correlation_id is not None
+        )
+
+    def _valid_cancel_parent(self, parent: PersistedEffectRequest) -> bool:
+        payload = parent.payload
+        identity = parent.identity
+        return (
+            parent.event.event_type is JournalEventType.DISPATCH_REQUESTED
+            and payload.operation is EffectOperation.WORKER_DISPATCH
+            and payload.adapter is AdapterKind.TASK
+            and payload.object_type is EffectObjectType.WORKER
+            and identity.is_attempt
+            and 0 < identity.coordinator_epoch <= self._fencing_token
+            and payload.fencing_token == identity.coordinator_epoch
             and identity.correlation_id is not None
         )
 
@@ -625,6 +670,7 @@ class BackendDispatchEffectService:
 
 __all__ = [
     "BackendDispatchEffectCrash",
+    "BackendDispatchEffectAdmitter",
     "BackendDispatchPort",
     "BackendDispatchEffectReason",
     "BackendDispatchResult",

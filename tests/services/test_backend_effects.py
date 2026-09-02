@@ -142,13 +142,21 @@ class BackendDispatchEffectServiceTests(unittest.TestCase):
         )
         return PersistedEffectRequest.from_append_result(result)
 
-    def service(self, channel=None, *, failpoint=None):
+    def service(
+        self,
+        channel=None,
+        *,
+        effect_admitter=None,
+        failpoint=None,
+        fencing_token=1,
+    ):
         return BackendDispatchEffectService(
             self.journal,
             channel or FakeBackendChannelPort(capabilities()),
             self.evidence,
             coordinator_id="coordinator-001",
-            fencing_token=1,
+            fencing_token=fencing_token,
+            effect_admitter=effect_admitter,
             failpoint=failpoint,
         )
 
@@ -198,6 +206,45 @@ class BackendDispatchEffectServiceTests(unittest.TestCase):
             self.assertEqual(evidence.digest, "sha256:" + hashlib.sha256(
                 self.evidence.read(evidence.digest)
             ).hexdigest())
+
+    def test_effect_admission_rejection_blocks_before_the_adapter_call(self) -> None:
+        channel = FakeBackendChannelPort(capabilities())
+        result = self.service(
+            channel,
+            effect_admitter=lambda _head, _identity: False,
+        ).dispatch(self.parent, plan())
+
+        self.assertIs(result.status, BackendDispatchEffectStatus.BLOCKED)
+        self.assertIs(result.reason, BackendDispatchEffectReason.EFFECT_ABSENT)
+        self.assertEqual(
+            (JournalEventType.EFFECT_REQUESTED,),
+            tuple(event.event_type for event in result.events),
+        )
+        self.assertIsNone(result.receipt)
+        self.assertEqual(0, channel.effect_count)
+
+    def test_effect_admission_exception_fails_closed_before_the_adapter_call(
+        self,
+    ) -> None:
+        channel = FakeBackendChannelPort(capabilities())
+
+        def unavailable(_head, _identity):
+            raise OSError("lease authority unavailable")
+
+        result = self.service(
+            channel,
+            effect_admitter=unavailable,
+        ).dispatch(self.parent, plan())
+
+        self.assertIs(result.status, BackendDispatchEffectStatus.BLOCKED)
+        self.assertIs(result.reason, BackendDispatchEffectReason.EFFECT_ABSENT)
+        self.assertEqual(1, len(result.events))
+        self.assertIsNone(result.receipt)
+        self.assertEqual(0, channel.effect_count)
+
+    def test_constructor_rejects_non_callable_effect_admission(self) -> None:
+        with self.assertRaises(TypeError):
+            self.service(effect_admitter=True)
 
     def test_unknown_send_is_durable_and_never_reported_as_applied(self) -> None:
         dispatch_plan = plan()
@@ -303,6 +350,39 @@ class BackendDispatchEffectServiceTests(unittest.TestCase):
         self.assertIs(result.receipt.operation, EffectOperation.CANCEL_TURN)
         self.assertIs(result.receipt.status, EffectStatus.UNKNOWN)
         self.assertTrue(result.receipt.evidence)
+
+    def test_takeover_epoch_can_cancel_but_cannot_dispatch_an_old_parent(self) -> None:
+        dispatch_plan = plan()
+        command = cancel_command()
+        channel = FakeBackendChannelPort(
+            capabilities(),
+            send_state=TurnState.RUNNING,
+        )
+        dispatched = self.service(channel).dispatch(self.parent, dispatch_plan)
+        takeover = self.service(channel, fencing_token=2)
+
+        blocked = takeover.dispatch(self.parent, dispatch_plan)
+        cancelled = takeover.cancel(
+            self.parent,
+            command,
+            expected_head=dispatched.head,
+        )
+
+        self.assertIs(blocked.status, BackendDispatchEffectStatus.BLOCKED)
+        self.assertIs(
+            blocked.reason,
+            BackendDispatchEffectReason.PARENT_REQUEST_INVALID,
+        )
+        self.assertEqual(self.parent.append_result.head, blocked.head)
+        self.assertEqual((), blocked.events)
+        self.assertIs(cancelled.status, BackendDispatchEffectStatus.APPLIED)
+        self.assertEqual(2, len(cancelled.events))
+        request, observation = cancelled.events
+        self.assertEqual(2, request.identity.coordinator_epoch)
+        self.assertEqual(2, request.payload.fencing_token)
+        self.assertEqual(2, observation.identity.coordinator_epoch)
+        assert cancelled.receipt is not None
+        self.assertEqual(2, cancelled.receipt.identity.coordinator_epoch)
 
     def test_cancel_evidence_is_durable_before_journal_observation(self) -> None:
         dispatch_plan = plan()

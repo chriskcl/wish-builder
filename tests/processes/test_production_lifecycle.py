@@ -29,6 +29,8 @@ from wish_builder.contracts.compatibility import Provider
 from wish_builder.contracts.runtime import (
     ActorType,
     AdapterKind,
+    EffectObjectType,
+    EffectObservationPayload,
     EffectOperation,
     EffectRequestPayload,
     EffectStatus,
@@ -62,6 +64,7 @@ from wish_builder.services.ports import (
     TrellisLifecycleState,
     TurnState,
 )
+from wish_builder.services.ports import PreparedEffect
 from wish_builder.services.trellis_lifecycle_effects import (
     TrellisLifecycleEffectCrash,
     TrellisLifecycleEffectService,
@@ -370,6 +373,7 @@ class ProductionLifecycleIntegrationTests(unittest.TestCase):
                 workspace_root=repository,
                 authority_clock=self.authority_clock,
             )
+        self.assertIsNotNone(built._lifecycle_factory)
         built._lifecycle_factory = factory.lifecycle_for
         self.addCleanup(built.close)
         self._seed_executing_graph(built)
@@ -448,6 +452,147 @@ class ProductionLifecycleIntegrationTests(unittest.TestCase):
         dispatched = built.coordinator(prepared.cursor).dispatch_reserved(identity)
         self.assertIs(dispatched.status, CoordinatorStatus.PROGRESSED)
         return identity, prepared, dispatched
+
+    def block_absent_git_preparation(
+        self,
+        built,
+        *,
+        request_hash: str | None = None,
+    ):
+        reserved = built.coordinator(built._test_active_cursor).reserve_ready(limit=1)
+        self.assertIs(reserved.status, CoordinatorStatus.PROGRESSED)
+        identity = reserved.reserved[0]
+        task = next(item for item in self.manifest.tasks if item.id == identity.task_id)
+        command = built._repository.plan_attempt(
+            identity,
+            owned_paths=task.owned_paths,
+            protected_paths=self.manifest.protected_paths,
+            allowed_auxiliary_paths=task.allowed_auxiliary_paths,
+            path_case_mode=self.manifest.path_case_mode,
+        )
+        coordinator = built.coordinator(reserved.cursor)
+        requested = coordinator._append_payload(
+            JournalEventType.EFFECT_REQUESTED,
+            identity,
+            EffectRequestPayload(
+                EffectOperation.REPOSITORY_UPDATE,
+                AdapterKind.GIT,
+                EffectObjectType.WORKTREE,
+                command.target_workspace_hash,
+                request_hash
+                or "sha256:" + canonical_sha256(command.to_primitive()),
+                coordinator.cursor.head.sequence,
+                identity.coordinator_epoch,
+            ),
+        )
+        self.assertIsNotNone(requested.event)
+        self.assertIsNotNone(requested.append_result)
+        receipt = built._repository.inspect_attempt(command).receipt
+        self.assertIs(receipt.status, EffectStatus.ABSENT)
+        observed = coordinator._append_payload(
+            JournalEventType.EFFECT_OBSERVED,
+            identity,
+            EffectObservationPayload(AdapterKind.GIT, receipt),
+            actor_type=ActorType.ADAPTER,
+            actor_id="git-worktree-adapter",
+        )
+        self.assertIsNotNone(observed.event)
+        blocked_task = coordinator._append_transition(
+            JournalEventType.TASK_BLOCKED,
+            ExecutionIdentity(identity.run_id, identity.coordinator_epoch, identity.task_id),
+            TransitionSubject.TASK,
+            RuntimeState.LEASED,
+            RuntimeState.BLOCKED,
+            reason_code=RuntimeReasonCode.GIT_STATE_CONFLICT,
+        )
+        self.assertIsNotNone(blocked_task.event)
+        blocked_run = coordinator._append_transition(
+            JournalEventType.RUN_BLOCKED,
+            ExecutionIdentity(identity.run_id, identity.coordinator_epoch),
+            TransitionSubject.RUN,
+            RuntimeState.RUNNING,
+            RuntimeState.BLOCKED,
+            reason_code=RuntimeReasonCode.GIT_STATE_CONFLICT,
+        )
+        self.assertIsNotNone(blocked_run.event)
+        return coordinator.cursor, command, requested.append_result
+
+    def test_durable_absent_git_preparation_is_automatically_requeued(self) -> None:
+        built, _factory = self.components()
+        blocked, _command, _append = self.block_absent_git_preparation(built)
+
+        with mock.patch.object(built, "_retry_admitted", return_value=True):
+            recovered = built.acquire_lease(blocked)
+
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        self.assertIs(recovered.snapshot.status, RuntimeState.RUNNING)
+        self.assertIs(recovered.snapshot.tasks[0].state, RuntimeState.READY)
+        self.assertEqual(
+            (
+                JournalEventType.ATTEMPT_RELEASED,
+                JournalEventType.TASK_RETRY_SCHEDULED,
+                JournalEventType.RUN_RESUMED,
+            ),
+            tuple(event.event_type for event in built._read_verified_events()[-3:]),
+        )
+
+    def test_absent_git_recovery_refuses_command_hash_mismatch(self) -> None:
+        built, _factory = self.components()
+        blocked, _command, _append = self.block_absent_git_preparation(
+            built,
+            request_hash="sha256:" + "f" * 64,
+        )
+
+        self.assertIsNone(built.acquire_lease(blocked))
+        self.assertNotIn(
+            JournalEventType.ATTEMPT_RELEASED,
+            tuple(event.event_type for event in built._read_verified_events()),
+        )
+
+    def test_absent_git_recovery_refuses_when_worktree_now_exists(self) -> None:
+        built, _factory = self.components()
+        blocked, command, append_result = self.block_absent_git_preparation(built)
+        created = built._repository.create_attempt(
+            PreparedEffect.from_append_result(append_result, command)
+        )
+        self.assertIs(created.disposition, production_module.AttemptEffectDisposition.APPLIED)
+
+        self.assertIsNone(built.acquire_lease(blocked))
+        self.assertNotIn(
+            JournalEventType.ATTEMPT_RELEASED,
+            tuple(event.event_type for event in built._read_verified_events()),
+        )
+
+    def test_absent_git_recovery_refuses_live_graph_drift(self) -> None:
+        built, _factory = self.components()
+        blocked, _command, _append = self.block_absent_git_preparation(built)
+        with mock.patch.object(built, "_live_graph_admitted", return_value=False):
+            recovered = built.acquire_lease(blocked)
+
+        self.assertIsNone(recovered)
+        self.assertNotIn(
+            JournalEventType.ATTEMPT_RELEASED,
+            tuple(event.event_type for event in built._read_verified_events()),
+        )
+
+    def test_absent_git_recovery_refuses_exhausted_retry_budget(self) -> None:
+        self.manifest = dataclasses.replace(
+            self.manifest,
+            execution_budget=dataclasses.replace(
+                self.manifest.execution_budget,
+                max_attempts_per_task=1,
+                max_attempts_per_run=1,
+            ),
+        )
+        built, _factory = self.components()
+        blocked, _command, _append = self.block_absent_git_preparation(built)
+
+        self.assertIsNone(built.acquire_lease(blocked))
+        self.assertNotIn(
+            JournalEventType.ATTEMPT_RELEASED,
+            tuple(event.event_type for event in built._read_verified_events()),
+        )
 
     @staticmethod
     def commit_result(prepared) -> str:

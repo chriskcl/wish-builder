@@ -160,8 +160,11 @@ Trellis 相容性和 backend 派工資格是兩份不同契約：
 - 透過官方 Core `loadTaskRecord`／`writeTaskRecord`，把單一寫入者的生命週期結果投影到權威 Trellis repository，並執行穩定讀取、寫前／寫後摘要檢查；寫前摘要衝突後不會自動重試；
 - 依賴、負責檔案、ready set 和需求追蹤檢查；
 - 與內容摘要綁定的 Gate 決定，後續修改會讓舊批准失效；
+- 可重複安全執行的 Gate B 正式寫入；即使 Journal 已有後續執行事件，也不會破壞或重寫它們；
 - append-only Journal、lease、epoch、fencing、checkpoint、replay 和 `GraphIndex` 重建；
-- 總控元件、隔離的 attempt worktree、固定 promotion 順序，以及使用模擬 subprocess 的端到端測試；
+- 具備可續期 scheduler lease 的前景總控、隔離的 attempt worktree、固定 promotion 順序，
+  以及使用模擬 subprocess 的端到端測試；
+- 重啟後能辨認已完成的 Codex turn、保留 worktree 身份，並且只在舊 worker 已確定結束時恢復；
 - 目標分支前進前，會在實際 promotion candidate 裡執行一般專案的驗收指令；
 - subprocess 隔離、輸出限制、timeout 與 fail-closed 恢復；
 - Git staging、promotion、cleanup、quarantine 和 trace/export service；
@@ -224,7 +227,7 @@ unzip wish-builder-skill-0.1.0.dev1.zip -d ~/.codex/skills
 Repository 內 ZIP 的 SHA-256（預發布下載檔請以該版本的 `SHA256SUMS` 為準）：
 
 ```text
-d1f3496a1058c7064189efce9291553b3378da802cacd92bb7f1031e3fb4bc88
+adcda3a2a2aaa26785e3def244a45a37d5df2e9d506c72b374ea86d7fd6bd58f
 ```
 
 Repository 已公開，也可以透過 Codex Skill installer 直接從 GitHub 安裝其中的 `wish-builder/` 目錄。
@@ -243,7 +246,10 @@ Use $wish-builder in this repository.
 或準備正式部署時才停下來問我。
 ```
 
-你不用一開始就寫完整規格。早期審閱會逐步找出使用者、問題、成功標準、範圍邊界和架構。目前預覽版適合驗證規劃與 manifest 準備流程，不應被理解成已能全程無人看管地正式派工。
+你不用一開始就寫完整規格。早期審閱會逐步找出使用者、問題、成功標準、範圍邊界和架構。
+目前預覽版可以把已批准的 Gate B 快照正式寫入，並以前景程序執行通過資格檢查的 manifest。
+它不是無人看管的背景服務：執行時要讓指令保持連線；若程序中斷，對同一份 manifest 重跑指令，
+就會進入受保護的恢復流程。
 
 ## 仍需要人決定的地方
 
@@ -284,6 +290,8 @@ Use $wish-builder in this repository.
 | `hash` | 計算 Gate 文件的 SHA-256 |
 | `snapshot-trellis` | 從官方 Trellis `0.6.15` task record 衍生 Wish Builder 任務圖快照 |
 | `import-trellis` | 把 Wish Builder 衍生的 Trellis 任務圖快照轉成 manifest v2 |
+| `admit-gate-b` | 核對並正式記錄已批准的 Gate B 快照，之後才允許執行 |
+| `run` | 在前景執行已准入且通過資格檢查的 manifest，重啟後走安全恢復流程 |
 | `backend-probe` | 不啟動 backend，檢查已安裝套件的精確版本、integrity、profile、OS 狀態與並行度上限 |
 | `decide` | 把 direct CLI Gate 決定寫入 Journal |
 | `resume` | 根據驗證過的恢復證明，恢復一項狀態不明的派工 |
@@ -296,6 +304,8 @@ python scripts/wishctl.py backend-probe --provider codex --provider-sdk-root C:/
 python scripts/wishctl.py validate path/to/execution-manifest.json --stage planning
 python scripts/wishctl.py snapshot-trellis <parent-task-id> --core-archive path/to/mindfoldhq-trellis-core-0.6.15.tgz --output trellis-graph.json
 python scripts/wishctl.py import-trellis path/to/trellis-graph.json path/to/import-settings.json --output execution-manifest.json
+python scripts/wishctl.py admit-gate-b execution-manifest.json gate-b-<sha256>.md import-settings.json --approved-artifact-hash <sha256> --runtime-root path/to/run --workspace-root . --actor-id <actor>
+python scripts/wishctl.py run execution-manifest.json --runtime-root path/to/run --workspace-root . --provider-sdk-root C:/path/to/pinned-sdk-root --core-root C:/path/to/trellis-core
 ```
 
 安裝後的 Skill 也提供相同 runtime：`wish-builder/scripts/wishctl.py`。`backend-probe` 只有在
@@ -345,11 +355,11 @@ python scripts\manage_backend_versions.py quarantine --help
 | 檢查 | 結果 |
 | --- | --- |
 | 較早的本地非效能矩陣 | Windows／Linux × Python 3.11／3.12／3.13；每格執行 1,498 項，0 failure、0 error；Windows 允許略過 9 項，Linux 允許略過 13 項 |
-| 最新本地完整測試 | Windows／Python 3.13；1,534 項非效能測試加 16 項效能測試，0 failure、0 error，3 項平台條件式略過 |
+| 最新本地完整測試 | Windows／Python 3.13.14；1,601 項非效能測試加 16 項效能測試，0 failure、0 error，3 項平台條件式略過 |
 | Codex/Windows 證據獨立核對 | 52 項通過，1 項因 Windows symlink 權限略過；結論為 `PASS` |
 | 發布後資格與准入測試 | 68 項通過，1 項因 Windows symlink 權限略過，另有 59 個 subtests 通過 |
-| 官方 Trellis `0.6.15` 整合 | Windows 與 Linux 各通過 22 項 Node 和 7 項 Python 測試 |
-| Skill 打包與已安裝 runtime | 15 項套件內容與 runtime 打包測試，以及 13 項安裝後 Skill 測試通過 |
+| 官方 Trellis `0.6.15` 整合 | 本次 Windows 通過 25 項 Node bridge 測試與 14 項 Python 整合測試；固定的跨平台證據在各平台保留相同測試集 |
+| Skill 打包與已安裝 runtime | 完整套件中的 245 項打包與發布規則測試，以及 13 項 standalone runtime smoke tests 通過 |
 | Python 編譯與空白格式檢查 | 通過 |
 
 以上都是本地結果。GitHub Actions 因預算用完而沒有執行，因此本項目不會把候選版本描述成 CI 通過或失敗。`Codex / Windows` 的資格同樣是本地正式發布，不是 provider 官方認證。
@@ -357,9 +367,9 @@ python scripts\manage_backend_versions.py quarantine --help
 本機主要測試指令：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\ci_test_suite.py --exclude-package performance
-.\.venv\Scripts\python.exe scripts\ci_test_suite.py --only-package performance
-.\.venv\Scripts\python.exe wish-builder\scripts\test_wishctl.py
+uv run --python 3.13.14 --no-project python scripts\ci_test_suite.py --exclude-package performance
+uv run --python 3.13.14 --no-project python scripts\ci_test_suite.py --only-package performance
+uv run --python 3.13.14 --no-project python wish-builder\scripts\test_wishctl.py
 ```
 
 若需要更嚴格、可重建的發行資料，仍可選用以下本地工具，把原始結果和發行檔綁定到同一個 commit：

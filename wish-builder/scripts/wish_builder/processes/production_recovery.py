@@ -302,6 +302,7 @@ def reconcile_pending_external_effects(
 
     backend_retry_commands: dict[str, BackendRecoveryCommand] = {}
     lifecycle_retry_commands: dict[str, TrellisLifecycleRecoveryCommand] = {}
+    stale_cancel_retry_operation_ids: set[str] = set()
     for pending, observation in preflight:
         if observation.status is not EffectStatus.ABSENT:
             continue
@@ -336,6 +337,21 @@ def reconcile_pending_external_effects(
                 cursor,
                 operation_id=pending.operation_id,
             )
+        if _is_stale_takeover_cancel(pending, lease.fencing_token):
+            if (
+                type(command) is not CancelTurn
+                or type(plan) is not BackendDispatchPlan
+                or command.reason_code != "lease_lost_takeover"
+                or command.attempt_id != plan.send.attempt_id
+                or command.channel_id != plan.send.channel_id
+                or command.turn_id != plan.send.turn_id
+            ):
+                return _blocked(
+                    ProductionExternalEffectRecoveryReason.COMMAND_REQUIRED,
+                    cursor,
+                    operation_id=pending.operation_id,
+                )
+            stale_cancel_retry_operation_ids.add(pending.operation_id)
         if pending.adapter is AdapterKind.BACKEND:
             assert type(command) in {
                 ReserveChannel,
@@ -361,6 +377,9 @@ def reconcile_pending_external_effects(
         coordinator_id=lease.coordinator_id,
         fencing_token=lease.fencing_token,
         retry_admitted=retry_admitted,
+        stale_cancel_retry_operation_ids=frozenset(
+            stale_cancel_retry_operation_ids
+        ),
     )
     lifecycle_recovery = TrellisLifecycleEffectRecoveryService(
         journal,
@@ -529,6 +548,7 @@ def _inspect_for_preflight(
     if (
         observation.status is EffectStatus.ABSENT
         and pending.request_event.identity.coordinator_epoch != fencing_token
+        and not _is_stale_takeover_cancel(pending, fencing_token)
     ):
         return None, ExternalEffectRecoveryResult(
             ExternalEffectRecoveryStatus.BLOCKED,
@@ -537,6 +557,17 @@ def _inspect_for_preflight(
             observation,
         )
     return observation, None
+
+
+def _is_stale_takeover_cancel(
+    pending: PendingExternalEffect,
+    fencing_token: int,
+) -> bool:
+    return (
+        pending.adapter is AdapterKind.BACKEND
+        and pending.operation is EffectOperation.CANCEL_TURN
+        and pending.request_event.identity.coordinator_epoch < fencing_token
+    )
 
 
 def _inspect_backend(

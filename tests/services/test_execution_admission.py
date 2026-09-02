@@ -14,6 +14,12 @@ from wish_builder.contracts import (
     DecisionRequest,
     DecisionRequestPayload,
     DecisionType,
+    EvidenceProducer,
+    EvidenceRef,
+    EvidenceRenderPolicy,
+    EvidenceRole,
+    EvidenceSensitivity,
+    EvidenceType,
     ExecutionIdentity,
     JournalEvent,
     JournalEventType,
@@ -27,11 +33,38 @@ from wish_builder.services.execution_admission import (
     ExecutionAdmissionReason,
     admit_execution_snapshot,
 )
+from wish_builder.services.gate_b_bootstrap import (
+    gate_b_artifact_nonce,
+    graph_projection_bytes,
+)
 from wish_builder.services.journal import GENESIS_HEAD
 
 
 NOW = "2026-08-19T01:00:00Z"
 WORKSPACE_HASH = "sha256:" + "b" * 64
+GATE_B_ARTIFACT_HASH = "sha256:" + "e" * 64
+TRELLIS_SOURCE_HASH = "sha256:" + "f" * 64
+
+
+def _evidence(
+    manifest,
+    digest: str,
+    byte_length: int,
+    external_object_id: str,
+) -> EvidenceRef:
+    identity = ExecutionIdentity(manifest.run_id, 1)
+    return EvidenceRef(
+        1,
+        digest,
+        byte_length,
+        EvidenceType.CONTRACT,
+        EvidenceProducer(identity, external_object_id=external_object_id),
+        NOW,
+        EvidenceSensitivity.INTERNAL,
+        EvidenceRenderPolicy.METADATA_ONLY,
+        EvidenceRole.REQUIRED,
+        digest,
+    )
 
 
 def _event(
@@ -65,6 +98,29 @@ def admitted_events(
 ):
     manifest = one_task_manifest()
     events: list[JournalEvent] = []
+    for event_type, from_state, to_state in (
+        (JournalEventType.RUN_INITIALIZED, RuntimeState.NONE, RuntimeState.PREFLIGHT),
+        (
+            JournalEventType.PREFLIGHT_COMPLETED,
+            RuntimeState.PREFLIGHT,
+            RuntimeState.DISCOVERY,
+        ),
+        (
+            JournalEventType.DISCOVERY_COMPLETED,
+            RuntimeState.DISCOVERY,
+            RuntimeState.GATE_A_PENDING,
+        ),
+        (
+            JournalEventType.GATE_APPROVED,
+            RuntimeState.GATE_A_PENDING,
+            RuntimeState.TRELLIS_PREPARATION,
+        ),
+    ):
+        _event(
+            events,
+            event_type,
+            TransitionPayload(TransitionSubject.RUN, from_state, to_state),
+        )
     if include_import:
         _event(
             events,
@@ -73,6 +129,20 @@ def admitted_events(
                 TransitionSubject.RUN,
                 RuntimeState.TRELLIS_PREPARATION,
                 RuntimeState.GATE_B_PENDING,
+                (
+                    _evidence(
+                        manifest,
+                        manifest.trellis_graph_digest,
+                        len(graph_projection_bytes(manifest)),
+                        "trellis-material-graph",
+                    ),
+                    _evidence(
+                        manifest,
+                        TRELLIS_SOURCE_HASH,
+                        512,
+                        "trellis-stable-snapshot",
+                    ),
+                ),
             ),
         )
     coordinator = ActorIdentity(
@@ -89,7 +159,7 @@ def admitted_events(
             "REQUEST-GATE-B-001",
             CommandKind.DECIDE,
             len(events) + 1,
-            "nonce-gate-b-001",
+            gate_b_artifact_nonce(GATE_B_ARTIFACT_HASH),
             coordinator,
             SourceChannel.COORDINATOR,
             NOW,
@@ -144,6 +214,26 @@ def admitted_events(
             TransitionSubject.RUN,
             RuntimeState.GATE_B_PENDING,
             RuntimeState.EXECUTING,
+            (
+                _evidence(
+                    manifest,
+                    GATE_B_ARTIFACT_HASH,
+                    1024,
+                    "gate-b-approved-artifact",
+                ),
+                _evidence(
+                    manifest,
+                    manifest.trellis_graph_digest,
+                    len(graph_projection_bytes(manifest)),
+                    "trellis-material-graph",
+                ),
+                _evidence(
+                    manifest,
+                    manifest.canonical_sha256(),
+                    len(manifest.canonical_json_bytes()),
+                    "execution-manifest-v2",
+                ),
+            ),
         ),
     )
     return manifest, events
@@ -161,9 +251,9 @@ class ExecutionSnapshotAdmissionTests(unittest.TestCase):
 
         self.assertTrue(result.admitted)
         self.assertIs(result.reason, ExecutionAdmissionReason.NONE)
-        self.assertEqual(2, result.request_event.sequence)
-        self.assertEqual(3, result.decision_event.sequence)
-        self.assertEqual(4, result.frozen_event.sequence)
+        self.assertEqual(6, result.request_event.sequence)
+        self.assertEqual(7, result.decision_event.sequence)
+        self.assertEqual(8, result.frozen_event.sequence)
 
     def test_empty_broken_or_wrong_run_journal_is_rejected(self) -> None:
         manifest, events = admitted_events()
@@ -224,11 +314,15 @@ class ExecutionSnapshotAdmissionTests(unittest.TestCase):
 
     def test_new_request_or_graph_import_invalidates_the_old_approval(self) -> None:
         manifest, events = admitted_events()
-        request = events[1].payload.request
+        request = next(
+            event.payload.request
+            for event in events
+            if event.event_type is JournalEventType.DECISION_REQUESTED
+        )
         pending = list(events)
         pending_event = JournalEvent.create(
-            sequence=5,
-            event_id="EVENT-ADMISSION-PENDING-0005",
+            sequence=len(pending) + 1,
+            event_id="EVENT-ADMISSION-PENDING-0009",
             event_type=JournalEventType.DECISION_REQUESTED,
             identity=ExecutionIdentity(manifest.run_id, 1),
             actor_type=ActorType.COORDINATOR,
@@ -242,7 +336,7 @@ class ExecutionSnapshotAdmissionTests(unittest.TestCase):
                         request.command,
                         command_id="COMMAND-GATE-B-002",
                         request_id="REQUEST-GATE-B-002",
-                        expected_sequence=5,
+                        expected_sequence=len(pending) + 1,
                         request_nonce="nonce-gate-b-002",
                     ),
                 )

@@ -779,6 +779,53 @@ class SafetyEvidenceTests(unittest.TestCase):
             {error["code"] for error in result["errors"]},
         )
 
+    def test_registered_mutation_maps_branchless_replacement_hunk(self) -> None:
+        adapter = self.root / ADAPTER_PATH
+        old_source = "def promote(allowed):\n    return allowed\n"
+        new_source = "def promote(allowed):\n    return bool(allowed)\n"
+        adapter.write_text(new_source, encoding="utf-8")
+        spec = MutationSpec(
+            "TEST-BRANCHLESS-RETURN",
+            "The branchless safety conversion remains directly tested.",
+            ADAPTER_PATH,
+            "    return bool(allowed)\n",
+            "    return True\n",
+            ("tests.example.ExampleTests.test_conversion",),
+        )
+        report = mutation_report()
+        result_entry = report["results"][0]
+        assert isinstance(result_entry, dict)
+        result_entry.update(
+            {
+                "invariant": spec.invariant,
+                "mutation_id": spec.mutation_id,
+                "source_path": spec.source_path,
+                "test_ids": list(spec.test_ids),
+            }
+        )
+        coverage = coverage_report()
+        coverage["files"][ADAPTER_PATH] = coverage_file(
+            executed_branches=[],
+            executed_lines=[1, 2],
+        )
+
+        result = evaluate_safety_evidence(
+            coverage,
+            report,
+            changed_lines(
+                (2, 2),
+                path=ADAPTER_PATH,
+                old_source=old_source,
+                new_source=new_source,
+            ),
+            source_root=self.root,
+            specs=(spec,),
+            path_registry=self.registry,
+        )
+
+        self.assertEqual([], result["errors"])
+        self.assertEqual("pass", result["status"])
+
     def test_replacement_cannot_borrow_evidence_from_an_outer_branch_body(self) -> None:
         adapter = self.root / ADAPTER_PATH
         adapter.write_text(
@@ -1608,12 +1655,114 @@ class SafetyEvidenceTests(unittest.TestCase):
 
         self.assertEqual(2, len(projections))
         self.assertEqual(1, len({item.owner_key for item in projections}))
-        self.assertTrue(projections[0].owner_key.startswith("module/function:promote:"))
+        self.assertEqual("module/function:promote[0]", projections[0].owner_key)
         self.assertEqual(
             [(2, 2), (2, 2)],
             [(item.first_line, item.last_line) for item in projections],
         )
         self.assertEqual(2, len({item.branch_id for item in projections}))
+
+    def test_owner_identity_survives_signature_and_sibling_insertion(self) -> None:
+        old_source = (
+            "class Coordinator:\n"
+            "    def run(self, ready):\n"
+            "        if ready and self.active:\n"
+            "            return 'run'\n"
+            "        return 'wait'\n"
+        )
+        new_source = (
+            "class Coordinator(object):\n"
+            "    def inspect(self):\n"
+            "        return 'ok'\n"
+            "\n"
+            "    def run(self, ready, *, lease=None):\n"
+            "        if ready and self.active:\n"
+            "            return 'run'\n"
+            "        return 'wait'\n"
+        )
+
+        old_projections = _branch_projections(old_source)
+        new_projections = _branch_projections(new_source)
+
+        self.assertEqual(
+            [item.structural_key for item in old_projections],
+            [item.structural_key for item in new_projections],
+        )
+        self.assertEqual(
+            "module/class:Coordinator[0]/function:run[0]",
+            old_projections[0].owner_key,
+        )
+
+    def test_duplicate_handlers_survive_non_branch_statement_insertion(self) -> None:
+        old_source = (
+            "def run():\n"
+            "    try:\n"
+            "        work()\n"
+            "    except OSError:\n"
+            "        recover()\n"
+            "    try:\n"
+            "        work()\n"
+            "    except OSError:\n"
+            "        recover()\n"
+        )
+        new_source = old_source.replace(
+            "def run():\n",
+            "def run():\n    audit()\n",
+        )
+
+        old_handlers = [
+            item
+            for item in _branch_projections(old_source)
+            if item.kind == "ExceptHandler"
+        ]
+        new_handlers = [
+            item
+            for item in _branch_projections(new_source)
+            if item.kind == "ExceptHandler"
+        ]
+
+        self.assertEqual(
+            [item.structural_key for item in old_handlers],
+            [item.structural_key for item in new_handlers],
+        )
+        self.assertEqual(2, len({item.ast_path for item in old_handlers}))
+
+    def test_exact_boolean_decision_can_move_within_one_owner(self) -> None:
+        old_source = (
+            "def promote(allowed, ready):\n"
+            "    if allowed and ready:\n"
+            "        return 'promoted'\n"
+            "    return 'blocked'\n"
+        )
+        new_source = old_source.replace(
+            "    if allowed and ready:\n",
+            "    audit()\n    if allowed and ready:\n",
+        )
+        (self.root / ADAPTER_PATH).write_text(new_source, encoding="utf-8")
+        coverage = coverage_report()
+        coverage["files"][ADAPTER_PATH] = coverage_file(
+            executed_branches=[[3, 4], [3, 5]],
+            executed_lines=[1, 2, 3, 4, 5],
+        )
+
+        result = evaluate_safety_evidence(
+            coverage,
+            mutation_report(),
+            changed_lines(
+                (2, 3),
+                path=ADAPTER_PATH,
+                old_source=old_source,
+                new_source=new_source,
+            ),
+            source_root=self.root,
+            specs=(SPEC,),
+            path_registry=self.registry,
+        )
+
+        self.assertNotIn(
+            "changed_safety_deletion_unproven",
+            {error["code"] for error in result["errors"]},
+        )
 
     def test_control_flow_inventory_counts_each_boolean_short_circuit(self) -> None:
         old_source = (
