@@ -18,6 +18,10 @@ This file records user-visible changes to Wish Builder.
   evidence, with 25 Node tests and 14 Python tests on each supported CI platform.
 - Fixed lifecycle recovery so an interrupted bridge cannot leave a lock file that permanently
   blocks later Trellis progress updates or makes the checkout look dirty.
+- Fixed cancellation takeover so losing the coordinator lease halfway through recovery resumes
+  the same attempt, reuses a cancellation the provider already completed, and accepts the
+  original dispatch receipt after a later coordinator epoch without leaving the task stuck. If
+  two approved turns were interrupted together, both are now recovered one at a time.
 - Added an exact backend/OS/version qualification registry with protocol profiles, local SDK
   probing, candidate and quarantine states, and fail-closed admission before runtime setup.
 - Locally published the independently reviewed Codex/Windows backend qualification with a

@@ -146,24 +146,41 @@ def _recovered_cancel_authority_matches(
     *,
     manifest_digest: str,
 ) -> bool:
-    """Prove a reconciled cancellation was written under its historical lease."""
+    """Prove an observed or reconciled cancellation used historical authority."""
 
+    normal_observation = (
+        type(event) is JournalEvent
+        and event.event_type is JournalEventType.EFFECT_OBSERVED
+    )
+    reconciled_observation = (
+        type(event) is JournalEvent
+        and event.event_type is JournalEventType.EFFECT_RECONCILED
+    )
     if (
         type(event) is not JournalEvent
         or type(journal_prefix) is not tuple
         or not journal_prefix
         or not all(type(item) is JournalEvent for item in journal_prefix)
         or journal_prefix[-1] != event
-        or event.event_type is not JournalEventType.EFFECT_RECONCILED
-        or event.actor_type is not ActorType.COORDINATOR
+        or not (normal_observation or reconciled_observation)
         or type(event.payload) is not EffectObservationPayload
         or event.payload.adapter is not AdapterKind.BACKEND
         or event.payload.receipt.operation is not EffectOperation.CANCEL_TURN
+        or event.payload.receipt.status is not EffectStatus.APPLIED
         or type(manifest_digest) is not str
         or not manifest_digest
     ):
         return False
     receipt = event.payload.receipt
+    if normal_observation:
+        if (
+            event.actor_type is not ActorType.ADAPTER
+            or event.actor_id != "backend-channel-adapter"
+            or event.identity != receipt.identity
+        ):
+            return False
+    elif event.actor_type is not ActorType.COORDINATOR:
+        return False
     matching_requests = tuple(
         candidate
         for candidate in journal_prefix[:-1]
@@ -206,6 +223,18 @@ def _recovered_cancel_authority_matches(
         lease = lease_state.lease
         if lease is None:
             return False
+        if normal_observation:
+            if (
+                not lease_state.active
+                or lease.coordinator_id != request_event.actor_id
+                or lease.fencing_token
+                != request_event.identity.coordinator_epoch
+                or lease.manifest_digest != manifest_digest
+                or lease.scheduler_mode is not SchedulerMode.WISH_BUILDER
+            ):
+                return False
+            lease_state.advance(event)
+            return True
         recorded_at = datetime.fromisoformat(
             event.recorded_at[:-1] + "+00:00"
         ).astimezone(timezone.utc)
@@ -1566,13 +1595,37 @@ class ForegroundCoordinator:
                 CoordinatorReason.NONE,
                 reserved=(reclaimed_identity,),
             )
+
+        recovery_step: int | None = None
+        if (
+            attempt.coordinator_epoch == identity.coordinator_epoch
+            and attempt.correlation_id == identity.correlation_id
+        ):
+            if (
+                attempt.state is RuntimeState.RUNNING
+                and task_state is RuntimeState.DISPATCHED
+            ):
+                recovery_step = 0
+            elif (
+                attempt.state is RuntimeState.CANCEL_REQUESTED
+                and attempt.reason_code is RuntimeReasonCode.LEASE_LOST
+                and task_state is RuntimeState.DISPATCHED
+            ):
+                recovery_step = 1
+            elif (
+                attempt.state is RuntimeState.TERMINATED
+                and attempt.reason_code is RuntimeReasonCode.LEASE_LOST
+            ):
+                recovery_step = {
+                    RuntimeState.DISPATCHED: 2,
+                    RuntimeState.BLOCKED: 3,
+                    RuntimeState.READY: 4,
+                    RuntimeState.LEASED: 5,
+                }.get(task_state)
         if (
             owned_path_changes is None
             or owned_path_changes
-            or attempt.state is not RuntimeState.RUNNING
-            or attempt.coordinator_epoch != identity.coordinator_epoch
-            or attempt.correlation_id != identity.correlation_id
-            or task_state is not RuntimeState.DISPATCHED
+            or recovery_step is None
             or self._backend_effects is None
             or self._backend_plan_factory is None
         ):
@@ -1599,7 +1652,11 @@ class ForegroundCoordinator:
                 manifest_digest=self._manifest_digest,
             )
             if (
-                recovered_event.event_type is not JournalEventType.EFFECT_RECONCILED
+                recovered_event.event_type
+                not in {
+                    JournalEventType.EFFECT_OBSERVED,
+                    JournalEventType.EFFECT_RECONCILED,
+                }
                 or type(payload) is not EffectObservationPayload
                 or payload.adapter is not AdapterKind.BACKEND
                 or payload.receipt.operation is not EffectOperation.CANCEL_TURN
@@ -1620,7 +1677,6 @@ class ForegroundCoordinator:
                 or recovered_event.identity.coordinator_epoch
                 < payload.receipt.identity.coordinator_epoch
                 or recovered_event.identity.coordinator_epoch > self._fencing_token
-                or recovered_event.actor_type is not ActorType.COORDINATOR
                 or recovered_event.sequence > self._cursor.head.sequence
                 or not reconciler_authorized
             ):
@@ -1791,7 +1847,9 @@ class ForegroundCoordinator:
                 None,
             ),
         )
-        for event_type, event_identity, subject, from_state, to_state, reason in steps:
+        for event_type, event_identity, subject, from_state, to_state, reason in steps[
+            recovery_step:
+        ]:
             appended = self._append_transition(
                 event_type,
                 event_identity,
@@ -1838,7 +1896,15 @@ class ForegroundCoordinator:
             and observation.receipt.operation is EffectOperation.WORKER_DISPATCH
             and observation.receipt.status is EffectStatus.APPLIED
             and bool(observation.receipt.evidence)
-            and observation_event.identity == request_event.identity
+            and observation_event.actor_type is ActorType.ADAPTER
+            and observation_event.actor_id == "task-adapter"
+            and observation_event.identity.run_id == request_event.identity.run_id
+            and observation_event.identity.task_id == request_event.identity.task_id
+            and observation_event.identity.attempt == request_event.identity.attempt
+            and observation_event.identity.correlation_id
+            == request_event.identity.correlation_id
+            and observation_event.identity.coordinator_epoch
+            >= request_event.identity.coordinator_epoch
             and observation_event.sequence > request_event.sequence
         )
 

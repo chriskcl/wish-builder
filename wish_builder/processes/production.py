@@ -76,7 +76,7 @@ from wish_builder.contracts.runtime import (
     RuntimeReasonCode,
     RuntimeState,
 )
-from wish_builder.kernel.state import apply_journal_event
+from wish_builder.kernel.state import AttemptProjection, apply_journal_event
 from wish_builder.processes.acceptance import ProcessAcceptancePort
 from wish_builder.processes.coordinator import (
     CoordinatorCursor,
@@ -1504,22 +1504,105 @@ class ProductionForegroundRunComponents:
         self,
         cursor: CoordinatorCursor,
     ) -> CoordinatorCursor | None:
-        """Re-fence one cancelled prior-epoch dispatch with untouched ownership."""
+        """Re-fence every proven prior-epoch dispatch in stable task order."""
 
-        candidates = tuple(
-            attempt
-            for attempt in cursor.snapshot.attempts
-            if attempt.coordinator_epoch < self._fencing_token
-            and attempt.state is RuntimeState.RUNNING
-        )
-        if not candidates:
-            return cursor
-        if len(candidates) != 1 or cursor.snapshot.status is not RuntimeState.RUNNING:
-            return None
-        attempt = candidates[0]
-        task_state = dict(cursor.graph_index.task_states).get(attempt.task_id)
-        if task_state is not RuntimeState.DISPATCHED:
-            return None
+        current = cursor
+        while True:
+            try:
+                events = self._read_verified_events()
+            except Exception:
+                return None
+            dispatch_requests = tuple(
+                event
+                for event in events
+                if event.event_type is JournalEventType.DISPATCH_REQUESTED
+                and type(event.payload) is EffectRequestPayload
+                and event.payload.adapter is AdapterKind.TASK
+                and event.payload.operation is EffectOperation.WORKER_DISPATCH
+                and event.payload.object_type is EffectObjectType.WORKER
+            )
+            dispatch_observations = tuple(
+                event
+                for event in events
+                if event.event_type is JournalEventType.DISPATCH_OBSERVED
+            )
+            applied_dispatch_identities = {
+                request.identity
+                for request in dispatch_requests
+                if any(
+                    ForegroundCoordinator._applied_dispatch_events_match(
+                        request,
+                        observation,
+                    )
+                    for observation in dispatch_observations
+                )
+            }
+            task_states = dict(current.graph_index.task_states)
+            candidates = tuple(
+                attempt
+                for attempt in current.snapshot.attempts
+                if attempt.coordinator_epoch < self._fencing_token
+                and ExecutionIdentity(
+                    self._manifest.run_id,
+                    attempt.coordinator_epoch,
+                    attempt.task_id,
+                    attempt.attempt,
+                    attempt.correlation_id,
+                )
+                in applied_dispatch_identities
+                and (
+                    (
+                        attempt.state is RuntimeState.RUNNING
+                        and task_states.get(attempt.task_id)
+                        is RuntimeState.DISPATCHED
+                    )
+                    or (
+                        attempt.state is RuntimeState.CANCEL_REQUESTED
+                        and attempt.reason_code is RuntimeReasonCode.LEASE_LOST
+                        and task_states.get(attempt.task_id)
+                        is RuntimeState.DISPATCHED
+                    )
+                    or (
+                        attempt.state is RuntimeState.TERMINATED
+                        and attempt.reason_code is RuntimeReasonCode.LEASE_LOST
+                        and task_states.get(attempt.task_id)
+                        in {
+                            RuntimeState.DISPATCHED,
+                            RuntimeState.BLOCKED,
+                            RuntimeState.READY,
+                            RuntimeState.LEASED,
+                        }
+                    )
+                )
+            )
+            if not candidates:
+                return current
+            if current.snapshot.status is not RuntimeState.RUNNING:
+                return None
+            attempt = min(
+                candidates,
+                key=lambda item: (
+                    item.task_id,
+                    item.attempt,
+                    item.coordinator_epoch,
+                    item.correlation_id,
+                ),
+            )
+            recovered = self._recover_one_cancelled_dispatch(
+                current,
+                events,
+                attempt,
+            )
+            if recovered is None:
+                return None
+            current = recovered
+
+    def _recover_one_cancelled_dispatch(
+        self,
+        cursor: CoordinatorCursor,
+        events: tuple[JournalEvent, ...],
+        attempt: AttemptProjection,
+    ) -> CoordinatorCursor | None:
         identity = ExecutionIdentity(
             self._manifest.run_id,
             attempt.coordinator_epoch,
@@ -1528,7 +1611,6 @@ class ProductionForegroundRunComponents:
             attempt.correlation_id,
         )
         try:
-            events = self._read_verified_events()
             requests = tuple(
                 event
                 for event in events
@@ -1539,19 +1621,18 @@ class ProductionForegroundRunComponents:
                 and event.payload.operation is EffectOperation.WORKER_DISPATCH
                 and event.payload.object_type is EffectObjectType.WORKER
             )
+            if len(requests) != 1:
+                return None
             observations = tuple(
                 event
                 for event in events
                 if event.event_type is JournalEventType.DISPATCH_OBSERVED
-                and event.identity == identity
-                and type(event.payload) is EffectObservationPayload
-                and event.payload.adapter is AdapterKind.TASK
-                and event.payload.receipt.identity == identity
-                and event.payload.receipt.operation
-                is EffectOperation.WORKER_DISPATCH
-                and event.payload.receipt.status is EffectStatus.APPLIED
+                and ForegroundCoordinator._applied_dispatch_events_match(
+                    requests[0],
+                    event,
+                )
             )
-            if len(requests) != 1 or len(observations) != 1:
+            if len(observations) != 1:
                 return None
             cancel_requests = tuple(
                 event
@@ -1572,7 +1653,11 @@ class ProductionForegroundRunComponents:
                 (request, event)
                 for request in cancel_requests
                 for event in events
-                if event.event_type is JournalEventType.EFFECT_RECONCILED
+                if event.event_type
+                in {
+                    JournalEventType.EFFECT_OBSERVED,
+                    JournalEventType.EFFECT_RECONCILED,
+                }
                 and type(event.payload) is EffectObservationPayload
                 and event.payload.adapter is AdapterKind.BACKEND
                 and event.payload.receipt.operation

@@ -29,12 +29,16 @@ from tests.adapters.test_trellis_graph_import import (
     snapshot as trellis_snapshot,
 )
 from tests.adapters.test_trellis_graph_import import (
+    settings as trellis_settings,
+)
+from tests.adapters.test_trellis_graph_import import (
     task as trellis_task,
 )
 from tests.processes.test_production_routing import attempt_worktree
 from tests.services.test_gate_b_bootstrap import material as gate_b_material
 from wish_builder.adapters.trellis import (
     FakeTrellisGraphPort,
+    import_trellis_snapshot,
 )
 from wish_builder.adapters.process_identity import (
     LeaseOwnerProcessProbeResult,
@@ -44,11 +48,13 @@ from wish_builder.compatibility import load_bundled_compatibility
 from wish_builder.contracts import WorkerProvider
 from wish_builder.contracts.compatibility import Platform, Provider
 from wish_builder.contracts.runtime import (
+    ActorType,
     EffectOperation,
     EffectStatus,
     ExecutionIdentity,
     JournalEventType,
     RuntimeState,
+    TransitionSubject,
 )
 from wish_builder.processes import (
     CoordinatorReason,
@@ -99,6 +105,31 @@ def one_task_graph_snapshot():
     value = trellis_payload()
     value["requirements"] = [value["requirements"][0]]
     value["tasks"] = [trellis_task("trellis/only", "REQ-001")]
+    return trellis_snapshot(value)
+
+
+def parallel_graph_snapshot():
+    value = trellis_payload()
+    foundation_id = "trellis/foundation"
+    left = trellis_task(
+        "trellis/left",
+        "REQ-002",
+        depends_on=[foundation_id],
+        wave=1,
+    )
+    right = trellis_task(
+        "trellis/right",
+        "REQ-002",
+        depends_on=[foundation_id],
+        wave=1,
+    )
+    right["owned_paths"] = ["src/req-002-right/**"]
+    right["allowed_auxiliary_paths"] = ["tests/req-002-right/**"]
+    value["tasks"] = [
+        trellis_task(foundation_id, "REQ-001"),
+        left,
+        right,
+    ]
     return trellis_snapshot(value)
 
 
@@ -870,7 +901,18 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
         )
         self.authority_clock = IncrementingAuthorityClock()
 
-    def components(self) -> ProductionForegroundRunComponents:
+    def components(
+        self,
+        *,
+        manifest=None,
+        graph_snapshot=None,
+    ) -> ProductionForegroundRunComponents:
+        selected_manifest = self.manifest if manifest is None else manifest
+        selected_snapshot = (
+            one_task_graph_snapshot()
+            if graph_snapshot is None
+            else graph_snapshot
+        )
         command = (
             str((self.root / "node.exe").absolute()),
             str((self.root / "bridge.mjs").absolute()),
@@ -887,11 +929,11 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
             mock.patch.object(
                 production_module,
                 "TrellisCoreGraphPort",
-                return_value=FakeTrellisGraphPort(one_task_graph_snapshot()),
+                return_value=FakeTrellisGraphPort(selected_snapshot),
             ),
         ):
             built = ProductionForegroundRunComponents.from_runtime_inputs(
-                self.manifest,
+                selected_manifest,
                 runtime_root=self.runtime_root,
                 workspace_root=self.repository,
                 authority_clock=self.authority_clock,
@@ -1004,6 +1046,474 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
             identity,
             f"CANCEL-{cancel_suffix}",
         )
+
+    def test_takeover_candidate_requires_original_dispatch_evidence(self) -> None:
+        built, recovered, _state, cancel_calls, identity, operation_id = (
+            self.running_attempt_takeover()
+        )
+        built._fencing_token = identity.coordinator_epoch + 1
+        events = built._read_verified_events()
+        request = next(
+            event
+            for event in events
+            if event.event_type is JournalEventType.DISPATCH_REQUESTED
+            and event.identity == identity
+        )
+        observation = next(
+            event
+            for event in events
+            if event.event_type is JournalEventType.DISPATCH_OBSERVED
+            and event.identity == identity
+        )
+
+        for label, omitted in {
+            "missing-request": request,
+            "missing-observation": observation,
+        }.items():
+            with (
+                self.subTest(label=label),
+                mock.patch.object(
+                    built,
+                    "_read_verified_events",
+                    return_value=tuple(event for event in events if event is not omitted),
+                ),
+                mock.patch.object(built._repository, "plan_attempt") as planned,
+            ):
+                self.assertIs(
+                    recovered,
+                    built._recover_cancelled_dispatch(recovered),
+                )
+                planned.assert_not_called()
+
+        cross_epoch_observation = type(observation).create(
+            sequence=observation.sequence,
+            event_id=observation.event_id,
+            event_type=observation.event_type,
+            identity=dataclasses.replace(
+                observation.identity,
+                coordinator_epoch=observation.identity.coordinator_epoch + 1,
+            ),
+            actor_type=observation.actor_type,
+            actor_id=observation.actor_id,
+            recorded_at=observation.recorded_at,
+            previous_event_hash=observation.previous_event_hash,
+            payload=observation.payload,
+            reason_code=observation.reason_code,
+        )
+        self.assertTrue(
+            ForegroundCoordinator._applied_dispatch_events_match(
+                request,
+                cross_epoch_observation,
+            )
+        )
+        decoy_observation = type(cross_epoch_observation).create(
+            sequence=request.sequence,
+            event_id=f"{cross_epoch_observation.event_id}-DECOY",
+            event_type=cross_epoch_observation.event_type,
+            identity=cross_epoch_observation.identity,
+            actor_type=cross_epoch_observation.actor_type,
+            actor_id=cross_epoch_observation.actor_id,
+            recorded_at=cross_epoch_observation.recorded_at,
+            previous_event_hash=request.previous_event_hash,
+            payload=cross_epoch_observation.payload,
+            reason_code=cross_epoch_observation.reason_code,
+        )
+        self.assertFalse(
+            ForegroundCoordinator._applied_dispatch_events_match(
+                request,
+                decoy_observation,
+            )
+        )
+        with (
+            mock.patch.object(
+                built,
+                "_read_verified_events",
+                return_value=tuple(
+                    event for event in events if event is not observation
+                )
+                + (decoy_observation,),
+            ),
+            mock.patch.object(built._repository, "plan_attempt") as planned,
+        ):
+            self.assertIs(
+                recovered,
+                built._recover_cancelled_dispatch(recovered),
+            )
+            planned.assert_not_called()
+
+        built._fencing_token = 0
+        with mock.patch.object(
+            built,
+            "_recover_cancelled_dispatch",
+            side_effect=lambda cursor: cursor,
+        ):
+            active = built.acquire_lease(recovered)
+        self.assertIsNotNone(active)
+        assert active is not None
+        current_events = built._read_verified_events()
+        cross_epoch_events = tuple(
+            (
+                cross_epoch_observation
+                if event.event_id == observation.event_id
+                else event
+            )
+            for event in current_events
+        ) + (decoy_observation,)
+        with mock.patch.object(
+            built,
+            "_read_verified_events",
+            return_value=cross_epoch_events,
+        ):
+            reclaimed = built._recover_cancelled_dispatch(active)
+        self.assertIsNotNone(reclaimed)
+        assert reclaimed is not None
+        self.assertEqual(identity.attempt, reclaimed.snapshot.attempts[0].attempt)
+        self.assertEqual(2, reclaimed.snapshot.attempts[0].coordinator_epoch)
+        self.assertIs(RuntimeState.RESERVED, reclaimed.snapshot.attempts[0].state)
+        self.assertEqual([operation_id], cancel_calls)
+        built.close()
+
+    def test_takeover_reuses_a_normal_cancel_observation_after_crash(self) -> None:
+        built, recovered, _state, cancel_calls, identity, operation_id = (
+            self.running_attempt_takeover()
+        )
+        channel_factory = built._channel_factory
+        original_append_transition = ForegroundCoordinator._append_transition
+
+        def crash_after_next_transition(coordinator, *args, **kwargs):
+            appended = original_append_transition(coordinator, *args, **kwargs)
+            if appended.event is not None:
+                raise RuntimeError("simulated crash after normal cancellation")
+            return appended
+
+        with (
+            mock.patch.object(
+                built,
+                "_dispatch_runtime_admitted",
+                return_value=True,
+            ),
+            mock.patch.object(built, "_retry_admitted", return_value=True),
+            mock.patch.object(
+                ForegroundCoordinator,
+                "_append_transition",
+                new=crash_after_next_transition,
+            ),
+        ):
+            self.assertIsNone(built.acquire_lease(recovered))
+        events = built._read_verified_events()
+        observed_cancel = next(
+            event
+            for event in events
+            if event.event_type is JournalEventType.EFFECT_OBSERVED
+            and event.identity.correlation_id == operation_id
+        )
+        observed_index = events.index(observed_cancel)
+        self.assertTrue(
+            _recovered_cancel_authority_matches(
+                observed_cancel,
+                events[: observed_index + 1],
+                manifest_digest=self.manifest.canonical_sha256(),
+            )
+        )
+        for label, actor_type, actor_id in (
+            (
+                "wrong-actor-type",
+                ActorType.COORDINATOR,
+                observed_cancel.actor_id,
+            ),
+            (
+                "wrong-actor-id",
+                observed_cancel.actor_type,
+                "different-backend-adapter",
+            ),
+        ):
+            invalid_observation = type(observed_cancel).create(
+                sequence=observed_cancel.sequence,
+                event_id=observed_cancel.event_id,
+                event_type=observed_cancel.event_type,
+                identity=observed_cancel.identity,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                recorded_at=observed_cancel.recorded_at,
+                previous_event_hash=observed_cancel.previous_event_hash,
+                payload=observed_cancel.payload,
+                reason_code=observed_cancel.reason_code,
+            )
+            with self.subTest(label=label):
+                self.assertFalse(
+                    _recovered_cancel_authority_matches(
+                        invalid_observation,
+                        events[:observed_index] + (invalid_observation,),
+                        manifest_digest=self.manifest.canonical_sha256(),
+                    )
+                )
+        late_observation = type(observed_cancel).create(
+            sequence=observed_cancel.sequence,
+            event_id=observed_cancel.event_id,
+            event_type=observed_cancel.event_type,
+            identity=observed_cancel.identity,
+            actor_type=observed_cancel.actor_type,
+            actor_id=observed_cancel.actor_id,
+            recorded_at="2099-01-01T00:00:00.000000Z",
+            previous_event_hash=observed_cancel.previous_event_hash,
+            payload=observed_cancel.payload,
+            reason_code=observed_cancel.reason_code,
+        )
+        self.assertTrue(
+            _recovered_cancel_authority_matches(
+                late_observation,
+                events[:observed_index] + (late_observation,),
+                manifest_digest=self.manifest.canonical_sha256(),
+            )
+        )
+        interrupted = built._recover()
+        interrupted_cursor = built._cursor_from_recovery(interrupted)
+        self.assertIsNotNone(interrupted_cursor)
+        assert interrupted_cursor is not None
+        self.assertIs(
+            RuntimeState.CANCEL_REQUESTED,
+            interrupted_cursor.snapshot.attempts[0].state,
+        )
+        self.assertEqual([operation_id], cancel_calls)
+        built.close()
+
+        self.authority_clock._value += timedelta(seconds=1_000)
+        with mock.patch.object(
+            production_module,
+            "capture_process_start_id",
+            return_value="test-normal-cancel-restart",
+        ):
+            restarted = self.components()
+        restarted._lease_service._prior_owner_process_probe = (
+            lambda *args, **kwargs: LeaseOwnerProcessProbeResult(
+                LeaseOwnerProcessState.DEAD
+            )
+        )
+        restarted._channel_factory = channel_factory
+        recovered = restarted.recover_verified_cursor(self.manifest)
+        self.assertIsNotNone(recovered)
+        with (
+            mock.patch.object(
+                restarted,
+                "_dispatch_runtime_admitted",
+                return_value=True,
+            ),
+            mock.patch.object(restarted, "_retry_admitted", return_value=True),
+        ):
+            active = restarted.acquire_lease(recovered)
+        self.assertIsNotNone(active)
+        assert active is not None
+        self.assertEqual(1, len(active.snapshot.attempts))
+        self.assertEqual(identity.attempt, active.snapshot.attempts[0].attempt)
+        self.assertEqual(3, active.snapshot.attempts[0].coordinator_epoch)
+        self.assertIs(RuntimeState.RESERVED, active.snapshot.attempts[0].state)
+        self.assertEqual([operation_id], cancel_calls)
+        restarted.close()
+
+    def test_takeover_recovers_two_parallel_dispatches_without_new_attempts(
+        self,
+    ) -> None:
+        snapshot = parallel_graph_snapshot()
+        manifest = import_trellis_snapshot(snapshot, trellis_settings()).manifest
+        manifest = dataclasses.replace(
+            manifest,
+            capability_digest=self.cell.capabilities.capability_digest,
+            launch_profile_digest=self.cell.launch_profile_digest,
+            policy_digest=self.cell.capabilities.policy_digest,
+        )
+        state = FakeExternalState()
+        cancel_calls: list[str] = []
+
+        class CountingBackendChannel(FakeBackendChannelPort):
+            def cancel(self, effect):
+                cancel_calls.append(effect.command.operation_id)
+                return super().cancel(effect)
+
+        first = self.components(manifest=manifest, graph_snapshot=snapshot)
+        capabilities = first._config.channel_capabilities
+
+        def channel_factory(_attempt):
+            return CountingBackendChannel(
+                capabilities,
+                state=state,
+                send_state=TurnState.RUNNING,
+            )
+
+        bootstrapped = bootstrap_gate_b(
+            gate_b_material(
+                manifest,
+                workspace_hash=first._workspace.workspace_hash,
+            ),
+            (),
+            first._journal,
+        )
+        self.assertTrue(bootstrapped.admitted)
+        first._channel_factory = channel_factory
+        initial = first.recover_verified_cursor(manifest)
+        self.assertIsNotNone(initial)
+        active = first.acquire_lease(initial)
+        self.assertIsNotNone(active)
+        foundation = first.coordinator(active).reserve_ready()
+        self.assertIs(CoordinatorStatus.PROGRESSED, foundation.status)
+        self.assertEqual(1, len(foundation.reserved))
+        foundation_identity = foundation.reserved[0]
+        prepared = first.workflow(foundation.cursor).prepare_attempt(
+            foundation_identity
+        )
+        self.assertIsNotNone(prepared.attempt)
+        lifecycle = production_module._LifecycleProjection(
+            True,
+            CoordinatorReason.NONE,
+            (),
+        )
+        with (
+            mock.patch.object(
+                first,
+                "_project_prepare_lifecycle",
+                return_value=lifecycle,
+            ),
+            mock.patch.object(
+                first,
+                "_dispatch_runtime_admitted",
+                return_value=True,
+            ),
+        ):
+            dispatched = first.coordinator(prepared.cursor).dispatch_reserved(
+                foundation_identity
+            )
+        self.assertIs(CoordinatorStatus.PROGRESSED, dispatched.status, dispatched)
+        coordinator = first.coordinator(dispatched.cursor)
+        completed = coordinator._append_transition(
+            JournalEventType.ATTEMPT_SUCCEEDED,
+            foundation_identity,
+            TransitionSubject.ATTEMPT,
+            RuntimeState.RUNNING,
+            RuntimeState.SUCCEEDED,
+        )
+        self.assertIsNotNone(completed.event)
+        foundation_task_identity = ExecutionIdentity(
+            manifest.run_id,
+            foundation_identity.coordinator_epoch,
+            foundation_identity.task_id,
+        )
+        for event_type, from_state, to_state in (
+            (
+                JournalEventType.PR_OBSERVED,
+                RuntimeState.DISPATCHED,
+                RuntimeState.PR_OPEN,
+            ),
+            (
+                JournalEventType.MERGE_OBSERVED,
+                RuntimeState.PR_OPEN,
+                RuntimeState.MERGED,
+            ),
+            (
+                JournalEventType.TASK_VERIFIED,
+                RuntimeState.MERGED,
+                RuntimeState.VERIFIED,
+            ),
+        ):
+            advanced = coordinator._append_transition(
+                event_type,
+                foundation_task_identity,
+                TransitionSubject.TASK,
+                from_state,
+                to_state,
+            )
+            self.assertIsNotNone(advanced.event)
+
+        reserved = coordinator.reserve_ready()
+        self.assertIs(CoordinatorStatus.PROGRESSED, reserved.status)
+        self.assertEqual(2, len(reserved.reserved))
+        identities = reserved.reserved
+        cursor = reserved.cursor
+        for identity in identities:
+            prepared = first.workflow(cursor).prepare_attempt(identity)
+            self.assertIsNotNone(prepared.attempt)
+            cursor = prepared.cursor
+        for identity in identities:
+            with (
+                mock.patch.object(
+                    first,
+                    "_project_prepare_lifecycle",
+                    return_value=lifecycle,
+                ),
+                mock.patch.object(
+                    first,
+                    "_dispatch_runtime_admitted",
+                    return_value=True,
+                ),
+            ):
+                dispatched = first.coordinator(cursor).dispatch_reserved(identity)
+            self.assertIs(CoordinatorStatus.PROGRESSED, dispatched.status)
+            cursor = dispatched.cursor
+        identity_task_ids = {identity.task_id for identity in identities}
+        self.assertEqual(
+            identity_task_ids,
+            {
+                attempt.task_id
+                for attempt in cursor.snapshot.attempts
+                if attempt.state is RuntimeState.RUNNING
+            },
+        )
+        first.close()
+
+        self.authority_clock._value += timedelta(seconds=1_000)
+        with mock.patch.object(
+            production_module,
+            "capture_process_start_id",
+            return_value="test-parallel-takeover",
+        ):
+            second = self.components(manifest=manifest, graph_snapshot=snapshot)
+        second._lease_service._prior_owner_process_probe = (
+            lambda *args, **kwargs: LeaseOwnerProcessProbeResult(
+                LeaseOwnerProcessState.DEAD
+            )
+        )
+        second._channel_factory = channel_factory
+        recovered = second.recover_verified_cursor(manifest)
+        self.assertIsNotNone(recovered)
+        with (
+            mock.patch.object(
+                second,
+                "_dispatch_runtime_admitted",
+                return_value=True,
+            ),
+            mock.patch.object(second, "_retry_admitted", return_value=True),
+        ):
+            active = second.acquire_lease(recovered)
+
+        self.assertIsNotNone(active)
+        assert active is not None
+        attempts = {attempt.task_id: attempt for attempt in active.snapshot.attempts}
+        self.assertTrue({identity.task_id for identity in identities} <= set(attempts))
+        for identity in identities:
+            assert identity.task_id is not None
+            attempt = attempts[identity.task_id]
+            self.assertEqual(identity.attempt, attempt.attempt)
+            self.assertEqual(2, attempt.coordinator_epoch)
+            self.assertIs(RuntimeState.RESERVED, attempt.state)
+        expected_cancel_calls = [
+            "CANCEL-"
+            + production_module.canonical_sha256(
+                {
+                    "fencing_token": 2,
+                    "identity": identity.to_primitive(),
+                    "operation": EffectOperation.CANCEL_TURN.value,
+                }
+            )[:48].upper()
+            for identity in sorted(
+                identities,
+                key=lambda item: (
+                    item.task_id,
+                    item.attempt,
+                    item.coordinator_epoch,
+                    item.correlation_id,
+                ),
+            )
+        ]
+        self.assertEqual(expected_cancel_calls, cancel_calls)
+        second.close()
 
     def test_real_git_repository_builds_an_inert_production_composition(self) -> None:
         built = self.components()
@@ -2017,37 +2527,107 @@ class ProductionForegroundCompositionTests(unittest.TestCase):
         prior_actor_id = reconciled_event.actor_id
         third.close()
 
+        original_append_transition = ForegroundCoordinator._append_transition
+        for holder, (expected_attempt_state, expected_task_state) in enumerate(
+            (
+                (RuntimeState.CANCEL_REQUESTED, RuntimeState.DISPATCHED),
+                (RuntimeState.TERMINATED, RuntimeState.DISPATCHED),
+                (RuntimeState.TERMINATED, RuntimeState.BLOCKED),
+                (RuntimeState.TERMINATED, RuntimeState.READY),
+                (RuntimeState.TERMINATED, RuntimeState.LEASED),
+            ),
+            start=4,
+        ):
+            self.authority_clock._value += timedelta(seconds=1_000)
+            with mock.patch.object(
+                production_module,
+                "capture_process_start_id",
+                return_value=f"test-prior-holder-{holder}",
+            ):
+                partial = self.components()
+            partial._lease_service._prior_owner_process_probe = (
+                lambda *args, **kwargs: LeaseOwnerProcessProbeResult(
+                    LeaseOwnerProcessState.DEAD
+                )
+            )
+            partial._channel_factory = channel_factory
+            recovered = partial.recover_verified_cursor(self.manifest)
+            self.assertIsNotNone(recovered)
+
+            def crash_after_next_transition(coordinator, *args, **kwargs):
+                appended = original_append_transition(coordinator, *args, **kwargs)
+                if appended.event is not None:
+                    raise RuntimeError(
+                        "simulated crash during cancellation transitions"
+                    )
+                return appended
+
+            with (
+                mock.patch.object(
+                    partial,
+                    "_dispatch_runtime_admitted",
+                    return_value=True,
+                ),
+                mock.patch.object(partial, "_retry_admitted", return_value=True),
+                mock.patch.object(
+                    ForegroundCoordinator,
+                    "_append_transition",
+                    new=crash_after_next_transition,
+                ),
+            ):
+                self.assertIsNone(partial.acquire_lease(recovered))
+
+            interrupted = partial._recover()
+            interrupted_cursor = partial._cursor_from_recovery(interrupted)
+            self.assertIsNotNone(interrupted_cursor)
+            assert interrupted_cursor is not None
+            self.assertEqual(1, len(interrupted_cursor.snapshot.attempts))
+            self.assertEqual(
+                identity.attempt,
+                interrupted_cursor.snapshot.attempts[0].attempt,
+            )
+            self.assertIs(
+                expected_attempt_state,
+                interrupted_cursor.snapshot.attempts[0].state,
+            )
+            self.assertIs(
+                expected_task_state,
+                dict(interrupted_cursor.graph_index.task_states)[identity.task_id],
+            )
+            partial.close()
+
         self.authority_clock._value += timedelta(seconds=1_000)
         with mock.patch.object(
             production_module,
             "capture_process_start_id",
-            return_value="test-prior-holder-4",
+            return_value="test-prior-holder-9",
         ):
-            fourth = self.components()
-        fourth._lease_service._prior_owner_process_probe = lambda *args, **kwargs: (
+            final = self.components()
+        final._lease_service._prior_owner_process_probe = lambda *args, **kwargs: (
             LeaseOwnerProcessProbeResult(LeaseOwnerProcessState.DEAD)
         )
-        fourth._channel_factory = channel_factory
-        recovered = fourth.recover_verified_cursor(self.manifest)
+        final._channel_factory = channel_factory
+        recovered = final.recover_verified_cursor(self.manifest)
         self.assertIsNotNone(recovered)
         with (
             mock.patch.object(
-                fourth,
+                final,
                 "_dispatch_runtime_admitted",
                 return_value=True,
             ),
-            mock.patch.object(fourth, "_retry_admitted", return_value=True),
+            mock.patch.object(final, "_retry_admitted", return_value=True),
         ):
-            active = fourth.acquire_lease(recovered)
+            active = final.acquire_lease(recovered)
 
         self.assertIsNotNone(active)
         assert active is not None
-        self.assertNotEqual(prior_actor_id, fourth._coordinator_id)
+        self.assertNotEqual(prior_actor_id, final._coordinator_id)
         self.assertEqual(1, len(active.snapshot.attempts))
         self.assertEqual(identity.attempt, active.snapshot.attempts[0].attempt)
-        self.assertEqual(4, active.snapshot.attempts[0].coordinator_epoch)
+        self.assertEqual(9, active.snapshot.attempts[0].coordinator_epoch)
         self.assertIs(RuntimeState.RESERVED, active.snapshot.attempts[0].state)
         self.assertEqual([cancel_operation_id], cancel_calls)
+        final.close()
 
     def test_lease_append_is_followed_by_graph_revalidation(self) -> None:
         built = self.components()

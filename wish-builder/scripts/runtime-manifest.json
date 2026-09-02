@@ -690,11 +690,11 @@
     },
     {
       "destination": "scripts/wish_builder/processes/coordinator.py",
-      "runtime_sha256": "1e2ec50707016b17f4170aa01de7f19f9dc246e267bea6671a09bc3f0356ea66",
-      "runtime_size": 97365,
+      "runtime_sha256": "947a4920f89097dd92af3a0a4b5bfd261a5e525a3e02730067ba141fb6b17791",
+      "runtime_size": 99901,
       "source": "wish_builder/processes/coordinator.py",
-      "source_sha256": "1e2ec50707016b17f4170aa01de7f19f9dc246e267bea6671a09bc3f0356ea66",
-      "source_size": 97365
+      "source_sha256": "947a4920f89097dd92af3a0a4b5bfd261a5e525a3e02730067ba141fb6b17791",
+      "source_size": 99901
     },
     {
       "destination": "scripts/wish_builder/processes/foreground.py",
@@ -706,11 +706,11 @@
     },
     {
       "destination": "scripts/wish_builder/processes/production.py",
-      "runtime_sha256": "6b53954f01b3264c0797783cb56cb9423f7a1f265916a08d5c7b6f87e47a0ec5",
-      "runtime_size": 115547,
+      "runtime_sha256": "abe80eadbb984fbea744eee3edcead83ce027ea5b8922fab81682f2ac5a2e99a",
+      "runtime_size": 118583,
       "source": "wish_builder/processes/production.py",
-      "source_sha256": "6b53954f01b3264c0797783cb56cb9423f7a1f265916a08d5c7b6f87e47a0ec5",
-      "source_size": 115547
+      "source_sha256": "abe80eadbb984fbea744eee3edcead83ce027ea5b8922fab81682f2ac5a2e99a",
+      "source_size": 118583
     },
     {
       "destination": "scripts/wish_builder/processes/production_recovery.py",
