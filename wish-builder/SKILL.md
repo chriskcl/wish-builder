@@ -17,8 +17,8 @@ architecture decisions; let agents own execution after approval.
    accepts only `wish_builder + pi|oh_my_pi|codex` and rejects every other
    `scheduler_mode + worker_backend` pair. The stable backend baseline defines policy,
    capabilities and launch profiles; a separate pinned version registry must qualify the exact
-   backend/OS/version before launch. The registry currently qualifies only locally published
-   `Codex 0.149.0 / Windows`, at concurrency one or two. A
+   backend/OS/version before launch. The registry currently qualifies locally published
+   `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux`, each at concurrency one or two. A
    future `trellis + trellis` mode may let Trellis dispatch sibling tasks while the coordinator
    validates and supervises, but active M1 cannot represent or execute that mode. Never run both
    dispatchers for the same tasks. In that future mode, `GraphIndex` remains a safety-validation
@@ -101,9 +101,9 @@ handling. Backend workers operate only in isolated Git worktrees and never write
 dispatch admission is independent of projection CAS: keep an exact backend/OS/version record at
 `status=candidate` until it has complete, independently verified live evidence and a human
 publishes it as `qualified`. Unknown, candidate, quarantined, or mismatched versions fail closed.
-The pinned registry currently qualifies only locally published `Codex 0.149.0 / Windows`, with a
-maximum concurrency of two. Its detached provider provenance was
-human-accepted and is not an OpenAI-signed attestation. Keep projection single-writer while
+The pinned registry currently qualifies locally published `Codex 0.149.0 / Windows` and
+`Oh My Pi 18.0.11 / Linux`, each with a maximum concurrency of two. Their detached provider
+provenance was human-accepted and is not a provider-signed attestation. Keep projection single-writer while
 official Trellis lacks CAS.
 The future `trellis + trellis` mode remains outside manifest v2 until its pre-launch admission,
 fencing, stop/reject contract, and concurrent-write ownership are qualified.
@@ -236,10 +236,10 @@ must not roll back or redeliver admitted worker work. Reject `scheduler_mode=tre
 in active manifest v2. Its future path requires a separately qualified pre-launch proposal,
 admission, identity, fencing, stop/reject contract, and concurrent-write ownership; it does not use
 a Pi, Oh My Pi, or Codex backend/OS cell. The pinned backend version registry currently qualifies
-only the locally published `Codex 0.149.0 / Windows` record at concurrency one or two. Concurrency
-above two stops with `concurrency_not_qualified`; every other bundled version stops with
-`dispatch_not_qualified`. This is a local formal publication based on
-human-accepted detached provider provenance, not official OpenAI certification. After admission,
+the locally published `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux` records at
+concurrency one or two. Concurrency above two stops with `concurrency_not_qualified`; every
+unqualified version stops with `dispatch_not_qualified`. These are local formal publications
+based on human-accepted detached provider provenance, not provider certification. After admission,
 the coordinator enforces the Gate B `scheduler_mode + worker_backend` pair and runs exactly one
 sibling-task scheduler:
 

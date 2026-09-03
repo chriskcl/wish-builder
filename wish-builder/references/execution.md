@@ -92,11 +92,12 @@ Before any launch, load the stable baseline
    The worker writes only its isolated Git worktree and Wish Builder records canonical progress in
    the Journal; one separate projection writer catches Trellis up afterward.
 
-The bundled registry admits only `Codex 0.149.0 / Windows` at concurrency one or two. Stop with
-`concurrency_not_qualified` above two and `dispatch_not_qualified` for any other bundled version.
-The published provenance is a human-accepted local detached provider reference, not an
-OpenAI-signed attestation. Any additional version must pass the fixed local qualification harness,
-independent evidence review, and fail-closed publication before it can become `qualified`. Active
+The bundled registry admits `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux` at
+concurrency one or two. Stop with `concurrency_not_qualified` above two and
+`dispatch_not_qualified` for any unqualified version. The published provenance is a human-accepted
+local detached provider reference, not a provider-signed attestation. Any additional version must
+pass the fixed local qualification harness, independent evidence review, and fail-closed
+publication before it can become `qualified`. Active
 manifest v2 rejects `trellis + trellis`. A later schema may add that path only after its pre-launch
 proposal, admission, identity, fencing, stop/reject, and concurrent-write ownership contracts are
 qualified; it does not depend on these Agent backend/OS records. Treat credentials as
@@ -192,10 +193,10 @@ reviewed kernel-hardening change.
 
 Gate B records one schema-valid `scheduler_mode + worker_backend` pair for the whole run. A run may
 enter the loop below only after the separate backend qualification gate passes. The bundled
-registry admits only `Codex 0.149.0 / Windows` at concurrency one or two; every other bundled
-version stops with `dispatch_not_qualified`, while concurrency above two stops with
-`concurrency_not_qualified`, before this loop and may still
-perform qualified import/projection work. For an admitted cell, repeat until no unfinished task
+registry admits `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux` at concurrency one or two;
+every unqualified version stops with `dispatch_not_qualified`, while concurrency above two stops
+with `concurrency_not_qualified`, before this loop and may still perform qualified
+import/projection work. For an admitted cell, repeat until no unfinished task
 remains:
 
 1. Acquire or renew the durable scheduler lease using the protocol above. A live conflicting lease

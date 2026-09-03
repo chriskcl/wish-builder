@@ -13,7 +13,8 @@ source archive, or Skill ZIP. Install each tool separately under its own license
 
 The versions above are compatibility or test baselines, not bundled dependencies and not proof
 of backend dispatch qualification. The independently pinned backend version registry controls
-exact-version admission. Current source qualifies only `Codex 0.149.0 / Windows`, at concurrency
-one or two; the other listed backend/OS versions remain candidates.
+exact-version admission. Current source qualifies `Codex 0.149.0 / Windows` and
+`Oh My Pi 18.0.11 / Linux`, each at concurrency one or two; the other listed backend/OS versions
+remain candidates.
 
 Wish Builder itself is licensed under GPL-3.0-only. See [LICENSE](LICENSE).

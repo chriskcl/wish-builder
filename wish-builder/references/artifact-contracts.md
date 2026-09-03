@@ -131,9 +131,10 @@ tags, profile drift, integrity drift, launch-profile drift, unsupported OS value
 records, and registry/pin drift fail closed. The registry keeps at most two qualified versions per
 backend/OS cell.
 
-The bundled registry currently qualifies only `Codex 0.149.0 / Windows`, with a maximum
-concurrency of two. Its publication preserves human-accepted detached provider provenance and
-does not claim an OpenAI-signed attestation. The other bundled versions are candidates. For
+The bundled registry currently qualifies `Codex 0.149.0 / Windows` and
+`Oh My Pi 18.0.11 / Linux`, each with a maximum concurrency of two. Their publications preserve
+human-accepted detached provider provenance and do not claim provider-signed attestations. Five
+bundled version records remain candidates. For
 `scheduler_mode=wish_builder`, final admission probes the installed package and binds its exact
 registry record to the approved manifest, stable backend baseline, frozen Trellis compatibility
 digest, Journal lease, and fencing identity. It does not inspect projection CAS or
@@ -455,7 +456,7 @@ instead of guessing. Active manifest v2 rejects every scheduler/worker pair exce
 `wish_builder + pi|oh_my_pi|codex`, as defined in `tool-bridges.md`. Future `trellis + trellis`
 requires a later schema and is not executable in M1. Schema validation is not dispatch
 authorization: exact backend version qualification is checked separately. The bundled registry
-qualifies only `Codex 0.149.0 / Windows`, at concurrency one or two.
+qualifies `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux`, each at concurrency one or two.
 
 Gate B approves the material graph projected from a stable Trellis task-record read,
 `trellis_parent_task_id`, the Wish Builder-derived `trellis_revision` provenance,

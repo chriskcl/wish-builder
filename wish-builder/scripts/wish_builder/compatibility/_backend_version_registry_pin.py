@@ -1,7 +1,7 @@
 """Generated trust pin for the independently published backend version registry."""
 
 BACKEND_VERSION_REGISTRY_DIGEST = (
-    "sha256:b21f15daa9c0c1fd8def0fa6fe6172ee0d738771aebba2a4d3c35fbadfe0faad"
+    "sha256:f7aec96feeec174f530c95ab530dcb9960cc14d58e9542840b5b8e42135e9efe"
 )
 
 __all__ = ["BACKEND_VERSION_REGISTRY_DIGEST"]

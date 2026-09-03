@@ -50,22 +50,21 @@ def _disabled_bundle() -> BackendQualificationBundle:
     primitive = load_bundled_backend_qualification().to_primitive()
     primitive["published"] = False
     for provider in primitive["providers"]:
-        if provider["provider"] != Provider.CODEX.value:
-            continue
         for cell in provider["platforms"]:
-            if cell["platform"] == Platform.WINDOWS.value:
-                cell["qualification"] = {
-                    "artifact": None,
-                    "enabledForDispatch": False,
-                    "evidence": ["fixture:codex-app-server", "ci:windows-required"],
-                    "evidenceScope": "deterministic_fixture_and_ci",
-                    "live": False,
-                    "note": (
-                        "The pinned Codex 0.149.0 adapter still requires a full "
-                        "live qualification run on this platform."
-                    ),
-                    "status": "fixture_ci_only",
-                }
+            if not cell["qualification"]["enabledForDispatch"]:
+                continue
+            cell["qualification"] = {
+                "artifact": None,
+                "enabledForDispatch": False,
+                "evidence": ["fixture:backend", "ci:platform-required"],
+                "evidenceScope": "deterministic_fixture_and_ci",
+                "live": False,
+                "note": (
+                    "The pinned backend adapter still requires a full live "
+                    "qualification run on this platform."
+                ),
+                "status": "fixture_ci_only",
+            }
     primitive.pop("bundleDigest", None)
     primitive["bundleDigest"] = "sha256:" + canonical_sha256(primitive)
     decoded = decode_backend_qualification_bundle_bytes(canonical_json_bytes(primitive))

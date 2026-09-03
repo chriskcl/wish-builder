@@ -211,16 +211,16 @@ The active combination and deferred design boundary are:
 | `trellis` | `trellis` | No; future schema only | No; pre-launch admission, identity, fencing, stop/reject behavior, and CAS are unqualified | Trellis |
 | `trellis` | `pi`, `oh_my_pi`, or `codex` | No | No | None; reject Gate B |
 | `wish_builder` | `trellis` | No | No | None; reject Gate B |
-| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Yes | Exact `Codex 0.149.0 / Windows` only, at concurrency 1-2; all other bundled versions are candidates | Wish Builder |
+| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Yes | Exact `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux`, each at concurrency 1-2; all unqualified versions are disabled | Wish Builder |
 
 The current Python control plane implements only `scheduler_mode=wish_builder`. It first probes the
 installed package, then admits only an exact qualified registry record whose version, npm
 integrity, protocol profile, launch profile, OS, and requested concurrency match. The bundled
-registry admits `Codex 0.149.0 / Windows` at concurrency one or two. It returns
-`concurrency_not_qualified` for concurrency above two and `dispatch_not_qualified` for unknown,
-candidate, quarantined, drifted, or otherwise unqualified versions before launching a worker.
-This local publication uses human-accepted detached provider provenance; it is not an
-OpenAI-signed attestation.
+registry admits `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux` at concurrency one or two.
+It returns `concurrency_not_qualified` for concurrency above two and `dispatch_not_qualified` for
+unknown, candidate, quarantined, drifted, or otherwise unqualified versions before launching a
+worker. These local publications use human-accepted detached provider provenance; they are not
+provider-signed attestations.
 The `trellis + trellis` row is a future design boundary and is not schema-valid in active M1.
 
 In a future `scheduler_mode=trellis`, Trellis schedules sibling tasks through its installed worktree or

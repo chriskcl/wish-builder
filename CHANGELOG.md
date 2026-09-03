@@ -24,8 +24,9 @@ This file records user-visible changes to Wish Builder.
   two approved turns were interrupted together, both are now recovered one at a time.
 - Added an exact backend/OS/version qualification registry with protocol profiles, local SDK
   probing, candidate and quarantine states, and fail-closed admission before runtime setup.
-- Locally published the independently reviewed Codex/Windows backend qualification with a
-  maximum of two concurrent turns; all other backend/OS cells remain disabled.
+- Locally published independently reviewed backend qualifications for `Codex 0.149.0 / Windows`
+  and `Oh My Pi 18.0.11 / Linux`, each with a maximum of two concurrent turns; all candidate,
+  quarantined, unknown, or mismatched backend/OS/version cells remain disabled.
 - Made backend qualification publication rollback cleanly after partial filesystem failures and
   reject conflicting evidence without overwriting it.
 - Stored bundled qualification evidence under a shorter content-derived key so Windows wheel and
