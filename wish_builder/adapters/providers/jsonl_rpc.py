@@ -1048,13 +1048,6 @@ class JsonlRpcBackendChannel:
 
     def _on_frame(self, frame: dict[str, object]) -> None:
         event_type = frame.get("type")
-        if event_type not in {
-            "agent_end",
-            "agent_settled",
-            "agent_start",
-            "turn_start",
-        }:
-            return
         if event_type == "agent_end":
             self._last_agent_end = dict(frame)
         terminal_frame: dict[str, object] | None = None
@@ -1066,6 +1059,13 @@ class JsonlRpcBackendChannel:
             and frame.get("willContinue") is not True
         ):
             terminal_frame = frame
+        if event_type not in {
+            "agent_end",
+            "agent_settled",
+            "agent_start",
+            "turn_start",
+        }:
+            return
         with self._lock:
             send_id = self._state.get("active_send")
             if type(send_id) is not str:

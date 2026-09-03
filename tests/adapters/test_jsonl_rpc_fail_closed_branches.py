@@ -131,6 +131,11 @@ class JsonlRpcFailClosedBranchTests(unittest.TestCase):
             action()
         self.assertEqual(code, captured.exception.code)
 
+    def test_provider_json_digest_rejects_non_finite_values(self) -> None:
+        with self.assertRaises(rpc.JsonlRpcError) as raised:
+            rpc._provider_json_digest({"cost": float("nan")})
+        self.assertEqual("rpc_frame_not_digestible", raised.exception.code)
+
     def test_launch_validation_and_provider_specific_resume_arguments(self) -> None:
         pi = self.launch()
         omp = self.launch(WorkerProvider.OH_MY_PI)

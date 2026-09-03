@@ -46,6 +46,36 @@ GENESIS_HASH = "sha256:" + "0" * 64
 OBSERVED_AT = "2026-08-21T03:00:00Z"
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "jsonl_rpc_backend.py"
 
+def provider_json_digest(value: dict[str, object]) -> str:
+    raw = json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+def completed_assistant_message() -> dict[str, object]:
+    return {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "done"}],
+        "stopReason": "stop",
+        "usage": {"input": 1, "output": 1, "cost": 0.25},
+    }
+
+
+def completed_terminal_frame(provider: WorkerProvider) -> dict[str, object]:
+    return {
+        "type": "agent_end",
+        "messages": [completed_assistant_message()],
+        **(
+            {"willContinue": False}
+            if provider is WorkerProvider.OH_MY_PI
+            else {"willRetry": False}
+        ),
+    }
+
 
 def capabilities(provider: WorkerProvider) -> BackendCapabilities:
     return BackendCapabilities(
@@ -247,6 +277,11 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
                 )
                 reserve, send, _ = self.dispatch(channel, provider, f"00{index}")
                 self.assertEqual(TurnState.DONE, self.wait_terminal(channel, send.operation_id))
+                observed = channel.inspect_turn(send.operation_id)
+                self.assertEqual(
+                    provider_json_digest(completed_terminal_frame(provider)),
+                    observed.result_digest,
+                )
                 self.assertEqual(
                     channel.inspect_reservation(reserve.operation_id),
                     channel.inspect_reservation(reserve.operation_id),
@@ -319,6 +354,10 @@ class JsonlRpcProviderAdapterTests(unittest.TestCase):
         observed = restarted.inspect_turn(send.operation_id)
         self.assertEqual(EffectStatus.APPLIED, observed.status)
         self.assertEqual(TurnState.DONE, observed.state)
+        self.assertEqual(
+            provider_json_digest(completed_assistant_message()),
+            observed.result_digest,
+        )
         self.assertIn("provider_session_reconciled", observed.evidence)
         self.assertIsNone(restarted.process_id)
 
