@@ -87,6 +87,10 @@ Gate B：人批准由 task records 投影出的 material graph 與 Wish Builder 
   cancellation、crash/reconcile without redelivery、cleanup 與兩個 disjoint sibling
   overlap；獨立核對通過後，由 fail-closed publisher 保存 evidence、publication receipt、
   bundled record 和 compiled trust pin。最大並行度為 2。
+- `Oh My Pi / Linux` 在隔離 npm root 的精確 `@oh-my-pi/pi-coding-agent@18.0.11`
+  lockfile 上完成 full turn、active cancellation、crash/reconcile without redelivery、cleanup
+  與兩個 disjoint sibling overlap；獨立核對通過後已發布，最大並行度為 2。保存的
+  detached provider provenance 經人工接受，但不是 provider 簽署的 attestation。
 - 新增獨立、digest-pinned 的 `backend-version-registry.json`。穩定的
   `backend-qualification-0.6.15.json` 現在只負責 adapter policy、capability、launch profile
   和歷史證據；正式派工由精確 backend／OS／version registry 決定。
@@ -101,8 +105,8 @@ Gate B：人批准由 task records 投影出的 material graph 與 Wish Builder 
 
 ## 尚未完成或未開放
 
-- Pi `0.84.2`／Windows、Pi `0.84.2`／Linux、Oh My Pi `17.4.0`／Windows、Oh My Pi
-  `17.4.0`／Linux 和 Codex `0.149.0`／Linux 五個 exact-version record 仍是
+- Pi `0.84.2`／Windows、Pi `0.84.2`／Linux、舊版 Oh My Pi `17.4.0`／Windows、舊版
+  Oh My Pi `17.4.0`／Linux 和 Codex `0.149.0`／Linux 五個 exact-version record 仍是
   `status=candidate`。Windows Pi 只有啟動／handshake 證據，沒有 model turn；
   Windows Oh My Pi 的 live turn 需要已設定的 model 和 provider credential，本輪沒有要求或
   使用 credential，因此只能記為 `blocked_credentials`。開放任一 cell 前，必須補齊完整
@@ -227,10 +231,10 @@ Candidate-revision safety packet: optional under the current M1 policy
 1. 先讀本文件、README、Skill 與正式計畫，不要從舊的 D44-D50 問題恢復；使用者已明確放棄那些過細決策。
 2. package source 或 Skill 如有變動，重跑相關本地測試、standalone Skill tests 與 runtime parity；只有發行檔內容改變時才需要重建 wheel、sdist 和 Skill ZIP。純文件改動執行格式與連結檢查即可。
 3. M1-13 已關閉。GitHub Actions 因預算不執行；除非日後另有預算和明確需求，不要把 hosted CI 加回完成門檻。完整 local evidence packet 只在需要可重建發行資料時執行。
-4. `Codex 0.149.0 / Windows` 已開放並行度 1-2；不要提高到 3。若要把其他 candidate
-   升為 qualified，先補齊
-   對應 OS 的完整資格證據，保存原始 event log，經獨立核對與人工批准後使用 publisher
-   透過 `scripts/manage_backend_versions.py` 發布，不可手改 registry JSON。這不依賴
+4. `Codex 0.149.0 / Windows` 與 `Oh My Pi 18.0.11 / Linux` 已開放並行度 1-2；不要提高到
+   3。若要把其他 candidate 升為 qualified，先補齊對應 OS 的完整資格證據，保存原始
+   event log，經獨立核對與人工批准後使用 publisher 透過
+   `scripts/manage_backend_versions.py` 發布，不可手改 registry JSON。這不依賴
    Trellis projection CAS。未來若要加入
    `trellis + trellis`，不使用這些 Agent backend／OS cell；需另加 manifest schema，並驗證
    派工前准入、fencing、stop/reject 與並行寫入所有權。

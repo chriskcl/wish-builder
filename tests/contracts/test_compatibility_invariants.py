@@ -59,11 +59,26 @@ def _rehash_cell_profile(
         cell.capabilities,
         launch_profile_digest=profile_digest,
     )
+    qualification = cell.qualification
+    if qualification.artifact is not None:
+        artifact_body = qualification.artifact.body_primitive()
+        artifact_body["capabilityDigest"] = capability.capability_digest
+        artifact_body["launchProfileDigest"] = profile_digest
+        qualification = dataclasses.replace(
+            qualification,
+            artifact=dataclasses.replace(
+                qualification.artifact,
+                capability_digest=capability.capability_digest,
+                artifact_digest=_digest(artifact_body),
+                launch_profile_digest=profile_digest,
+            ),
+        )
     return dataclasses.replace(
         cell,
         capabilities=capability,
         launch_profile=profile,
         launch_profile_digest=profile_digest,
+        qualification=qualification,
     )
 
 

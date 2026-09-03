@@ -62,6 +62,19 @@ def _utc_now() -> str:
 def _sha256(raw: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
+def _provider_json_digest(value: dict[str, object]) -> str:
+    try:
+        raw = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+    except (TypeError, ValueError) as exc:
+        raise JsonlRpcError("rpc_frame_not_digestible") from exc
+    return _sha256(raw)
+
 
 def _effect_digest(operation: str, command_hash: str) -> str:
     return _sha256(
@@ -1046,6 +1059,13 @@ class JsonlRpcBackendChannel:
             and frame.get("willContinue") is not True
         ):
             terminal_frame = frame
+        if event_type not in {
+            "agent_end",
+            "agent_settled",
+            "agent_start",
+            "turn_start",
+        }:
+            return
         with self._lock:
             send_id = self._state.get("active_send")
             if type(send_id) is not str:
@@ -1069,7 +1089,7 @@ class JsonlRpcBackendChannel:
                     send_id,
                     state,
                     operation["command_hash"],
-                    result_digest=_sha256(canonical_json_bytes(terminal_frame)),
+                    result_digest=_provider_json_digest(terminal_frame),
                     evidence=("provider_terminal_frame",),
                 ).to_primitive()
                 self._save_state()
@@ -1133,7 +1153,7 @@ class JsonlRpcBackendChannel:
                 operation_id,
                 state,
                 operation["command_hash"],
-                result_digest=_sha256(canonical_json_bytes(assistant)),
+                result_digest=_provider_json_digest(assistant),
                 evidence=("provider_session_reconciled",),
             ).to_primitive()
         elif found_user:

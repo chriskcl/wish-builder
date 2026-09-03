@@ -45,9 +45,9 @@ _PINS = {
     ),
     WorkerProvider.OH_MY_PI: (
         "@oh-my-pi/pi-coding-agent",
-        "17.4.0",
-        "557a9343748e8720b0600f95779c11ad7f447575",
-        "sha512-RMLu7DrF/W2lEPNgQECGR1Uw6jbhAKnDUVGGhhRXvVPp3ntx8CCwW48aC2kfp5QV/lDFYg0Rw6/CXMo/85jIBw==",
+        "18.0.11",
+        "bbb5bf3e89b4b6a2eb692976109578071369378d",
+        "sha512-3H90cCc+3yLtvSKM2RooIvkhG+77OFFoXD6+9GPZDF3PQ3FF6uCnPP57OaUa8VZ8YwOm9Eio5ZmfdFuvwLn+VA==",
     ),
 }
 

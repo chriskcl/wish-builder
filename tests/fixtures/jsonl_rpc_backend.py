@@ -27,6 +27,9 @@ abort_response_after_terminal = (
 prompt_response_after_start = (
     os.environ.get("FAKE_RPC_PROMPT_RESPONSE_AFTER_START") == "1"
 )
+startup_event_before_response = (
+    os.environ.get("FAKE_RPC_STARTUP_EVENT_BEFORE_RESPONSE") == "1"
+)
 barrier_directory_text = os.environ.get("FAKE_RPC_BARRIER_DIRECTORY", "")
 barrier_directory = (
     Path(barrier_directory_text).resolve() if barrier_directory_text else None
@@ -88,6 +91,7 @@ def finish_turn() -> None:
         "role": "assistant",
         "content": [{"type": "text", "text": "cancelled" if cancelled else "done"}],
         "stopReason": "aborted" if cancelled else "stop",
+        "usage": {"input": 1, "output": 1, "cost": 0.25},
     }
     append_message(assistant)
     terminal = {
@@ -111,6 +115,8 @@ if provider == "omp":
             "maxReassembledFrameBytes": 64 * 1_048_576,
         }
     )
+    if startup_event_before_response:
+        output({"type": "available_commands_update", "commands": []})
 
 for raw in sys.stdin.buffer:
     command = json.loads(raw.decode("utf-8"))

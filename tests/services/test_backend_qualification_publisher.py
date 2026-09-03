@@ -12,6 +12,7 @@ from scripts import publish_backend_qualification as publication_cli
 
 from tests.services.test_backend_qualification_builder import (
     SOURCE_REVISION,
+    _EvidenceOptions,
     _write_evidence_root,
 )
 from wish_builder.compatibility import load_bundled_backend_qualification
@@ -49,22 +50,21 @@ def _disabled_bundle() -> BackendQualificationBundle:
     primitive = load_bundled_backend_qualification().to_primitive()
     primitive["published"] = False
     for provider in primitive["providers"]:
-        if provider["provider"] != Provider.CODEX.value:
-            continue
         for cell in provider["platforms"]:
-            if cell["platform"] == Platform.WINDOWS.value:
-                cell["qualification"] = {
-                    "artifact": None,
-                    "enabledForDispatch": False,
-                    "evidence": ["fixture:codex-app-server", "ci:windows-required"],
-                    "evidenceScope": "deterministic_fixture_and_ci",
-                    "live": False,
-                    "note": (
-                        "The pinned Codex 0.149.0 adapter still requires a full "
-                        "live qualification run on this platform."
-                    ),
-                    "status": "fixture_ci_only",
-                }
+            if not cell["qualification"]["enabledForDispatch"]:
+                continue
+            cell["qualification"] = {
+                "artifact": None,
+                "enabledForDispatch": False,
+                "evidence": ["fixture:backend", "ci:platform-required"],
+                "evidenceScope": "deterministic_fixture_and_ci",
+                "live": False,
+                "note": (
+                    "The pinned backend adapter still requires a full live "
+                    "qualification run on this platform."
+                ),
+                "status": "fixture_ci_only",
+            }
     primitive.pop("bundleDigest", None)
     primitive["bundleDigest"] = "sha256:" + canonical_sha256(primitive)
     decoded = decode_backend_qualification_bundle_bytes(canonical_json_bytes(primitive))
@@ -207,6 +207,47 @@ class BackendQualificationPublisherTests(unittest.TestCase):
                 base_bundle=self.base_bundle,
             )
         )
+
+    def test_publication_accepts_a_valid_omp_linux_cell(self) -> None:
+        evidence = self.root / "omp-linux-raw"
+        _write_evidence_root(
+            evidence,
+            _EvidenceOptions(
+                target_provider=Provider.OMP,
+                target_platform=Platform.LINUX,
+                inventory_provider=Provider.OMP,
+                inventory_platform=Platform.LINUX,
+                event_provider=Provider.OMP,
+                event_platform=Platform.LINUX,
+            ),
+        )
+        _convert_to_provider_provenance(evidence)
+        candidate_root = self.root / "omp-linux-candidate"
+        candidate = build_backend_qualification_candidate(
+            evidence,
+            candidate_root,
+            bundle=self.base_bundle,
+        )
+
+        publication = prepare_backend_qualification_publication(
+            candidate_root,
+            expected_source_revision=SOURCE_REVISION,
+            expected_artifact_digest=candidate.artifact.artifact_digest,
+            reviewer="independent-test-reviewer",
+            review_reference="local-review:omp-linux-publisher-test",
+            human_approver="local-test-user",
+            human_approval_reference="local-approval:omp-linux-publisher-test",
+            review_test_count=1,
+            review_skip_count=0,
+            accept_detached_provider_provenance=True,
+            base_bundle=self.base_bundle,
+        )
+
+        self.assertIs(publication.provider, Provider.OMP)
+        self.assertIs(publication.platform, Platform.LINUX)
+        target = publication.bundle.platform(Provider.OMP, Platform.LINUX)
+        self.assertTrue(target.qualification.enabled_for_dispatch)
+        self.assertEqual(candidate.artifact, target.qualification.artifact)
 
     def test_detached_provenance_and_approved_identity_fail_closed(self) -> None:
         with self.assertRaises(BackendQualificationPublicationError) as detached:

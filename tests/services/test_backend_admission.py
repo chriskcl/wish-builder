@@ -97,7 +97,7 @@ class BackendAdmissionTests(unittest.TestCase):
         assert decoded.value is not None
         return decoded.value
 
-    def test_only_published_codex_windows_cell_is_admitted(self) -> None:
+    def test_only_published_backend_cells_are_admitted(self) -> None:
         for provider in WorkerProvider:
             for platform in Platform:
                 with self.subTest(provider=provider, platform=platform):
@@ -106,10 +106,10 @@ class BackendAdmissionTests(unittest.TestCase):
                         bundle=self.bundle,
                         platform=platform,
                     )
-                    expected = (
-                        provider is WorkerProvider.CODEX
-                        and platform is Platform.WINDOWS
-                    )
+                    expected = (provider, platform) in {
+                        (WorkerProvider.CODEX, Platform.WINDOWS),
+                        (WorkerProvider.OH_MY_PI, Platform.LINUX),
+                    }
                     self.assertEqual(expected, result.admitted)
                     self.assertEqual(
                         (
@@ -120,24 +120,32 @@ class BackendAdmissionTests(unittest.TestCase):
                         result.reason,
                     )
 
-    def test_bundled_codex_windows_concurrency_limit_is_enforced(self) -> None:
-        for max_concurrency, admitted, reason in (
-            (1, True, BackendAdmissionReason.NONE),
-            (2, True, BackendAdmissionReason.NONE),
-            (3, False, BackendAdmissionReason.CONCURRENCY_NOT_QUALIFIED),
+    def test_bundled_qualified_cell_concurrency_limits_are_enforced(self) -> None:
+        for provider, platform in (
+            (WorkerProvider.CODEX, Platform.WINDOWS),
+            (WorkerProvider.OH_MY_PI, Platform.LINUX),
         ):
-            with self.subTest(max_concurrency=max_concurrency):
-                result = admit_backend(
-                    self.manifest(
-                        WorkerProvider.CODEX,
-                        Platform.WINDOWS,
-                        max_concurrency=max_concurrency,
-                    ),
-                    bundle=self.bundle,
-                    platform=Platform.WINDOWS,
-                )
-                self.assertEqual(admitted, result.admitted)
-                self.assertEqual(reason, result.reason)
+            for max_concurrency, admitted, reason in (
+                (1, True, BackendAdmissionReason.NONE),
+                (2, True, BackendAdmissionReason.NONE),
+                (3, False, BackendAdmissionReason.CONCURRENCY_NOT_QUALIFIED),
+            ):
+                with self.subTest(
+                    provider=provider,
+                    platform=platform,
+                    max_concurrency=max_concurrency,
+                ):
+                    result = admit_backend(
+                        self.manifest(
+                            provider,
+                            platform,
+                            max_concurrency=max_concurrency,
+                        ),
+                        bundle=self.bundle,
+                        platform=platform,
+                    )
+                    self.assertEqual(admitted, result.admitted)
+                    self.assertEqual(reason, result.reason)
 
     def test_final_boundary_revalidates_exact_nested_types(self) -> None:
         self.assertIsNone(backend_admission_module._revalidate_artifact(object()))

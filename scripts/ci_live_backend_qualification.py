@@ -147,9 +147,9 @@ _SDK_PINS: dict[Provider, tuple[str, str, str, str]] = {
     ),
     Provider.OMP: (
         "@oh-my-pi/pi-coding-agent",
-        "17.4.0",
-        "557a9343748e8720b0600f95779c11ad7f447575",
-        "sha512-RMLu7DrF/W2lEPNgQECGR1Uw6jbhAKnDUVGGhhRXvVPp3ntx8CCwW48aC2kfp5QV/lDFYg0Rw6/CXMo/85jIBw==",
+        "18.0.11",
+        "bbb5bf3e89b4b6a2eb692976109578071369378d",
+        "sha512-3H90cCc+3yLtvSKM2RooIvkhG+77OFFoXD6+9GPZDF3PQ3FF6uCnPP57OaUa8VZ8YwOm9Eio5ZmfdFuvwLn+VA==",
     ),
 }
 _WORKER_PROVIDER = {
@@ -353,6 +353,7 @@ class LaunchSpec:
     sdk: SdkPin
     runtime: Path
     environment: tuple[tuple[str, str], ...]
+    model_selector: str | None
 
     @property
     def command_prefix(self) -> tuple[str, ...]:
@@ -363,8 +364,9 @@ def _launch_spec(
     sdk: SdkPin,
     runtime: Path,
     environment: tuple[tuple[str, str], ...],
+    model_selector: str | None,
 ) -> LaunchSpec:
-    return LaunchSpec(sdk, runtime, environment)
+    return LaunchSpec(sdk, runtime, environment, model_selector)
 
 
 def _make_channel(
@@ -399,6 +401,11 @@ def _make_channel(
         command_prefix=launch.command_prefix,
         sdk_name=launch.sdk.name,
         sdk_version=launch.sdk.version,
+        extra_args=(
+            ()
+            if launch.model_selector is None
+            else ("--model", launch.model_selector)
+        ),
     )
     return JsonlRpcBackendChannel(
         JsonlRpcBackendConfig(
@@ -544,15 +551,15 @@ def _task_graph(parent_id: str, source_revision: str) -> tuple[bytes, str]:
     def task(source: str, requirement: str, wave: int, paths: tuple[str, ...], depends: tuple[str, ...] = ()) -> dict[str, object]:
         return {
             "id": source,
-            "title": "Complete backend qualification probe without repository changes",
+            "title": "Return protocol-only backend qualification completion",
             "requirement_ids": [requirement],
             "depends_on": list(depends),
             "owned_paths": list(paths),
             "allowed_auxiliary_paths": [],
-            "acceptance_criteria": ["The provider turn returns a structured completion."],
+            "acceptance_criteria": ["Return a structured completion without repository inspection or file changes; only the declared no-op check may be run."],
             "regression_commands": [command()],
             "rollback": "Delete the qualification worktree.",
-            "documentation": ["docs/qualification.md"],
+            "documentation": [],
             "wave": wave,
             "risk": "low",
             "may_change_contracts": False,
@@ -1129,7 +1136,13 @@ def _finish_attempt(
         QualificationTurnTerminalState.FAILED: TurnState.FAILED,
     }[terminal_state]
     if terminal.state is not expected:
-        raise LiveQualificationError("turn_terminal_state_mismatch")
+        raise LiveQualificationError(
+            "turn_terminal_state_mismatch",
+            (
+                f"scenario={attempt.scenario.value} "
+                f"expected={expected.value} observed={terminal.state.value}"
+            ),
+        )
     attempt.result_digest = terminal.result_digest
     if terminal_state is QualificationTurnTerminalState.DONE and attempt.result_digest is None:
         raise LiveQualificationError("turn_result_missing")
@@ -1299,6 +1312,7 @@ def _crash_child_config(
     sdk: SdkPin,
     runtime: Path,
     environment_names: tuple[str, ...],
+    model_selector: str | None,
     capabilities: BackendCapabilities,
     attempt: Attempt,
     output: Path,
@@ -1316,6 +1330,7 @@ def _crash_child_config(
         },
         "runtime": str(runtime),
         "environmentNames": list(environment_names),
+        "modelSelector": model_selector,
         "capabilities": capabilities.to_primitive(),
         "attempt": {
             "runId": attempt.identity.run_id,
@@ -1375,6 +1390,7 @@ def _run_crash_child(path: Path) -> int:
             sdk,
             Path(config["runtime"]),
             _provider_environment(tuple(config["environmentNames"])),
+            config["modelSelector"],
         )
         attempt_raw = config["attempt"]
         identity = ExecutionIdentity(
@@ -1662,6 +1678,7 @@ class LiveRunner:
             sdk=self.sdk,
             runtime=self.launch.runtime,
             environment_names=self.environment_names,
+            model_selector=self.launch.model_selector,
             capabilities=self.capabilities,
             attempt=attempt,
             output=observation_path,
@@ -2126,6 +2143,10 @@ def build_parser() -> argparse.ArgumentParser:
             "values are never written to evidence"
         ),
     )
+    parser.add_argument(
+        "--provider-model",
+        help="bounded provider/model selector for a JSONL RPC qualification run",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--timeout-seconds", type=float, default=180.0)
     parser.add_argument(
@@ -2157,6 +2178,18 @@ def _environment_names(values: list[str]) -> tuple[str, ...]:
         raise LiveQualificationError("provider_environment_missing")
     return tuple(values)
 
+def _provider_model(value: str | None, provider: Provider) -> str | None:
+    if value is None:
+        return None
+    if provider is Provider.CODEX:
+        raise LiveQualificationError("provider_model_not_supported")
+    if not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}",
+        value,
+    ):
+        raise LiveQualificationError("invalid_provider_model")
+    return value
+
 
 def _run_public(args: argparse.Namespace) -> bytes:
     provider = _provider(args.provider)
@@ -2182,6 +2215,7 @@ def _run_public(args: argparse.Namespace) -> bytes:
     sdk = _resolve_sdk(providers_root, provider, args)
     runtime = _runtime(args.runtime)
     environment_names = _environment_names(args.provider_env)
+    model_selector = _provider_model(args.provider_model, provider)
     bundle = load_bundled_compatibility()
     provider_entry = next(
         (item for item in bundle.providers if item.provider is provider), None
@@ -2202,6 +2236,7 @@ def _run_public(args: argparse.Namespace) -> bytes:
         sdk,
         runtime,
         environment,
+        model_selector,
     )
     imported_at = _utc_now()
     snapshot_bytes, manifest_bytes, manifest = _build_manifest(

@@ -34,17 +34,23 @@ class BackendRegistryContractTests(unittest.TestCase):
         self.assertEqual(BACKEND_VERSION_REGISTRY_DIGEST, admitted.registry_digest)
         self.assertEqual(raw, admitted.canonical_json_bytes())
         self.assertEqual(3, len(admitted.profiles))
-        self.assertEqual(6, len(admitted.records))
+        self.assertEqual(7, len(admitted.records))
         enabled = tuple(item for item in admitted.records if item.enabled_for_dispatch)
-        self.assertEqual(1, len(enabled))
+        self.assertEqual(2, len(enabled))
         self.assertEqual(
-            (Provider.CODEX, Platform.WINDOWS, "0.149.0", 2),
-            (
-                enabled[0].provider,
-                enabled[0].platform,
-                enabled[0].backend_version,
-                enabled[0].max_concurrency,
-            ),
+            {
+                (Provider.CODEX, Platform.WINDOWS, "0.149.0", 2),
+                (Provider.OMP, Platform.LINUX, "18.0.11", 2),
+            },
+            {
+                (
+                    item.provider,
+                    item.platform,
+                    item.backend_version,
+                    item.max_concurrency,
+                )
+                for item in enabled
+            },
         )
 
     def test_decoder_rejects_duplicate_keys_oversize_and_non_finite_numbers(self) -> None:

@@ -148,9 +148,12 @@ class CompatibilityContractTests(unittest.TestCase):
             )
             for cell in provider.platforms:
                 expected_enabled = (
-                    provider.provider is Provider.CODEX
-                    and cell.platform is Platform.WINDOWS
-                )
+                    provider.provider,
+                    cell.platform,
+                ) in {
+                    (Provider.CODEX, Platform.WINDOWS),
+                    (Provider.OMP, Platform.LINUX),
+                }
                 self.assertEqual(
                     expected_enabled,
                     cell.qualification.enabled_for_dispatch,

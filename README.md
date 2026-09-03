@@ -87,7 +87,7 @@ The point is not to remove people from the project. It is to spend human attenti
 └────────────────────────────────────────┘
 ```
 
-This is the intended end-to-end workflow. The current preview includes the assembled local lifecycle and crash recovery path, verified with controlled subprocess workers. Trellis compatibility passes for import and single-writer projection. The separate backend version registry admits only `Codex 0.149.0 / Windows`, at concurrency one or two; every other bundled backend version remains a non-dispatching candidate.
+This is the intended end-to-end workflow. The current preview includes the assembled local lifecycle and crash recovery path, verified with controlled subprocess workers. Trellis compatibility passes for import and single-writer projection. The separate backend version registry admits `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux`, each at concurrency one or two; every candidate, quarantined, unknown, or mismatched version remains non-dispatching.
 
 The planning stage normally uses `office-hours`, `plan-ceo-review`, and `plan-eng-review`, plus `plan-design-review` when the product has a user interface. Each review runs in its own non-interactive child session. The child temporarily follows the review's explicit recommendation so it can finish, then returns the practical result, alternatives, ease of changing later, and technical reasoning. Wish Builder records only easy, reversible engineering choices automatically. Product, architecture, cost, security, and other material choices are rewritten in plain language and collected for Gate A. A gstack recommendation is advice, not human approval. A child that tries to question the user directly or returns incomplete decision data is stopped.
 
@@ -116,9 +116,9 @@ The design defines two mutually exclusive scheduler modes:
 | `scheduler_mode` | `worker_backend` | Intended responsibility | Current M1 status |
 | --- | --- | --- | --- |
 | `trellis` | `trellis` | Trellis schedules sibling tasks; Wish Builder validates and supervises | Disabled: the Trellis scheduler path has no qualified pre-launch admission and fencing integration; `0.6.15` also has no cross-process CAS |
-| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Wish Builder schedules from the frozen graph into isolated worktrees; one separate writer later projects Journal results to Trellis | Exact `Codex 0.149.0 / Windows` locally qualified at concurrency 1-2; all other bundled versions are candidates |
+| `wish_builder` | `pi`, `oh_my_pi`, or `codex` | Wish Builder schedules from the frozen graph into isolated worktrees; one separate writer later projects Journal results to Trellis | Exact `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux` locally qualified at concurrency 1-2 |
 
-For M1, only `scheduler_mode=wish_builder` is accepted by the current Python control plane. Each run chooses one backend. Before launch, Wish Builder probes the installed package and requires an exact version, npm integrity, protocol profile, launch profile, OS, and concurrency match in the pinned backend version registry. Unknown, candidate, quarantined, or drifted versions stop instead of being guessed, downgraded, or silently replaced. `Codex 0.149.0 / Windows` is admitted at concurrency one or two. Concurrency three returns `concurrency_not_qualified`; every other bundled version returns `dispatch_not_qualified` before an agent is launched.
+For M1, only `scheduler_mode=wish_builder` is accepted by the current Python control plane. Each run chooses one backend. Before launch, Wish Builder probes the installed package and requires an exact version, npm integrity, protocol profile, launch profile, OS, and concurrency match in the pinned backend version registry. Unknown, candidate, quarantined, or drifted versions stop instead of being guessed, downgraded, or silently replaced. `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux` are admitted at concurrency one or two. Concurrency three returns `concurrency_not_qualified`; every unqualified version returns `dispatch_not_qualified` before an agent is launched.
 
 When the Trellis scheduler is implemented later, `GraphIndex` will remain a validation and recovery index, not a second dispatcher.
 
@@ -128,15 +128,21 @@ Backend qualification is intentionally conservative:
 | --- | --- | --- | --- |
 | Codex | `0.149.0` qualified; maximum two concurrent turns | `0.149.0` candidate; full live qualification required | Windows `0.149.0` only |
 | Pi | `0.84.2` candidate; startup and handshake only | `0.84.2` candidate; full live qualification required | Disabled |
-| Oh My Pi | `17.4.0` candidate; a configured model and credential are required | `17.4.0` candidate; full live qualification required | Disabled |
+| Oh My Pi | `17.4.0` legacy candidate; does not match the current `18.0.11` baseline | `18.0.11` qualified; maximum two concurrent turns (`17.4.0` remains a legacy candidate) | Linux `18.0.11` only |
 
 The locally published `Codex 0.149.0 / Windows` record completed the required full-turn,
 active-cancellation, crash/reconcile, cleanup, parallel-overlap, and platform evidence and is
 `status=qualified` with `maxConcurrency=2`. Its source revision is
 `fd3296ed1f8d85e9a1347eb1e2dcdf611ec62720`. Independent review also matched the official
 `@openai/codex@0.149.0` package and Windows native package against their npm integrity and
-installed files. The preserved provenance is a human-accepted local detached provider reference,
-not an OpenAI-signed attestation. The other five bundled version records remain `status=candidate`.
+installed files. Its human-accepted detached provenance is not an OpenAI-signed attestation.
+
+The independently reviewed `Oh My Pi 18.0.11 / Linux` record completed the same five live
+scenarios, including crash recovery without redelivery and two disjoint overlapping siblings.
+It binds the exact `@oh-my-pi/pi-coding-agent@18.0.11` npm integrity to source revision
+`6e29c158298d50a82cb4ba4aee2ec72f1f76bf9a`, is `status=qualified`, and permits at most two
+concurrent turns. Its human-accepted detached provenance is not a provider-signed attestation.
+Five bundled version records remain `status=candidate`.
 
 Trellis compatibility and backend qualification remain separate records. The Trellis record binds
 the frozen graph and projection adapter. The stable backend baseline records policy, capabilities,
@@ -152,7 +158,7 @@ Trellis compatibility and backend qualification are separate contracts:
 
 - [`wish_builder/compatibility/trellis-0.6.15.json`](wish_builder/compatibility/trellis-0.6.15.json) qualifies the official `@mindfoldhq/trellis@0.6.15` and `@mindfoldhq/trellis-core@0.6.15` packages for the documented import and single-writer projection boundary.
 - [`wish_builder/compatibility/backend-qualification-0.6.15.json`](wish_builder/compatibility/backend-qualification-0.6.15.json) is the stable adapter policy, capability, launch-profile, and historical-evidence baseline.
-- [`wish_builder/compatibility/backend-version-registry.json`](wish_builder/compatibility/backend-version-registry.json) is the exact backend/OS/version dispatch authority. It currently qualifies only `Codex 0.149.0 / Windows`, with a concurrency limit of two.
+- [`wish_builder/compatibility/backend-version-registry.json`](wish_builder/compatibility/backend-version-registry.json) is the exact backend/OS/version dispatch authority. It qualifies `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux`, each with a concurrency limit of two.
 
 Official Trellis `0.6.15` has no reliable cross-process CAS. M1 therefore permits one projection writer at a time, accepts only stable task-record reads, checks the expected SHA-256 before writing, verifies SHA-256 and content after writing, and fails closed on conflicts or unknown outcomes. These digest checks protect projection integrity; they are not CAS and do not act as a worker-dispatch lock. Backend workers write only isolated Git worktrees and the Journal. The separate Trellis scheduler mode needs its own qualified pre-launch admission, fencing, and concurrent-write ownership.
 
@@ -179,7 +185,7 @@ The repository currently includes:
 - package-to-Skill runtime synchronization and a reproducible development ZIP;
 - local tests for contracts, scheduling, recovery, Git effects, packaging, and controlled performance.
 
-These parts are real and tested. The assembled local lifecycle, including recovery from crashes around Git changes, is covered end to end with controlled subprocess workers. The guarded `wishctl run` entry probes the installed SDK and admits only the exact locally published `Codex 0.149.0 / Windows` record at concurrency one or two. The remaining backend work is to produce and independently review the same complete, content-addressed evidence before promoting any candidate version to qualified.
+These parts are real and tested. The assembled local lifecycle, including recovery from crashes around Git changes, is covered end to end with controlled subprocess workers. The guarded `wishctl run` entry probes the SDK and admits the exact locally published `Codex 0.149.0 / Windows` or `Oh My Pi 18.0.11 / Linux` record at concurrency one or two. Other backend work requires the same complete, content-addressed evidence and independent review before a candidate can become qualified.
 
 Real Issue, Pull Request, hosting, credential, background supervisor, and production deployment adapters are outside the current implementation.
 

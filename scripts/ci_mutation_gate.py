@@ -550,6 +550,34 @@ DEFAULT_MUTATIONS = (
             ),
         ),
     ),
+    MutationSpec(
+        "JSONL-TERMINAL-PROVIDER-DIGEST",
+        "Live JSONL terminal results retain the exact finite provider frame digest.",
+        "wish_builder/adapters/providers/jsonl_rpc.py",
+        "                    result_digest=_provider_json_digest(terminal_frame),\n",
+        "                    result_digest=_sha256(b\"mutated-terminal-frame\"),\n",
+        (
+            _test_id(
+                "tests.adapters.test_jsonl_rpc_provider.",
+                "JsonlRpcProviderAdapterTests.",
+                "test_pi_and_oh_my_pi_complete_fresh_persistent_sessions",
+            ),
+        ),
+    ),
+    MutationSpec(
+        "JSONL-RECONCILED-PROVIDER-DIGEST",
+        "Restart reconciliation retains the exact finite provider message digest.",
+        "wish_builder/adapters/providers/jsonl_rpc.py",
+        "                result_digest=_provider_json_digest(assistant),\n",
+        "                result_digest=_sha256(b\"mutated-session-message\"),\n",
+        (
+            _test_id(
+                "tests.adapters.test_jsonl_rpc_provider.",
+                "JsonlRpcProviderAdapterTests.",
+                "test_restart_reconciles_terminal_session_without_resending",
+            ),
+        ),
+    ),
 )
 
 

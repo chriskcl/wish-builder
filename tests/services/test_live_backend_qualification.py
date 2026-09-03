@@ -7,6 +7,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -22,6 +23,7 @@ from wish_builder.contracts.qualification_evidence_decoder import (
 from wish_builder.services.backend_qualification_builder import (
     verify_backend_qualification_candidate,
 )
+from wish_builder.services.ports import TurnState
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -240,6 +242,7 @@ class LiveBackendQualificationTests(unittest.TestCase):
             "--provider-env", "FAKE_LIVE_LOG",
             "--provider-env", "FAKE_LIVE_BARRIER",
             "--provider-env", "FAKE_LIVE_PIDS",
+            "--provider-model", "provider/test-model",
             "--output", str(output),
             "--timeout-seconds", "20",
             "--provenance-kind", "provider",
@@ -274,8 +277,11 @@ class LiveBackendQualificationTests(unittest.TestCase):
             argv = prompt["argv"]
             self.assertEqual(list(profile_args), argv[: len(profile_args)])
             self.assertEqual("--session-dir", argv[len(profile_args)])
-            self.assertEqual(len(profile_args) + 2, len(argv))
-            self.assertTrue(Path(argv[-1]).is_absolute())
+            self.assertTrue(Path(argv[len(profile_args) + 1]).is_absolute())
+            self.assertEqual(
+                ["--model", "provider/test-model"],
+                argv[len(profile_args) + 2 :],
+            )
         crash = [
             item
             for item in prompts
@@ -320,6 +326,21 @@ class LiveBackendQualificationTests(unittest.TestCase):
         self.assertFalse(output.exists())
         self.assertIn(b"unrecognized arguments", completed.stderr)
 
+    def test_provider_model_selector_is_bounded_and_jsonl_only(self) -> None:
+        self.assertEqual(
+            "openai/gpt-5.5",
+            live_harness._provider_model("openai/gpt-5.5", Provider.OMP),
+        )
+        for value in ("--unsafe", "openai/model/extra", "provider/"):
+            with self.subTest(value=value), self.assertRaises(
+                live_harness.LiveQualificationError
+            ) as raised:
+                live_harness._provider_model(value, Provider.OMP)
+            self.assertEqual("invalid_provider_model", raised.exception.code)
+        with self.assertRaises(live_harness.LiveQualificationError) as raised:
+            live_harness._provider_model("openai/gpt-5.5", Provider.CODEX)
+        self.assertEqual("provider_model_not_supported", raised.exception.code)
+
     def test_run_id_uses_the_runtime_stable_id_contract(self) -> None:
         self.assertEqual(
             "QUAL-CODEX-001",
@@ -331,6 +352,25 @@ class LiveBackendQualificationTests(unittest.TestCase):
             ) as raised:
                 live_harness._validate_run_id(value)
             self.assertEqual("invalid_run_id", raised.exception.code)
+
+    def test_terminal_mismatch_names_scenario_and_states(self) -> None:
+        with self.assertRaises(live_harness.LiveQualificationError) as raised:
+            live_harness._finish_attempt(
+                None,
+                SimpleNamespace(
+                    scenario=QualificationEvidenceScenario.SIBLING_OVERLAP
+                ),
+                None,
+                SimpleNamespace(state=TurnState.FAILED),
+                "qualifier-main",
+                1.0,
+            )
+
+        self.assertEqual("turn_terminal_state_mismatch", raised.exception.code)
+        self.assertEqual(
+            "scenario=sibling_overlap expected=done observed=failed",
+            raised.exception.message,
+        )
 
     def test_windows_worktree_cleanup_retries_transient_sharing_locks(self) -> None:
         locked = PermissionError(13, "locked", str(self.root))
