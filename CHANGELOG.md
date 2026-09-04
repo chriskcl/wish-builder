@@ -4,6 +4,8 @@ This file records user-visible changes to Wish Builder.
 
 ## Unreleased
 
+## 0.1.0.dev2 - 2026-09-03
+
 - Added a guarded foreground run command that keeps one coordinator in charge, renews its lease,
   and records task progress back to Trellis without letting workers edit Trellis directly.
 - Added a Gate B admission command that verifies the approved files before the first run and can be

@@ -8,21 +8,22 @@ Wish Builder is a Codex Skill for work that needs more than a one-shot code prom
 
 It does not contain a second task planner or task database. Trellis owns the working task graph. Wish Builder owns the approved execution snapshot and the rules that keep agents inside it.
 
-> **Status:** development preview (`0.1.0.dev1`). The local control plane, immutable execution snapshot checks, fail-closed admission, Journal and recovery boundaries, Git adapter, and Wish Builder import/projection bridge for official Trellis `0.6.15` are implemented. The assembled lifecycle, including crashes around Git changes, is tested end to end with controlled subprocess workers.
+> **Status:** development preview (`0.1.0.dev2`). The local control plane, immutable execution snapshot checks, fail-closed admission, Journal and recovery boundaries, Git adapter, and Wish Builder import/projection bridge for official Trellis `0.6.15` are implemented. The assembled lifecycle, including crashes around Git changes, is tested end to end with controlled subprocess workers.
 >
-> `Codex / Windows` is now locally qualified and published for real dispatch with a maximum
-> concurrency of two. The record covers a full turn, active cancellation, crash/restart
-> reconciliation without redelivery, cleanup, and two overlapping siblings with disjoint paths.
-> The evidence and package integrity were independently reviewed before the fail-closed publisher
-> added the exact version record and compiled registry trust pin. This is a local formal publication based on
-> human-accepted detached provider provenance, not an OpenAI-signed attestation or official OpenAI
-> certification. Pi, Oh My Pi, and Codex/Linux remain candidates and cannot dispatch. Unknown,
-> candidate, quarantined, or mismatched backend versions fail closed. Official Trellis `0.6.15`
+> `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux` are locally qualified
+> and published for real dispatch with a maximum concurrency of two. These records cover a full
+> turn, active cancellation, crash/restart reconciliation without redelivery, cleanup, and two
+> overlapping siblings with disjoint paths. The evidence and package integrity were independently
+> reviewed before the fail-closed publisher added each exact version record and compiled registry
+> trust pin. This is a local formal publication based on human-accepted detached provider
+> provenance, not a provider-signed attestation or official certification. Pi and Codex/Linux remain
+> candidates and cannot dispatch. Unknown, candidate, quarantined, or mismatched backend versions
+> fail closed. Official Trellis `0.6.15`
 > also lacks cross-process compare-and-swap
 > (CAS), so projection stays single-writer and fail-closed. Worker dispatch and Trellis projection
 > are separate: workers write only isolated Git worktrees and the Journal, while one writer later
 > projects results to Trellis. The repository is public, and
-> [`v0.1.0.dev1`](https://github.com/chriskcl/wish-builder/releases/tag/v0.1.0.dev1) is available as
+> [`v0.1.0.dev2`](https://github.com/chriskcl/wish-builder/releases/tag/v0.1.0.dev2) is available as
 > a prerelease under GPL-3.0-only.
 
 ## Why it exists
@@ -213,21 +214,22 @@ The Core bridge accepts either an extracted `@mindfoldhq/trellis-core@0.6.15` pa
 
 ### Install the Skill ZIP
 
-Download [`wish-builder-skill-0.1.0.dev1.zip`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev1/wish-builder-skill-0.1.0.dev1.zip) and [`SHA256SUMS`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev1/SHA256SUMS) from the published prerelease. The repository also contains a synchronized [`wish-builder-skill.zip`](wish-builder-skill.zip) for testing directly from a source checkout.
+Download [`wish-builder-skill-0.1.0.dev2.zip`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev2/wish-builder-skill-0.1.0.dev2.zip) and [`SHA256SUMS`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev2/SHA256SUMS) from the published prerelease. The repository also contains a synchronized [`wish-builder-skill.zip`](wish-builder-skill.zip) for testing directly from a source checkout.
 
-The tagged `v0.1.0.dev1` asset predates the `Unreleased` backend-version registry work described here. To test the current `main` behavior before the next prerelease, use the repository ZIP from the same source revision.
+The tagged `v0.1.0.dev2` asset includes the exact backend-version registry and the locally
+qualified `Codex 0.149.0 / Windows` and `Oh My Pi 18.0.11 / Linux` records.
 
 Windows PowerShell:
 
 ```powershell
-Expand-Archive .\wish-builder-skill-0.1.0.dev1.zip -DestinationPath "$env:USERPROFILE\.codex\skills"
+Expand-Archive .\wish-builder-skill-0.1.0.dev2.zip -DestinationPath "$env:USERPROFILE\.codex\skills"
 ```
 
 macOS or Linux:
 
 ```bash
 mkdir -p ~/.codex/skills
-unzip wish-builder-skill-0.1.0.dev1.zip -d ~/.codex/skills
+unzip wish-builder-skill-0.1.0.dev2.zip -d ~/.codex/skills
 ```
 
 The installed file should appear at:
@@ -239,7 +241,7 @@ The installed file should appear at:
 Repository ZIP SHA-256 (the prerelease asset has its own value in `SHA256SUMS`):
 
 ```text
-adcda3a2a2aaa26785e3def244a45a37d5df2e9d506c72b374ea86d7fd6bd58f
+31edea70c3573a20811c18c0d86f408262d1b733b65de07c5acd032c0394502c
 ```
 
 The repository is public. Codex's Skill installer can also install the repository's `wish-builder/` directory directly from GitHub.
@@ -399,12 +401,12 @@ uv run --locked --python 3.13 python scripts\ci_local_release.py `
   --safety-base-ref <base-ref> --distribution-root <distribution-root> `
   --manifest <manifest.json> --manifest-digest <manifest.sha256> `
   --output-dir <release-assets> --revision <commit-sha> `
-  --version 0.1.0.dev1 --tag v0.1.0.dev1
+  --version 0.1.0.dev2 --tag v0.1.0.dev2
 ```
 
 ## Remaining dispatch work
 
-- Repeat the full live qualification and independent review before promoting Pi, Oh My Pi, Codex/Linux, or any later version record from candidate to qualified.
+- Repeat the full live qualification and independent review before promoting Pi, Codex/Linux, a newer Oh My Pi version, or any other candidate record from candidate to qualified.
 - Keep `Codex 0.149.0 / Windows` at a maximum concurrency of two until stronger evidence is formally published.
 - Add the real Issue, Pull Request, and hosting adapters needed by the chosen workflow.
 - Complete one public example from a short product wish through reviewed, merged changes.

@@ -8,19 +8,20 @@ Wish Builder 是一套給 Codex 使用的 Skill，適合那些不能只靠一句
 
 它不會另外建立第二套任務拆分器或任務資料庫。可編輯的任務圖屬於 Trellis；批准後的執行快照，以及約束 Agent 的規則，屬於 Wish Builder。
 
-> **目前狀態：** 開發預覽版（`0.1.0.dev1`）。本機控制流程、不可變執行快照檢查、遇到不確定情況就停止的准入規則、Journal 與恢復邊界、Git adapter，以及 Wish Builder 對官方 Trellis `0.6.15` 的匯入／投影 bridge 都已有實作。包含 Git 變更途中當機情況的完整本機生命週期，已使用受控 subprocess worker 通過端到端測試。
+> **目前狀態：** 開發預覽版（`0.1.0.dev2`）。本機控制流程、不可變執行快照檢查、遇到不確定情況就停止的准入規則、Journal 與恢復邊界、Git adapter，以及 Wish Builder 對官方 Trellis `0.6.15` 的匯入／投影 bridge 都已有實作。包含 Git 變更途中當機情況的完整本機生命週期，已使用受控 subprocess worker 通過端到端測試。
 >
-> `Codex / Windows` 已完成本地資格驗證並正式發布，可執行真實派工，最大並行度為 2。
-> 記錄涵蓋完整 turn、執行中取消、當機重啟後不重送的 reconcile、cleanup，以及兩個
-> owned paths 互不重疊的 sibling 同時執行。證據和套件完整性經獨立核對後，才由
-> fail-closed 發布器加入精確版本記錄和編譯 registry trust pin。這是採用人工接受之 detached
-> provider provenance 的本地正式發布，不是 OpenAI 簽署的 attestation，也不是 OpenAI
-> 官方認證。Pi、Oh My Pi 和 Codex/Linux 仍是 candidate，不能派工；未知、candidate、
-> quarantined 或不相符的 backend 版本都會直接停止。官方 Trellis `0.6.15` 也沒有跨程序 compare-and-swap
+> `Codex 0.149.0 / Windows` 與 `Oh My Pi 18.0.11 / Linux` 已完成本地資格驗證並正式
+> 發布，可執行真實派工，最大並行度為 2。兩筆記錄涵蓋完整 turn、執行中取消、當機重啟後
+> 不重送的 reconcile、cleanup，以及兩個 owned paths 互不重疊的 sibling 同時執行。
+> 證據和套件完整性經獨立核對後，才由 fail-closed 發布器加入每個精確版本記錄和編譯
+> registry trust pin。這是採用人工接受之 detached provider provenance 的本地正式發布，
+> 不是 provider 簽署的 attestation，也不是官方認證。Pi 與 Codex/Linux 仍是 candidate，
+> 不能派工；未知、candidate、quarantined 或不相符的 backend 版本都會直接停止。官方
+> Trellis `0.6.15` 也沒有跨程序 compare-and-swap
 > （CAS），所以投影採單一寫入者並在衝突時停止。Agent 派工和 Trellis 投影是分開的：
 > worker 只寫隔離 Git worktree 和 Journal，之後由單一 writer 把結果投影回 Trellis。
 > Repository 已公開，並以 GPL-3.0-only 授權發布
-> [`v0.1.0.dev1`](https://github.com/chriskcl/wish-builder/releases/tag/v0.1.0.dev1) 預覽版。
+> [`v0.1.0.dev2`](https://github.com/chriskcl/wish-builder/releases/tag/v0.1.0.dev2) 預覽版。
 
 ## 為什麼需要它
 
@@ -207,21 +208,22 @@ Core bridge 可讀取解壓後的 `@mindfoldhq/trellis-core@0.6.15` package 目�
 
 ### 安裝 Skill ZIP
 
-從已發布的預覽版下載 [`wish-builder-skill-0.1.0.dev1.zip`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev1/wish-builder-skill-0.1.0.dev1.zip) 和 [`SHA256SUMS`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev1/SHA256SUMS)。Repository 內也保留了已同步的 [`wish-builder-skill.zip`](wish-builder-skill.zip)，方便直接從原始碼 checkout 測試。
+從已發布的預覽版下載 [`wish-builder-skill-0.1.0.dev2.zip`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev2/wish-builder-skill-0.1.0.dev2.zip) 和 [`SHA256SUMS`](https://github.com/chriskcl/wish-builder/releases/download/v0.1.0.dev2/SHA256SUMS)；Repository 內也保留已同步的 [`wish-builder-skill.zip`](wish-builder-skill.zip)，方便直接從原始碼 checkout 測試。
 
-已標記的 `v0.1.0.dev1` 資產早於本頁所述的 `Unreleased` backend version registry 變更。下一個預覽版發布前，如要測試目前 `main` 的行為，請使用同一 source revision 內的 repository ZIP。
+標記的 `v0.1.0.dev2` 資產包含精確 backend-version registry，以及已取得本地資格的
+`Codex 0.149.0 / Windows` 與 `Oh My Pi 18.0.11 / Linux` 記錄。
 
 Windows PowerShell：
 
 ```powershell
-Expand-Archive .\wish-builder-skill-0.1.0.dev1.zip -DestinationPath "$env:USERPROFILE\.codex\skills"
+Expand-Archive .\wish-builder-skill-0.1.0.dev2.zip -DestinationPath "$env:USERPROFILE\.codex\skills"
 ```
 
 macOS 或 Linux：
 
 ```bash
 mkdir -p ~/.codex/skills
-unzip wish-builder-skill-0.1.0.dev1.zip -d ~/.codex/skills
+unzip wish-builder-skill-0.1.0.dev2.zip -d ~/.codex/skills
 ```
 
 安裝後應該看到：
@@ -231,9 +233,8 @@ unzip wish-builder-skill-0.1.0.dev1.zip -d ~/.codex/skills
 ```
 
 Repository 內 ZIP 的 SHA-256（預發布下載檔請以該版本的 `SHA256SUMS` 為準）：
-
 ```text
-adcda3a2a2aaa26785e3def244a45a37d5df2e9d506c72b374ea86d7fd6bd58f
+31edea70c3573a20811c18c0d86f408262d1b733b65de07c5acd032c0394502c
 ```
 
 Repository 已公開，也可以透過 Codex Skill installer 直接從 GitHub 安裝其中的 `wish-builder/` 目錄。
@@ -391,12 +392,12 @@ uv run --locked --python 3.13 python scripts\ci_local_release.py `
   --safety-base-ref <base-ref> --distribution-root <distribution-root> `
   --manifest <manifest.json> --manifest-digest <manifest.sha256> `
   --output-dir <release-assets> --revision <commit-sha> `
-  --version 0.1.0.dev1 --tag v0.1.0.dev1
+  --version 0.1.0.dev2 --tag v0.1.0.dev2
 ```
 
 ## 尚餘派工工作
 
-- 把 Pi、Oh My Pi、Codex/Linux 或日後其他版本記錄從 candidate 升為 qualified 前，重跑完整 live qualification 並完成獨立核對。
+- 把 Pi、Codex/Linux、日後的 Oh My Pi 版本或其他 candidate 記錄從 candidate 升為 qualified 前，重跑完整 live qualification 並完成獨立核對。
 - 在更強的證據正式發布前，`Codex 0.149.0 / Windows` 的最大並行度維持 2。
 - 補上所選流程需要的真實 Issue、Pull Request 和託管平台 adapter。
 - 完成一個公開案例，從一句產品願望走到通過審閱並合併的改動。

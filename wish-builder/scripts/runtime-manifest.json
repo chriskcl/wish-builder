@@ -10,10 +10,10 @@
     },
     {
       "destination": "scripts/wish_builder/__init__.py",
-      "runtime_sha256": "6e248deeb311d0ba9c923bee247db44d9178af92d223d7e514cb80455d1ed4ea",
+      "runtime_sha256": "c806eb076199c45016f659c41af2f27f56aad52e9a34360fa454b32b3625280b",
       "runtime_size": 65,
       "source": "wish_builder/__init__.py",
-      "source_sha256": "6e248deeb311d0ba9c923bee247db44d9178af92d223d7e514cb80455d1ed4ea",
+      "source_sha256": "c806eb076199c45016f659c41af2f27f56aad52e9a34360fa454b32b3625280b",
       "source_size": 65
     },
     {
