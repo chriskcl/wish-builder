@@ -9,9 +9,10 @@ Wish Builder 的本機 M1 功能、M1-13 驗證與 release verifier 已落地：
 派工監督、結果驗證、Journal 和崩潰恢復。唯一支援的 Trellis 基線是官方 `0.6.15`；
 `0.7.0-dev.2` 是已撤回的本機測試 fixture，從未是官方 Trellis release。**本地測試已通過，
 依使用者決定足以完成 M1。** GitHub Actions 因預算用完而不執行，不聲稱 CI 通過或失敗。
-精確的 `Codex 0.149.0 / Windows` 已依完整 live evidence、獨立核對與人工批准完成本地正式
-發布，可在並行度 1 或 2 派工；其 detached provider provenance 不是 OpenAI 簽署的
-attestation。Pi、Oh My Pi 與 Codex/Linux 的隨附版本仍是 candidate，不能派工。
+精確的 `Codex 0.149.0 / Windows` 與 `Oh My Pi 18.0.11 / Linux` 已依完整 live evidence、
+獨立核對與人工批准完成本地正式發布，可在並行度 1 或 2 派工；其 detached provider
+provenance 不是 provider 簽署的 attestation。Pi 與 Codex/Linux 的隨附版本仍是
+candidate，不能派工。
 
 ## Repository 狀態
 
@@ -22,12 +23,12 @@ attestation。Pi、Oh My Pi 與 Codex/Linux 的隨附版本仍是 candidate，�
 | Source branch base HEAD | `f8428815910937489a41597f7b782e5ee6b43c00` (`v0.1.0.dev1 feat: qualify Codex dispatch on Windows (#3)`) |
 | M1 candidate revision | 本文件所在 commit；接手時執行 `git rev-parse HEAD` 取得，不在 commit 內自我引用 SHA |
 | 工作樹 | 本文件不宣稱即時 Git 狀態；接手時以 `git status --branch`、`git log` 和 remote ref 為準 |
-| Remote | `origin = https://github.com/chriskcl/wish-builder.git`；repository 已公開，`v0.1.0.dev1` prerelease 已發布 |
-| Python package | `wish-builder 0.1.0.dev1`, Python `>=3.11` |
+| Remote | `origin = https://github.com/chriskcl/wish-builder.git`；repository 已公開，`v0.1.0.dev2` prerelease 已發布 |
+| Python package | `wish-builder 0.1.0.dev2`, Python `>=3.11` |
 | License | `GPL-3.0-only` |
 | Skill ZIP | `wish-builder-skill.zip` |
-| Skill ZIP SHA-256 | `d1f3496a1058c7064189efce9291553b3378da802cacd92bb7f1031e3fb4bc88` |
-| Skill ZIP 大小 | `573,368` bytes |
+| Skill ZIP SHA-256 | `31edea70c3573a20811c18c0d86f408262d1b733b65de07c5acd032c0394502c` |
+| Skill ZIP 大小 | `631,214` bytes |
 
 `changed-lines.json`、`mutation-report.json` 和 `safety-evidence.json` 是本機 evidence，不屬於提交內容；不要把它們加入 commit。後續以 `git status --branch`、remote ref 和 `gh pr view` 核對實際狀態。
 
@@ -122,7 +123,7 @@ Gate B：人批准由 task records 投影出的 material graph 與 Wish Builder 
 - 不含真實 GitHub adapter、provider 憑證、sandbox、background supervisor／broker、cockpit 和正式部署。
 - M1-13 已依「本地測試通過」規則完成。GitHub Actions 因預算用完而不執行，也沒有 CI 結果可宣稱。
 - `local_evidence_packet.py` 和本機 release verifier 保留為可選的嚴格發行工具，不再是 M1 完成門檻。
-- 已採 GPL-3.0-only 並加入第三方 notices；repository 已公開，`v0.1.0.dev1` prerelease 已發布。
+- 已採 GPL-3.0-only 並加入第三方 notices；repository 已公開，`v0.1.0.dev2` prerelease 已發布。
 
 ## 驗證基線
 
@@ -197,7 +198,7 @@ Windows clean-install of the same wheel and sdist:
 
 Skill runtime sync check: passed
 Deterministic ZIP check: passed
-Current Skill ZIP SHA-256: d1f3496a1058c7064189efce9291553b3378da802cacd92bb7f1031e3fb4bc88; 573,368 bytes
+Current Skill ZIP SHA-256: 31edea70c3573a20811c18c0d86f408262d1b733b65de07c5acd032c0394502c; 631,214 bytes
 Codex Skill validator: passed
 Release content gate: passed; release archives reject bundled `.tgz` files and unpinned Trellis install specs
 Distribution clean-install matrix: 6 cells implemented; local fixed-revision evidence is authoritative for M1
